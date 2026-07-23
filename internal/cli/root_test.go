@@ -10,30 +10,17 @@ import (
 	"stcompare/internal/cli"
 )
 
-type configDocument struct {
-	Schema       string                 `yaml:"schema"`
-	BaseURL      string                 `yaml:"base_url"`
-	ReportsDir   string                 `yaml:"reports_dir"`
-	Schemathesis schemathesisDocument   `yaml:"schemathesis"`
-	Campaigns    map[string]campaignDoc `yaml:"campaigns"`
-}
-
-type schemathesisDocument struct {
-	Seed                    int      `yaml:"seed"`
-	Workers                 int      `yaml:"workers"`
-	GenerationDeterministic bool     `yaml:"generation_deterministic"`
-	GenerationDatabase      string   `yaml:"generation_database"`
-	Reports                 []string `yaml:"reports"`
-	OutputSanitize          bool     `yaml:"output_sanitize"`
-	OutputTruncate          bool     `yaml:"output_truncate"`
-	ExtraArgs               []string `yaml:"extra_args"`
-}
-
-type campaignDoc struct {
-	Kind string `yaml:"kind"`
-}
-
 func TestConfigInitWritesDefaultConfig(t *testing.T) {
+	wantContents, err := os.ReadFile("testdata/default-config.yaml")
+	if err != nil {
+		t.Fatalf("read expected config: %v", err)
+	}
+
+	var want any
+	if err := yaml.Unmarshal(wantContents, &want); err != nil {
+		t.Fatalf("decode expected config: %v", err)
+	}
+
 	t.Chdir(t.TempDir())
 
 	root := cli.NewRootCommand()
@@ -47,30 +34,9 @@ func TestConfigInitWritesDefaultConfig(t *testing.T) {
 		t.Fatalf("read stcompare.yaml: %v", err)
 	}
 
-	var got configDocument
+	var got any
 	if err := yaml.Unmarshal(contents, &got); err != nil {
 		t.Fatalf("decode stcompare.yaml: %v", err)
-	}
-
-	want := configDocument{
-		Schema:     "openapi.json",
-		BaseURL:    "http://localhost:8080",
-		ReportsDir: "reports",
-		Schemathesis: schemathesisDocument{
-			Seed:                    12345,
-			Workers:                 1,
-			GenerationDeterministic: true,
-			GenerationDatabase:      "none",
-			Reports:                 []string{"junit", "vcr", "har", "ndjson"},
-			OutputSanitize:          false,
-			OutputTruncate:          false,
-			ExtraArgs:               []string{},
-		},
-		Campaigns: map[string]campaignDoc{
-			"baseline": {Kind: "baseline"},
-			"gpt5.6":   {Kind: "candidate"},
-			"sonnet5":  {Kind: "candidate"},
-		},
 	}
 
 	if !reflect.DeepEqual(got, want) {
