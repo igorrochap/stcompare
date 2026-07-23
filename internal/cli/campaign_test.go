@@ -2,10 +2,377 @@ package cli_test
 
 import (
 	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"stcompare/internal/cli"
 )
+
+type recordingCampaignRunner struct {
+	argv                 []string
+	schemathesisVersion  string
+	schemathesisVersionE error
+	runErr               error
+}
+
+func (runner *recordingCampaignRunner) SchemathesisVersion() (string, error) {
+	return runner.schemathesisVersion, runner.schemathesisVersionE
+}
+
+func (runner *recordingCampaignRunner) Run(argv []string) error {
+	runner.argv = append([]string(nil), argv...)
+	return runner.runErr
+}
+
+func executeCampaignRunWithRunner(runner *recordingCampaignRunner, args ...string) error {
+	root := cli.NewRootCommandWithDependencies(cli.Dependencies{
+		CampaignRunner: runner,
+		Now: func() time.Time {
+			return time.Date(2026, 7, 23, 12, 34, 56, 0, time.UTC)
+		},
+		ToolVersion: "test-version",
+	})
+	root.SetArgs(args)
+
+	return root.Execute()
+}
+
+func TestCampaignRunBaselineWritesReportsAndMetadata(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+
+	runner := &recordingCampaignRunner{schemathesisVersion: "Schemathesis 4.0.0"}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline")
+
+	metadataPath := filepath.Join("reports", "baseline", "metadata.yaml")
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read campaign metadata: %v", readErr)
+	}
+	gotMetadata := decodeConfig(t, metadataContents)
+	got := struct {
+		Error            string
+		Runner           []string
+		Campaign         map[string]any
+		ConfigPath       any
+		EffectiveCommand any
+		ToolVersion      any
+		STVersion        any
+		Timestamp        any
+	}{
+		Runner:           runner.argv,
+		Campaign:         configSection(t, gotMetadata, "campaign"),
+		ConfigPath:       gotMetadata["config_path"],
+		EffectiveCommand: gotMetadata["effective_command"],
+		ToolVersion:      gotMetadata["tool_version"],
+		STVersion:        gotMetadata["schemathesis_version"],
+		Timestamp:        gotMetadata["timestamp"],
+	}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error            string
+		Runner           []string
+		Campaign         map[string]any
+		ConfigPath       any
+		EffectiveCommand any
+		ToolVersion      any
+		STVersion        any
+		Timestamp        any
+	}{
+		Runner: []string{
+			"st", "run", "openapi.json",
+			"--url", "http://localhost:8080",
+			"--workers", "1",
+			"--seed", "12345",
+			"--generation-deterministic",
+			"--report", "junit,vcr,har,ndjson",
+			"--report-junit-path", filepath.Join("reports", "baseline", "junit.xml"),
+			"--report-vcr-path", filepath.Join("reports", "baseline", "campaign.vcr.yaml"),
+			"--report-har-path", filepath.Join("reports", "baseline", "campaign.har.json"),
+			"--report-ndjson-path", filepath.Join("reports", "baseline", "campaign.ndjson"),
+			"--output-sanitize", "false",
+			"--output-truncate", "false",
+		},
+		Campaign: map[string]any{
+			"name": "baseline",
+			"kind": "baseline",
+		},
+		ConfigPath: "stcompare.yaml",
+		EffectiveCommand: []any{
+			"st", "run", "openapi.json",
+			"--url", "http://localhost:8080",
+			"--workers", "1",
+			"--seed", "12345",
+			"--generation-deterministic",
+			"--report", "junit,vcr,har,ndjson",
+			"--report-junit-path", filepath.Join("reports", "baseline", "junit.xml"),
+			"--report-vcr-path", filepath.Join("reports", "baseline", "campaign.vcr.yaml"),
+			"--report-har-path", filepath.Join("reports", "baseline", "campaign.har.json"),
+			"--report-ndjson-path", filepath.Join("reports", "baseline", "campaign.ndjson"),
+			"--output-sanitize", "false",
+			"--output-truncate", "false",
+		},
+		ToolVersion: "test-version",
+		STVersion:   "Schemathesis 4.0.0",
+		Timestamp:   "2026-07-23T12:34:56Z",
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunRefusesToOverwriteExistingBaselineReports(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	reportDir := filepath.Join("reports", "baseline")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create existing report dir: %v", err)
+	}
+	metadataPath := filepath.Join(reportDir, "metadata.yaml")
+	const sentinel = "sentinel: keep\n"
+	if err := os.WriteFile(metadataPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write sentinel metadata: %v", err)
+	}
+
+	runner := &recordingCampaignRunner{schemathesisVersion: "Schemathesis 4.0.0"}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline")
+
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read sentinel metadata: %v", readErr)
+	}
+	got := struct {
+		Error           string
+		RunnerWasCalled bool
+		Metadata        string
+	}{
+		RunnerWasCalled: runner.argv != nil,
+		Metadata:        string(metadataContents),
+	}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error           string
+		RunnerWasCalled bool
+		Metadata        string
+	}{
+		Error:    "campaign report directory reports/baseline already exists; use --force to overwrite",
+		Metadata: sentinel,
+	}
+
+	if got != want {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunForceOverwritesExistingBaselineMetadata(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	reportDir := filepath.Join("reports", "baseline")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create existing report dir: %v", err)
+	}
+	metadataPath := filepath.Join(reportDir, "metadata.yaml")
+	if err := os.WriteFile(metadataPath, []byte("sentinel: replace\n"), 0o644); err != nil {
+		t.Fatalf("write sentinel metadata: %v", err)
+	}
+
+	runner := &recordingCampaignRunner{schemathesisVersion: "Schemathesis 4.0.0"}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline", "--force")
+
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read campaign metadata: %v", readErr)
+	}
+	got := struct {
+		Error           string
+		RunnerWasCalled bool
+		Campaign        map[string]any
+	}{
+		RunnerWasCalled: runner.argv != nil,
+	}
+	if err != nil {
+		got.Error = err.Error()
+	} else {
+		gotMetadata := decodeConfig(t, metadataContents)
+		got.Campaign = configSection(t, gotMetadata, "campaign")
+	}
+	want := struct {
+		Error           string
+		RunnerWasCalled bool
+		Campaign        map[string]any
+	}{
+		RunnerWasCalled: true,
+		Campaign: map[string]any{
+			"name": "baseline",
+			"kind": "baseline",
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunCandidateRecordsSettingsAndOverrides(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+
+	runner := &recordingCampaignRunner{schemathesisVersion: "Schemathesis 4.0.0"}
+	err := executeCampaignRunWithRunner(runner,
+		"campaign", "run", "gpt5.6",
+		"--schema", "api/openapi.yaml",
+		"--base-url", "http://localhost:9090",
+		"--reports-dir", "comparison-reports",
+		"--seed", "4242",
+		"--workers", "8",
+	)
+
+	metadataPath := filepath.Join("comparison-reports", "gpt5.6", "metadata.yaml")
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read campaign metadata: %v", readErr)
+	}
+	gotMetadata := decodeConfig(t, metadataContents)
+	got := struct {
+		Error     string
+		Campaign  map[string]any
+		Settings  any
+		Overrides any
+	}{
+		Campaign:  configSection(t, gotMetadata, "campaign"),
+		Settings:  gotMetadata["settings"],
+		Overrides: gotMetadata["overrides"],
+	}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error     string
+		Campaign  map[string]any
+		Settings  any
+		Overrides any
+	}{
+		Campaign: map[string]any{
+			"name": "gpt5.6",
+			"kind": "candidate",
+		},
+		Settings: map[string]any{
+			"schema":                   "api/openapi.yaml",
+			"base_url":                 "http://localhost:9090",
+			"reports_dir":              "comparison-reports",
+			"seed":                     4242,
+			"workers":                  8,
+			"generation_deterministic": true,
+			"generation_database":      "none",
+			"reports":                  []any{"junit", "vcr", "har", "ndjson"},
+			"output_sanitize":          false,
+			"output_truncate":          false,
+			"extra_args":               []any{},
+		},
+		Overrides: map[string]any{
+			"schema":      "api/openapi.yaml",
+			"base_url":    "http://localhost:9090",
+			"reports_dir": "comparison-reports",
+			"seed":        4242,
+			"workers":     8,
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunRemovesNewReportDirectoryWhenRunnerFails(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+
+	runner := &recordingCampaignRunner{
+		schemathesisVersion: "Schemathesis 4.0.0",
+		runErr:              errors.New("st failed"),
+	}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline")
+
+	_, statErr := os.Stat(filepath.Join("reports", "baseline"))
+	got := struct {
+		Error         string
+		ReportDirGone bool
+	}{
+		ReportDirGone: errors.Is(statErr, os.ErrNotExist),
+	}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error         string
+		ReportDirGone bool
+	}{
+		Error:         "st failed",
+		ReportDirGone: true,
+	}
+
+	if got != want {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunForceKeepsExistingReportDirectoryWhenRunnerFails(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	reportDir := filepath.Join("reports", "baseline")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create existing report dir: %v", err)
+	}
+	metadataPath := filepath.Join(reportDir, "metadata.yaml")
+	const sentinel = "sentinel: keep\n"
+	if err := os.WriteFile(metadataPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write sentinel metadata: %v", err)
+	}
+
+	runner := &recordingCampaignRunner{
+		schemathesisVersion: "Schemathesis 4.0.0",
+		runErr:              errors.New("st failed"),
+	}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline", "--force")
+
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read sentinel metadata: %v", readErr)
+	}
+	got := struct {
+		Error    string
+		Metadata string
+	}{Metadata: string(metadataContents)}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error    string
+		Metadata string
+	}{
+		Error:    "st failed",
+		Metadata: sentinel,
+	}
+
+	if got != want {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
 
 func TestCampaignCommandPrintsDefaultRunCommand(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
@@ -23,7 +390,7 @@ func TestCampaignCommandPrintsDefaultRunCommand(t *testing.T) {
 		got.Error = err.Error()
 	}
 	want := configCommandOutcome{
-		Output: "st run openapi.json --url http://localhost:8080 --workers 1 --seed 12345 --generation-deterministic --generation-database none --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false\n",
+		Output: "st run openapi.json --url http://localhost:8080 --workers 1 --seed 12345 --generation-deterministic --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false\n",
 	}
 
 	if got != want {
@@ -48,7 +415,7 @@ func TestCampaignCommandAppendsConfiguredSchemathesisExtraArgs(t *testing.T) {
 		got.Error = err.Error()
 	}
 	want := configCommandOutcome{
-		Output: "st run openapi.json --url http://localhost:8080 --workers 1 --seed 12345 --generation-deterministic --generation-database none --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false --checks all\n",
+		Output: "st run openapi.json --url http://localhost:8080 --workers 1 --seed 12345 --generation-deterministic --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false --checks all\n",
 	}
 
 	if got != want {
@@ -79,7 +446,34 @@ func TestCampaignCommandHonorsCommonOverrides(t *testing.T) {
 		got.Error = err.Error()
 	}
 	want := configCommandOutcome{
-		Output: "st run api/openapi.yaml --url http://localhost:9090 --workers 8 --seed 4242 --generation-deterministic --generation-database none --report junit,vcr,har,ndjson --report-junit-path comparison-reports/baseline/junit.xml --report-vcr-path comparison-reports/baseline/campaign.vcr.yaml --report-har-path comparison-reports/baseline/campaign.har.json --report-ndjson-path comparison-reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false\n",
+		Output: "st run api/openapi.yaml --url http://localhost:9090 --workers 8 --seed 4242 --generation-deterministic --report junit,vcr,har,ndjson --report-junit-path comparison-reports/baseline/junit.xml --report-vcr-path comparison-reports/baseline/campaign.vcr.yaml --report-har-path comparison-reports/baseline/campaign.har.json --report-ndjson-path comparison-reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false\n",
+	}
+
+	if got != want {
+		t.Fatalf("campaign command outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignCommandIncludesGenerationDatabaseWhenDeterministicGenerationIsDisabled(t *testing.T) {
+	input := loadDefaultConfig(t)
+	schemathesis := configSection(t, input, "schemathesis")
+	schemathesis["generation_deterministic"] = false
+	schemathesis["generation_database"] = "examples.db"
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", input)
+
+	var output bytes.Buffer
+	root := cli.NewRootCommand()
+	root.SetOut(&output)
+	root.SetArgs([]string{"campaign", "command", "baseline"})
+	err := root.Execute()
+
+	got := configCommandOutcome{Output: output.String()}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := configCommandOutcome{
+		Output: "st run openapi.json --url http://localhost:8080 --workers 1 --seed 12345 --generation-database examples.db --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false\n",
 	}
 
 	if got != want {

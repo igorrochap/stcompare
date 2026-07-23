@@ -16,6 +16,7 @@ func newCampaignCommand(rootOpts *rootOptions) *cobra.Command {
 	campaignCommand := &cobra.Command{Use: "campaign"}
 
 	campaignCommand.AddCommand(newCampaignCommandCommand(rootOpts))
+	campaignCommand.AddCommand(newCampaignRunCommand(rootOpts))
 
 	return campaignCommand
 }
@@ -35,22 +36,9 @@ func newCampaignCommandCommand(rootOpts *rootOptions) *cobra.Command {
 }
 
 func runCampaignCommand(cmd *cobra.Command, configPath string, campaignName string, options configOverrideOptions) error {
-	effective, err := config.Load(configPath)
+	effective, _, err := resolveCampaign(cmd, configPath, campaignName, options)
 	if err != nil {
 		return err
-	}
-	applyConfigOverrides(cmd, &effective, options)
-	if err := effective.Validate(); err != nil {
-		return err
-	}
-	if err := validateSchemathesisExtraArgs(effective.Schemathesis.ExtraArgs); err != nil {
-		return err
-	}
-	if err := validateCampaignName(campaignName); err != nil {
-		return err
-	}
-	if _, ok := effective.Campaigns[campaignName]; !ok {
-		return fmt.Errorf("campaign %q is not configured", campaignName)
 	}
 
 	argv := schemathesisRunCommand(effective, campaignName)
@@ -59,8 +47,31 @@ func runCampaignCommand(cmd *cobra.Command, configPath string, campaignName stri
 	return nil
 }
 
+func resolveCampaign(cmd *cobra.Command, configPath string, campaignName string, options configOverrideOptions) (config.Config, config.Campaign, error) {
+	effective, err := config.Load(configPath)
+	if err != nil {
+		return config.Config{}, config.Campaign{}, err
+	}
+	applyConfigOverrides(cmd, &effective, options)
+	if err := effective.Validate(); err != nil {
+		return config.Config{}, config.Campaign{}, err
+	}
+	if err := validateSchemathesisExtraArgs(effective.Schemathesis.ExtraArgs); err != nil {
+		return config.Config{}, config.Campaign{}, err
+	}
+	if err := validateCampaignName(campaignName); err != nil {
+		return config.Config{}, config.Campaign{}, err
+	}
+	campaign, ok := effective.Campaigns[campaignName]
+	if !ok {
+		return config.Config{}, config.Campaign{}, fmt.Errorf("campaign %q is not configured", campaignName)
+	}
+
+	return effective, campaign, nil
+}
+
 func schemathesisRunCommand(effective config.Config, campaignName string) []string {
-	reportDir := filepath.Join(effective.ReportsDir, campaignName)
+	reportDir := campaignReportDir(effective, campaignName)
 
 	argv := []string{
 		"st",
@@ -75,10 +86,13 @@ func schemathesisRunCommand(effective config.Config, campaignName string) []stri
 	}
 	if effective.Schemathesis.GenerationDeterministic {
 		argv = append(argv, "--generation-deterministic")
+	} else {
+		argv = append(argv,
+			"--generation-database",
+			effective.Schemathesis.GenerationDatabase,
+		)
 	}
 	argv = append(argv,
-		"--generation-database",
-		effective.Schemathesis.GenerationDatabase,
 		"--report",
 		strings.Join(effective.Schemathesis.Reports, ","),
 		"--report-junit-path",
@@ -97,6 +111,10 @@ func schemathesisRunCommand(effective config.Config, campaignName string) []stri
 	argv = append(argv, effective.Schemathesis.ExtraArgs...)
 
 	return argv
+}
+
+func campaignReportDir(effective config.Config, campaignName string) string {
+	return filepath.Join(effective.ReportsDir, campaignName)
 }
 
 var campaignNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
