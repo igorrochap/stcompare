@@ -6,9 +6,10 @@ keeping schemas, targets, deterministic generation settings, reports, and named
 campaigns in a version-controlled YAML file.
 
 The current implementation provides the configuration foundation and campaign
-command preview: initialize, load, validate, override, inspect an effective
-configuration, and print the Schemathesis command for a named campaign. Campaign
-execution and baseline replay commands are not implemented yet.
+execution flow: initialize, load, validate, override, inspect an effective
+configuration, print the Schemathesis command for a named campaign, and run a
+named campaign with isolated reports plus metadata. Baseline replay commands are
+not implemented yet.
 
 ## Requirements
 
@@ -141,7 +142,6 @@ st run openapi.json \
   --workers 1 \
   --seed 12345 \
   --generation-deterministic \
-  --generation-database none \
   --report junit,vcr,har,ndjson \
   --report-junit-path reports/baseline/junit.xml \
   --report-vcr-path reports/baseline/campaign.vcr.yaml \
@@ -170,6 +170,60 @@ the generated command. Report format and report path options are owned by
 `stcompare`; extra arguments cannot override `--report`,
 `--report-junit-path`, `--report-vcr-path`, `--report-har-path`, or
 `--report-ndjson-path`.
+
+## Run Campaigns
+
+Execute a configured campaign:
+
+```sh
+stcompare campaign run baseline
+```
+
+The command runs the same generated `st run ...` argv shown by
+`stcompare campaign command <campaign>`. Reports are written under the isolated
+campaign directory:
+
+```text
+reports/baseline/
+  junit.xml
+  campaign.vcr.yaml
+  campaign.har.json
+  campaign.ndjson
+  metadata.yaml
+```
+
+By default, `stcompare` executes `st` directly. Shell aliases are not visible to
+non-interactive processes. If `st` is not installed but `uvx` is available,
+`stcompare` falls back to `uvx schemathesis`. To use another executable, set:
+
+```sh
+STCOMPARE_SCHEMATHESIS_COMMAND="uvx schemathesis" stcompare campaign run baseline
+```
+
+`metadata.yaml` records the effective command, `stcompare` version,
+Schemathesis version, timestamp, config path, campaign name and kind, effective
+settings, and command-line overrides.
+
+Existing campaign report directories are protected by default:
+
+```sh
+stcompare campaign run baseline
+# campaign report directory reports/baseline already exists; use --force to overwrite
+```
+
+Use `--force` only when replacing the outputs for that named campaign is
+intentional:
+
+```sh
+stcompare campaign run baseline --force
+```
+
+Schemathesis exits with status `1` when it finds API failures; `stcompare`
+treats that as a completed campaign and keeps the generated reports plus
+metadata. When Schemathesis aborts before completing the campaign, `stcompare`
+removes a newly-created campaign directory and does not write success metadata.
+Forced runs against an existing directory leave existing files in place if
+Schemathesis aborts.
 
 ## Development
 
