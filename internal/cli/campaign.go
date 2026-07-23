@@ -16,6 +16,7 @@ func newCampaignCommand(rootOpts *rootOptions) *cobra.Command {
 	campaignCommand := &cobra.Command{Use: "campaign"}
 
 	campaignCommand.AddCommand(newCampaignCommandCommand(rootOpts))
+	campaignCommand.AddCommand(newCampaignCompareCommand(rootOpts))
 	campaignCommand.AddCommand(newCampaignRunCommand(rootOpts))
 
 	return campaignCommand
