@@ -76,6 +76,10 @@ func runConfigShow(cmd *cobra.Command, options configShowOptions) error {
 		effective.Schemathesis.Workers = options.workers
 	}
 
+	if err := effective.Validate(); err != nil {
+		return err
+	}
+
 	if err := yaml.NewEncoder(cmd.OutOrStdout()).Encode(effective); err != nil {
 		return fmt.Errorf("encode effective config: %w", err)
 	}

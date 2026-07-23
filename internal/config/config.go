@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +32,14 @@ type SchemathesisConfig struct {
 
 type Campaign struct {
 	Kind string `yaml:"kind"`
+}
+
+func (c Config) Validate() error {
+	if strings.TrimSpace(c.Schema) == "" {
+		return errors.New("schema is required")
+	}
+
+	return nil
 }
 
 func Default() Config {
