@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -122,5 +123,40 @@ func TestConfigShowRejectsMissingSchemaBeforeOutput(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("config show outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigShowLoadsExplicitConfigPath(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/explicit-path.yaml")
+	if err != nil {
+		t.Fatalf("read explicit-path config: %v", err)
+	}
+
+	var want any
+	if err := yaml.Unmarshal(fixture, &want); err != nil {
+		t.Fatalf("decode expected config: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "custom.yaml")
+	if err := os.WriteFile(configPath, fixture, 0o644); err != nil {
+		t.Fatalf("write explicit config: %v", err)
+	}
+	t.Chdir(t.TempDir())
+
+	var output bytes.Buffer
+	root := cli.NewRootCommand()
+	root.SetOut(&output)
+	root.SetArgs([]string{"--config", configPath, "config", "show"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute config show: %v", err)
+	}
+
+	var got any
+	if err := yaml.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("decode explicit config output: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("explicit config output = %#v, want %#v", got, want)
 	}
 }

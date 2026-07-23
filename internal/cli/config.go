@@ -9,11 +9,11 @@ import (
 	"stcompare/internal/config"
 )
 
-func newConfigCommand() *cobra.Command {
+func newConfigCommand(rootOpts *rootOptions) *cobra.Command {
 	configCommand := &cobra.Command{Use: "config"}
 
 	configCommand.AddCommand(newConfigInitCommand())
-	configCommand.AddCommand(newConfigShowCommand())
+	configCommand.AddCommand(newConfigShowCommand(rootOpts))
 
 	return configCommand
 }
@@ -37,12 +37,12 @@ type configShowOptions struct {
 	workers    int
 }
 
-func newConfigShowCommand() *cobra.Command {
+func newConfigShowCommand(rootOpts *rootOptions) *cobra.Command {
 	options := configShowOptions{}
 	command := &cobra.Command{
 		Use: "show",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runConfigShow(cmd, options)
+			return runConfigShow(cmd, rootOpts.configPath, options)
 		},
 	}
 	command.Flags().StringVar(&options.schema, "schema", "", "")
@@ -54,8 +54,8 @@ func newConfigShowCommand() *cobra.Command {
 	return command
 }
 
-func runConfigShow(cmd *cobra.Command, options configShowOptions) error {
-	effective, err := config.Load(config.DefaultFilename)
+func runConfigShow(cmd *cobra.Command, configPath string, options configShowOptions) error {
+	effective, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}

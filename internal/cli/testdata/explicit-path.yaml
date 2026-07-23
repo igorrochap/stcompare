@@ -1,0 +1,20 @@
+schema: api/explicit-openapi.yaml
+base_url: https://explicit.example.test
+reports_dir: explicit-reports
+schemathesis:
+  seed: 9876
+  workers: 3
+  generation_deterministic: true
+  generation_database: none
+  reports:
+    - vcr
+    - ndjson
+  output_sanitize: true
+  output_truncate: false
+  extra_args:
+    - --max-examples=50
+campaigns:
+  stable:
+    kind: baseline
+  experiment:
+    kind: candidate
