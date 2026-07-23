@@ -5,11 +5,12 @@ and candidate campaigns. Its goal is to make API comparison runs auditable by
 keeping schemas, targets, deterministic generation settings, reports, and named
 campaigns in a version-controlled YAML file.
 
-The current implementation provides the configuration foundation and campaign
-execution flow: initialize, load, validate, override, inspect an effective
-configuration, print the Schemathesis command for a named campaign, and run a
-named campaign with isolated reports plus metadata. Baseline replay commands are
-not implemented yet.
+The current implementation provides the configuration foundation, campaign
+execution flow, and first comparison replay: initialize, load, validate,
+override, inspect an effective configuration, print the Schemathesis command for
+a named campaign, run a named campaign with isolated reports plus metadata, and
+replay a baseline HAR transcript against a candidate API while recording
+candidate responses.
 
 ## Requirements
 
@@ -217,6 +218,43 @@ intentional:
 ```sh
 stcompare campaign run baseline --force
 ```
+
+## Compare Campaigns
+
+Replay the baseline HAR transcript against a candidate API:
+
+```sh
+stcompare campaign compare gpt5.6
+```
+
+The command reads the baseline transcript from:
+
+```text
+reports/baseline/campaign.har.json
+```
+
+Requests are replayed sequentially in HAR entry order against the effective
+`base_url`. Common configuration overrides are supported, so a temporary
+candidate target can be selected without editing the YAML file:
+
+```sh
+stcompare campaign compare gpt5.6 --base-url http://localhost:9090
+```
+
+Replay rewrites only the target base URL. The original request path, query
+string, and percent encoding are preserved. Semantic request headers are copied,
+while stale transport-managed headers such as `Host`, `Content-Length`,
+`Transfer-Encoding`, `Connection`, and `Accept-Encoding` are dropped or
+recomputed. Plain HAR `postData.text` request bodies are sent as recorded.
+
+Candidate responses are written in a HAR-like response log:
+
+```text
+reports/gpt5.6/replay.har.json
+```
+
+This first comparison implementation records replay responses only. Stable JSON
+and Markdown comparison reports are planned as the next reporting layer.
 
 Schemathesis exits with status `1` when it finds API failures; `stcompare`
 treats that as a completed campaign and keeps the generated reports plus
