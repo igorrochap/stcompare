@@ -1,0 +1,23 @@
+schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  seed: 12345
+  workers: 1
+  generation_deterministic: true
+  generation_database: none
+  reports:
+    - junit
+    - vcr
+    - har
+    - ndjson
+  output_sanitize: false
+  output_truncate: false
+  extra_args: []
+campaigns:
+  baseline:
+    kind: baseline
+  gpt5.6:
+    kind: candidate
+  sonnet5:
+    kind: candidate
