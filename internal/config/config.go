@@ -65,3 +65,17 @@ func WriteDefault(path string) error {
 
 	return nil
 }
+
+func Load(path string) (Config, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var loaded Config
+	if err := yaml.Unmarshal(contents, &loaded); err != nil {
+		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+
+	return loaded, nil
+}

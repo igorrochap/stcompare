@@ -1,0 +1,21 @@
+schema: overridden-openapi.json
+base_url: http://localhost:9090
+reports_dir: effective-reports
+schemathesis:
+  seed: 4242
+  workers: 8
+  generation_deterministic: false
+  generation_database: fixture-db
+  reports:
+    - junit
+    - har
+  output_sanitize: true
+  output_truncate: true
+  extra_args:
+    - --checks
+    - all
+campaigns:
+  reference:
+    kind: baseline
+  challenger:
+    kind: candidate
