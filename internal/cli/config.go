@@ -43,7 +43,7 @@ func runConfigInit(configPath string, options configInitOptions) error {
 	return config.WriteDefault(configPath)
 }
 
-type configShowOptions struct {
+type configOverrideOptions struct {
 	schema     string
 	baseURL    string
 	reportsDir string
@@ -52,28 +52,46 @@ type configShowOptions struct {
 }
 
 func newConfigShowCommand(rootOpts *rootOptions) *cobra.Command {
-	options := configShowOptions{}
+	options := configOverrideOptions{}
 	command := &cobra.Command{
 		Use: "show",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runConfigShow(cmd, rootOpts.configPath, options)
 		},
 	}
-	command.Flags().StringVar(&options.schema, "schema", "", "")
-	command.Flags().StringVar(&options.baseURL, "base-url", "", "")
-	command.Flags().StringVar(&options.reportsDir, "reports-dir", "", "")
-	command.Flags().IntVar(&options.seed, "seed", 0, "")
-	command.Flags().IntVar(&options.workers, "workers", 0, "")
+	addConfigOverrideFlags(command, &options)
 
 	return command
 }
 
-func runConfigShow(cmd *cobra.Command, configPath string, options configShowOptions) error {
+func runConfigShow(cmd *cobra.Command, configPath string, options configOverrideOptions) error {
 	effective, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 
+	applyConfigOverrides(cmd, &effective, options)
+
+	if err := effective.Validate(); err != nil {
+		return err
+	}
+
+	if err := yaml.NewEncoder(cmd.OutOrStdout()).Encode(effective); err != nil {
+		return fmt.Errorf("encode effective config: %w", err)
+	}
+
+	return nil
+}
+
+func addConfigOverrideFlags(command *cobra.Command, options *configOverrideOptions) {
+	command.Flags().StringVar(&options.schema, "schema", "", "")
+	command.Flags().StringVar(&options.baseURL, "base-url", "", "")
+	command.Flags().StringVar(&options.reportsDir, "reports-dir", "", "")
+	command.Flags().IntVar(&options.seed, "seed", 0, "")
+	command.Flags().IntVar(&options.workers, "workers", 0, "")
+}
+
+func applyConfigOverrides(cmd *cobra.Command, effective *config.Config, options configOverrideOptions) {
 	if cmd.Flags().Changed("schema") {
 		effective.Schema = options.schema
 	}
@@ -89,14 +107,4 @@ func runConfigShow(cmd *cobra.Command, configPath string, options configShowOpti
 	if cmd.Flags().Changed("workers") {
 		effective.Schemathesis.Workers = options.workers
 	}
-
-	if err := effective.Validate(); err != nil {
-		return err
-	}
-
-	if err := yaml.NewEncoder(cmd.OutOrStdout()).Encode(effective); err != nil {
-		return fmt.Errorf("encode effective config: %w", err)
-	}
-
-	return nil
 }

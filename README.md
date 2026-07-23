@@ -5,8 +5,9 @@ and candidate campaigns. Its goal is to make API comparison runs auditable by
 keeping schemas, targets, deterministic generation settings, reports, and named
 campaigns in a version-controlled YAML file.
 
-The current implementation provides the configuration foundation: initialize,
-load, validate, override, and inspect an effective configuration. Campaign
+The current implementation provides the configuration foundation and campaign
+command preview: initialize, load, validate, override, inspect an effective
+configuration, and print the Schemathesis command for a named campaign. Campaign
 execution and baseline replay commands are not implemented yet.
 
 ## Requirements
@@ -123,6 +124,52 @@ configuration must have:
 - At least one Schemathesis worker.
 - At least one campaign.
 - A `baseline` or `candidate` kind for every campaign.
+
+## Preview Campaign Commands
+
+Print the Schemathesis command for a configured campaign without running it:
+
+```sh
+stcompare campaign command baseline
+```
+
+With the default configuration, the generated command is:
+
+```sh
+st run openapi.json \
+  --url http://localhost:8080 \
+  --workers 1 \
+  --seed 12345 \
+  --generation-deterministic \
+  --generation-database none \
+  --report junit,vcr,har,ndjson \
+  --report-junit-path reports/baseline/junit.xml \
+  --report-vcr-path reports/baseline/campaign.vcr.yaml \
+  --report-har-path reports/baseline/campaign.har.json \
+  --report-ndjson-path reports/baseline/campaign.ndjson \
+  --output-sanitize false \
+  --output-truncate false
+```
+
+The campaign name must exist in the configuration and must be a safe path
+segment made from letters, numbers, dots, underscores, or hyphens.
+
+Common settings can be overridden for preview without editing the YAML file:
+
+```sh
+stcompare campaign command baseline \
+  --schema api/openapi.yaml \
+  --base-url http://localhost:9090 \
+  --reports-dir comparison-reports \
+  --seed 4242 \
+  --workers 1
+```
+
+Additional Schemathesis arguments from `schemathesis.extra_args` are appended to
+the generated command. Report format and report path options are owned by
+`stcompare`; extra arguments cannot override `--report`,
+`--report-junit-path`, `--report-vcr-path`, `--report-har-path`, or
+`--report-ndjson-path`.
 
 ## Development
 
