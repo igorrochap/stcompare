@@ -18,6 +18,7 @@ func NewRootCommand() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", config.DefaultFilename, "")
 	root.AddCommand(newConfigCommand(&options))
+	root.AddCommand(newCampaignCommand(&options))
 
 	return root
 }
