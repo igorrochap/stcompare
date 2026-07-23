@@ -18,16 +18,28 @@ func newConfigCommand(rootOpts *rootOptions) *cobra.Command {
 	return configCommand
 }
 
-func newConfigInitCommand(rootOpts *rootOptions) *cobra.Command {
-	return &cobra.Command{
-		Use: "init",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return runConfigInit(rootOpts.configPath)
-		},
-	}
+type configInitOptions struct {
+	force bool
 }
 
-func runConfigInit(configPath string) error {
+func newConfigInitCommand(rootOpts *rootOptions) *cobra.Command {
+	options := configInitOptions{}
+	command := &cobra.Command{
+		Use: "init",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigInit(rootOpts.configPath, options)
+		},
+	}
+	command.Flags().BoolVar(&options.force, "force", false, "")
+
+	return command
+}
+
+func runConfigInit(configPath string, options configInitOptions) error {
+	if options.force {
+		return config.OverwriteDefault(configPath)
+	}
+
 	return config.WriteDefault(configPath)
 }
 

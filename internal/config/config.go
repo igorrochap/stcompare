@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -38,6 +39,27 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Schema) == "" {
 		return errors.New("schema is required")
 	}
+	baseURL, err := url.Parse(c.BaseURL)
+	if err != nil || !baseURL.IsAbs() || baseURL.Host == "" ||
+		(!strings.EqualFold(baseURL.Scheme, "http") && !strings.EqualFold(baseURL.Scheme, "https")) {
+		return errors.New("base_url must be an absolute HTTP(S) URL")
+	}
+	if strings.TrimSpace(c.ReportsDir) == "" {
+		return errors.New("reports_dir is required")
+	}
+	if c.Schemathesis.Workers < 1 {
+		return errors.New("schemathesis.workers must be at least 1")
+	}
+	if len(c.Campaigns) == 0 {
+		return errors.New("at least one campaign is required")
+	}
+	for name, campaign := range c.Campaigns {
+		switch campaign.Kind {
+		case "baseline", "candidate":
+		default:
+			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
+		}
+	}
 
 	return nil
 }
@@ -69,6 +91,39 @@ func WriteDefault(path string) error {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
 
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%s already exists", path)
+	}
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+
+	if _, err := file.Write(contents); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	committed = true
+
+	return nil
+}
+
+func OverwriteDefault(path string) error {
+	contents, err := yaml.Marshal(Default())
+	if err != nil {
+		return fmt.Errorf("marshal default config: %w", err)
+	}
+
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
@@ -82,7 +137,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
 
-	var loaded Config
+	loaded := Config{Schemathesis: Default().Schemathesis}
 	if err := yaml.Unmarshal(contents, &loaded); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
 	}
