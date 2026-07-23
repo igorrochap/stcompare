@@ -12,21 +12,23 @@ import (
 func newConfigCommand(rootOpts *rootOptions) *cobra.Command {
 	configCommand := &cobra.Command{Use: "config"}
 
-	configCommand.AddCommand(newConfigInitCommand())
+	configCommand.AddCommand(newConfigInitCommand(rootOpts))
 	configCommand.AddCommand(newConfigShowCommand(rootOpts))
 
 	return configCommand
 }
 
-func newConfigInitCommand() *cobra.Command {
+func newConfigInitCommand(rootOpts *rootOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:  "init",
-		RunE: runConfigInit,
+		Use: "init",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigInit(rootOpts.configPath)
+		},
 	}
 }
 
-func runConfigInit(_ *cobra.Command, _ []string) error {
-	return config.WriteDefault(config.DefaultFilename)
+func runConfigInit(configPath string) error {
+	return config.WriteDefault(configPath)
 }
 
 type configShowOptions struct {

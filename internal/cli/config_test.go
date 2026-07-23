@@ -160,3 +160,38 @@ func TestConfigShowLoadsExplicitConfigPath(t *testing.T) {
 		t.Fatalf("explicit config output = %#v, want %#v", got, want)
 	}
 }
+
+func TestConfigInitWritesToExplicitConfigPath(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/default-config.yaml")
+	if err != nil {
+		t.Fatalf("read expected config: %v", err)
+	}
+
+	var want any
+	if err := yaml.Unmarshal(fixture, &want); err != nil {
+		t.Fatalf("decode expected config: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "custom.yaml")
+	t.Chdir(t.TempDir())
+
+	root := cli.NewRootCommand()
+	root.SetArgs([]string{"--config", configPath, "config", "init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute config init: %v", err)
+	}
+
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read explicit config: %v", err)
+	}
+
+	var got any
+	if err := yaml.Unmarshal(contents, &got); err != nil {
+		t.Fatalf("decode explicit config: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("explicit config = %#v, want %#v", got, want)
+	}
+}
