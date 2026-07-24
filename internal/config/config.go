@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -54,11 +55,24 @@ func (c Config) Validate() error {
 		return errors.New("at least one campaign is required")
 	}
 	for name, campaign := range c.Campaigns {
+		if err := ValidateCampaignName(name); err != nil {
+			return err
+		}
 		switch campaign.Kind {
 		case "baseline", "candidate":
 		default:
 			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
 		}
+	}
+
+	return nil
+}
+
+var campaignNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func ValidateCampaignName(name string) error {
+	if name == "." || name == ".." || !campaignNamePattern.MatchString(name) {
+		return fmt.Errorf("campaign name %q is invalid: use letters, numbers, dots, underscores, or hyphens", name)
 	}
 
 	return nil

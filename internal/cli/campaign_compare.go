@@ -34,19 +34,45 @@ func newCampaignCompareCommand(rootOpts *rootOptions) *cobra.Command {
 }
 
 func runCampaignCompare(cmd *cobra.Command, rootOpts *rootOptions, candidateName string, options campaignCompareOptions) error {
-	effective, _, err := resolveCampaign(cmd, rootOpts.configPath, candidateName, options.configOverrides)
+	effective, candidate, err := resolveCampaign(cmd, rootOpts.configPath, candidateName, options.configOverrides)
 	if err != nil {
 		return err
 	}
-
-	requests, err := readHARRequests(filepath.Join(effective.ReportsDir, "baseline", "campaign.har.json"))
-	if err != nil {
-		return err
+	if candidate.Kind != "candidate" {
+		return fmt.Errorf(
+			"campaign %q has kind %q: compare requires a candidate campaign",
+			candidateName,
+			candidate.Kind,
+		)
 	}
 
-	entries, err := replayHARRequests(effective.BaseURL, requests)
+	baselineName := ""
+	baselineCount := 0
+	for name, campaign := range effective.Campaigns {
+		if campaign.Kind == "baseline" {
+			baselineName = name
+			baselineCount++
+		}
+	}
+	if baselineCount != 1 {
+		return fmt.Errorf(
+			"baseline replay setup: expected exactly one baseline campaign, found %d",
+			baselineCount,
+		)
+	}
+	requests, err := readHARRequests(filepath.Join(effective.ReportsDir, baselineName, "campaign.har.json"))
 	if err != nil {
-		return err
+		return fmt.Errorf("baseline replay setup: %w", err)
+	}
+
+	httpRequests, err := newReplayHTTPRequests(effective.BaseURL, requests)
+	if err != nil {
+		return fmt.Errorf("baseline replay setup: %w", err)
+	}
+
+	entries, err := replayHARRequests(httpRequests)
+	if err != nil {
+		return fmt.Errorf("candidate API: %w", err)
 	}
 
 	replayLogPath := filepath.Join(effective.ReportsDir, candidateName, "replay.har.json")
@@ -89,7 +115,8 @@ type harHeader struct {
 }
 
 type harPostData struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	Encoding string `json:"encoding"`
 }
 
 type harResponse struct {
@@ -114,24 +141,40 @@ func readHARRequests(path string) ([]harRequest, error) {
 	}
 
 	requests := make([]harRequest, 0, len(document.Log.Entries))
-	for _, entry := range document.Log.Entries {
+	for index, entry := range document.Log.Entries {
+		if entry.Request.PostData.Encoding != "" {
+			return nil, fmt.Errorf(
+				"request %d postData encoding %q is unsupported",
+				index+1,
+				entry.Request.PostData.Encoding,
+			)
+		}
 		requests = append(requests, entry.Request)
 	}
 
 	return requests, nil
 }
 
-func replayHARRequests(baseURL string, requests []harRequest) ([]harEntry, error) {
-	client := http.Client{
-		Transport: &http.Transport{DisableCompression: true},
-	}
-	entries := make([]harEntry, 0, len(requests))
+func newReplayHTTPRequests(baseURL string, requests []harRequest) ([]*http.Request, error) {
+	httpRequests := make([]*http.Request, 0, len(requests))
 	for index, request := range requests {
 		httpRequest, err := newReplayHTTPRequest(baseURL, request)
 		if err != nil {
 			return nil, fmt.Errorf("create replay request %d: %w", index+1, err)
 		}
-		response, err := client.Do(httpRequest)
+		httpRequests = append(httpRequests, httpRequest)
+	}
+
+	return httpRequests, nil
+}
+
+func replayHARRequests(requests []*http.Request) ([]harEntry, error) {
+	client := http.Client{
+		Transport: &http.Transport{DisableCompression: true},
+	}
+	entries := make([]harEntry, 0, len(requests))
+	for index, request := range requests {
+		response, err := client.Do(request)
 		if err != nil {
 			return nil, fmt.Errorf("send replay request %d: %w", index+1, err)
 		}

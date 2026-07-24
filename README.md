@@ -227,10 +227,11 @@ Replay the baseline HAR transcript against a candidate API:
 stcompare campaign compare gpt5.6
 ```
 
-The command reads the baseline transcript from:
+The command discovers the single campaign whose kind is `baseline` and reads
+its transcript from:
 
 ```text
-reports/baseline/campaign.har.json
+<reports_dir>/<baseline-campaign>/campaign.har.json
 ```
 
 Requests are replayed sequentially in HAR entry order against the effective
@@ -246,6 +247,8 @@ string, and percent encoding are preserved. Semantic request headers are copied,
 while stale transport-managed headers such as `Host`, `Content-Length`,
 `Transfer-Encoding`, `Connection`, and `Accept-Encoding` are dropped or
 recomputed. Plain HAR `postData.text` request bodies are sent as recorded.
+Unsupported `postData.encoding` values fail during baseline setup before any
+candidate request is sent or response-log path is created.
 
 Candidate responses are written in a HAR-like response log:
 
