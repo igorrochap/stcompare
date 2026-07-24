@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -60,7 +59,7 @@ func resolveCampaign(cmd *cobra.Command, configPath string, campaignName string,
 	if err := validateSchemathesisExtraArgs(effective.Schemathesis.ExtraArgs); err != nil {
 		return config.Config{}, config.Campaign{}, err
 	}
-	if err := validateCampaignName(campaignName); err != nil {
+	if err := config.ValidateCampaignName(campaignName); err != nil {
 		return config.Config{}, config.Campaign{}, err
 	}
 	campaign, ok := effective.Campaigns[campaignName]
@@ -116,16 +115,6 @@ func schemathesisRunCommand(effective config.Config, campaignName string) []stri
 
 func campaignReportDir(effective config.Config, campaignName string) string {
 	return filepath.Join(effective.ReportsDir, campaignName)
-}
-
-var campaignNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-func validateCampaignName(name string) error {
-	if name == "." || name == ".." || !campaignNamePattern.MatchString(name) {
-		return fmt.Errorf("campaign name %q is invalid: use letters, numbers, dots, underscores, or hyphens", name)
-	}
-
-	return nil
 }
 
 func validateSchemathesisExtraArgs(extraArgs []string) error {
