@@ -43,7 +43,7 @@ type preparedComparison struct {
 func Compare(input Input, dependencies Dependencies) (Result, error) {
 	prepared, err := prepareComparison(input)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("baseline replay setup: %w", err)
 	}
 
 	replayResults, err := replayHARRequests(prepared.replayRequests, dependencies.Now)
@@ -57,12 +57,12 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 func prepareComparison(input Input) (preparedComparison, error) {
 	baselineEntries, err := readHAREntries(input.BaselineHARPath)
 	if err != nil {
-		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, err
 	}
 
 	problemCount, err := readJUnitProblemCount(input.BaselineJUnitPath)
 	if err != nil {
-		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, err
 	}
 	var problemCountSource *string
 	if problemCount != nil {
@@ -75,7 +75,7 @@ func prepareComparison(input Input) (preparedComparison, error) {
 	}
 	httpRequests, err := newReplayHTTPRequests(input.CandidateBaseURL, requests)
 	if err != nil {
-		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, err
 	}
 
 	return preparedComparison{
