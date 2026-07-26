@@ -2,6 +2,7 @@ package comparison
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -31,16 +32,49 @@ type Result struct {
 	MarkdownReportPath string
 }
 
+type preparedComparison struct {
+	baselineEntries            []harEntry
+	baselineProblemCount       *int
+	baselineProblemCountSource *string
+	replayRequests             []*http.Request
+}
+
+type comparisonArtifacts struct {
+	interactionCount   int
+	replayLogPath      string
+	jsonReportPath     string
+	markdownReportPath string
+}
+
 // Compare replays the baseline interactions and writes the comparison artifacts.
 func Compare(input Input, dependencies Dependencies) (Result, error) {
+	prepared, err := prepareComparison(input)
+	if err != nil {
+		return Result{}, err
+	}
+
+	replayResults, err := replayComparison(prepared, dependencies)
+	if err != nil {
+		return Result{}, err
+	}
+
+	artifacts, err := persistComparisonArtifacts(input, prepared, replayResults)
+	if err != nil {
+		return Result{}, err
+	}
+
+	return newComparisonResult(artifacts), nil
+}
+
+func prepareComparison(input Input) (preparedComparison, error) {
 	baselineEntries, err := readHAREntries(input.BaselineHARPath)
 	if err != nil {
-		return Result{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
 	}
 
 	problemCount, err := readJUnitProblemCount(input.BaselineJUnitPath)
 	if err != nil {
-		return Result{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
 	}
 	var problemCountSource *string
 	if problemCount != nil {
@@ -53,14 +87,35 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 	}
 	httpRequests, err := newReplayHTTPRequests(input.CandidateBaseURL, requests)
 	if err != nil {
-		return Result{}, fmt.Errorf("baseline replay setup: %w", err)
+		return preparedComparison{}, fmt.Errorf("baseline replay setup: %w", err)
 	}
 
-	replayResults, err := replayHARRequests(httpRequests, dependencies.Now)
+	return preparedComparison{
+		baselineEntries:            baselineEntries,
+		baselineProblemCount:       problemCount,
+		baselineProblemCountSource: problemCountSource,
+		replayRequests:             httpRequests,
+	}, nil
+}
+
+func replayComparison(
+	prepared preparedComparison,
+	dependencies Dependencies,
+) ([]replayResult, error) {
+	replayResults, err := replayHARRequests(prepared.replayRequests, dependencies.Now)
 	if err != nil {
-		return Result{}, fmt.Errorf("candidate API: %w", err)
+		return nil, fmt.Errorf("candidate API: %w", err)
 	}
 
+	return replayResults, nil
+}
+
+func persistComparisonArtifacts(
+	input Input,
+	prepared preparedComparison,
+	replayResults []replayResult,
+) (comparisonArtifacts, error) {
+	baselineEntries := prepared.baselineEntries
 	interactions := newReportInteractions(baselineEntries, replayResults)
 
 	replayEntries := make([]harEntry, 0, len(replayResults))
@@ -69,35 +124,44 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 	}
 	replayLogPath := filepath.Join(input.OutputDir, "replay.har.json")
 	if err := os.MkdirAll(filepath.Dir(replayLogPath), 0o755); err != nil {
-		return Result{}, fmt.Errorf("create replay response log directory: %w", err)
+		return comparisonArtifacts{}, fmt.Errorf("create replay response log directory: %w", err)
 	}
 	if err := writeReplayResponseLog(replayLogPath, replayEntries); err != nil {
-		return Result{}, err
+		return comparisonArtifacts{}, err
 	}
 
 	report := newReport(reportInput{
 		BaselineCampaign:           input.BaselineCampaign,
-		BaselineProblemCount:       problemCount,
-		BaselineProblemCountSource: problemCountSource,
+		BaselineProblemCount:       prepared.baselineProblemCount,
+		BaselineProblemCountSource: prepared.baselineProblemCountSource,
 		CandidateCampaign:          input.CandidateCampaign,
 		CandidateBaseURL:           input.CandidateBaseURL,
 		Interactions:               interactions,
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {
-		return Result{}, err
+		return comparisonArtifacts{}, err
 	}
 	markdownReportPath := filepath.Join(input.OutputDir, "comparison.md")
 	if err := writeMarkdownReport(markdownReportPath, report); err != nil {
-		return Result{}, err
+		return comparisonArtifacts{}, err
 	}
 
-	return Result{
-		InteractionCount:   len(replayEntries),
-		ReplayLogPath:      replayLogPath,
-		JSONReportPath:     jsonReportPath,
-		MarkdownReportPath: markdownReportPath,
+	return comparisonArtifacts{
+		interactionCount:   len(replayEntries),
+		replayLogPath:      replayLogPath,
+		jsonReportPath:     jsonReportPath,
+		markdownReportPath: markdownReportPath,
 	}, nil
+}
+
+func newComparisonResult(artifacts comparisonArtifacts) Result {
+	return Result{
+		InteractionCount:   artifacts.interactionCount,
+		ReplayLogPath:      artifacts.replayLogPath,
+		JSONReportPath:     artifacts.jsonReportPath,
+		MarkdownReportPath: artifacts.markdownReportPath,
+	}
 }
 
 func newReportInteractions(
