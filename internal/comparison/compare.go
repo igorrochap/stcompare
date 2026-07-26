@@ -46,9 +46,9 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 		return Result{}, err
 	}
 
-	replayResults, err := replayComparison(prepared, dependencies)
+	replayResults, err := replayHARRequests(prepared.replayRequests, dependencies.Now)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("candidate API: %w", err)
 	}
 
 	return persistComparisonArtifacts(input, prepared, replayResults)
@@ -84,18 +84,6 @@ func prepareComparison(input Input) (preparedComparison, error) {
 		baselineProblemCountSource: problemCountSource,
 		replayRequests:             httpRequests,
 	}, nil
-}
-
-func replayComparison(
-	prepared preparedComparison,
-	dependencies Dependencies,
-) ([]replayResult, error) {
-	replayResults, err := replayHARRequests(prepared.replayRequests, dependencies.Now)
-	if err != nil {
-		return nil, fmt.Errorf("candidate API: %w", err)
-	}
-
-	return replayResults, nil
 }
 
 func persistComparisonArtifacts(
