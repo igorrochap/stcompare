@@ -250,14 +250,45 @@ recomputed. Plain HAR `postData.text` request bodies are sent as recorded.
 Unsupported `postData.encoding` values fail during baseline setup before any
 candidate request is sent or response-log path is created.
 
-Candidate responses are written in a HAR-like response log:
+Candidate responses and comparison reports are written under the candidate
+campaign directory:
 
 ```text
 reports/gpt5.6/replay.har.json
+reports/gpt5.6/comparison.json
+reports/gpt5.6/comparison.md
 ```
 
-This first comparison implementation records replay responses only. Stable JSON
-and Markdown comparison reports are planned as the next reporting layer.
+`comparison.json` uses a versioned, stable schema for automation, while
+`comparison.md` presents the same evidence for review. Both reports include:
+
+- Total replayed interactions.
+- Baseline Schemathesis problem counts from individual JUnit `failure` and
+  `error` elements.
+- Candidate latency per interaction plus minimum, maximum, and average latency
+  in milliseconds.
+- Exact status-code transition counts such as `200 -> 404`.
+- A disclosure that problem-level outcomes are unavailable until Schemathesis
+  problems are correlated with replay interactions.
+- An `interactions` entry for every replayed interaction with the original
+  request, candidate target URL, baseline response when recorded, candidate
+  response, and bodies and headers needed to reproduce the request.
+
+When the baseline JUnit report is absent, the problem count is explicitly
+unknown rather than inferred from HTTP status codes. A malformed present JUnit
+report fails comparison setup before candidate traffic begins. Likewise, a HAR
+entry without a recorded baseline response is reported as unknown and is not
+included in exact status-transition counts.
+
+These first-pass reports preserve raw evidence and transitions. Semantic outcome
+labels such as fixed, regressed, or still failing are not inferred yet.
+
+The current `interactions` collection is therefore raw interaction evidence and
+can include healthy unchanged transitions such as `200 -> 200`. It is not yet
+the problem-centric result set used to judge fix effectiveness. The planned
+classification layer will retain all traffic in `replay.har.json` while limiting
+detailed comparison findings to baseline Schemathesis problems, candidate
+regressions, and material or inconclusive changes.
 
 Schemathesis exits with status `1` when it finds API failures; `stcompare`
 treats that as a completed campaign and keeps the generated reports plus
