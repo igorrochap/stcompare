@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+type replayResult struct {
+	Entry     harEntry
+	TargetURL string
+	LatencyMS int
+}
+
 func newReplayHTTPRequests(baseURL string, requests []harRequest) ([]*http.Request, error) {
 	httpRequests := make([]*http.Request, 0, len(requests))
 	for index, request := range requests {

@@ -45,12 +45,6 @@ type harContent struct {
 	Text string `json:"text"`
 }
 
-type replayResult struct {
-	Entry     harEntry
-	TargetURL string
-	LatencyMS int
-}
-
 func sortedHARHeaders(headers []harHeader) []harHeader {
 	sorted := append([]harHeader(nil), headers...)
 	sort.Slice(sorted, func(i, j int) bool {
