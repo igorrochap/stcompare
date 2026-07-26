@@ -172,12 +172,8 @@ func responseLogHeaderValue(headers []responseLogHeader, name string) string {
 func serverHost(t *testing.T, rawURL string) string {
 	t.Helper()
 
-	host, _, err := net.SplitHostPort(rawURL[len("http://"):])
-	if err != nil {
+	if _, _, err := net.SplitHostPort(rawURL[len("http://"):]); err != nil {
 		t.Fatalf("parse server host: %v", err)
-	}
-	if host == "127.0.0.1" {
-		return rawURL[len("http://"):]
 	}
 
 	return rawURL[len("http://"):]
