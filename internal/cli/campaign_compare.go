@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"stcompare/internal/comparison"
+	"stcompare/internal/config"
 )
 
 type campaignCompareOptions struct {
@@ -42,46 +43,17 @@ func runCampaignCompare(
 	if err != nil {
 		return err
 	}
-	if candidate.Kind != "candidate" {
-		return fmt.Errorf(
-			"campaign %q has kind %q: compare requires a candidate campaign",
-			candidateName,
-			candidate.Kind,
-		)
+	if err := requireCandidateCampaign(candidateName, candidate); err != nil {
+		return err
 	}
 
-	baselineName := ""
-	baselineCount := 0
-	for name, campaign := range effective.Campaigns {
-		if campaign.Kind == "baseline" {
-			baselineName = name
-			baselineCount++
-		}
-	}
-	if baselineCount != 1 {
-		return fmt.Errorf(
-			"baseline replay setup: expected exactly one baseline campaign, found %d",
-			baselineCount,
-		)
+	baselineName, err := baselineCampaignName(effective)
+	if err != nil {
+		return err
 	}
 
 	result, err := comparison.Compare(
-		comparison.Input{
-			BaselineCampaign: baselineName,
-			BaselineHARPath: filepath.Join(
-				effective.ReportsDir,
-				baselineName,
-				"campaign.har.json",
-			),
-			BaselineJUnitPath: filepath.Join(
-				effective.ReportsDir,
-				baselineName,
-				"junit.xml",
-			),
-			CandidateCampaign: candidateName,
-			CandidateBaseURL:  effective.BaseURL,
-			OutputDir:         filepath.Join(effective.ReportsDir, candidateName),
-		},
+		campaignComparisonInput(effective, baselineName, candidateName),
 		comparison.Dependencies{Now: rootOpts.deps.Now},
 	)
 	if err != nil {
@@ -93,4 +65,53 @@ func runCampaignCompare(
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.MarkdownReportPath)
 
 	return nil
+}
+
+func requireCandidateCampaign(candidateName string, campaign config.Campaign) error {
+	if campaign.Kind != "candidate" {
+		return fmt.Errorf(
+			"campaign %q has kind %q: compare requires a candidate campaign",
+			candidateName,
+			campaign.Kind,
+		)
+	}
+
+	return nil
+}
+
+func baselineCampaignName(effective config.Config) (string, error) {
+	baselineName := ""
+	baselineCount := 0
+	for name, campaign := range effective.Campaigns {
+		if campaign.Kind == "baseline" {
+			baselineName = name
+			baselineCount++
+		}
+	}
+	if baselineCount != 1 {
+		return "", fmt.Errorf(
+			"baseline replay setup: expected exactly one baseline campaign, found %d",
+			baselineCount,
+		)
+	}
+
+	return baselineName, nil
+}
+
+func campaignComparisonInput(
+	effective config.Config,
+	baselineName string,
+	candidateName string,
+) comparison.Input {
+	baselineReportDir := campaignReportDir(effective, baselineName)
+	candidateReportDir := campaignReportDir(effective, candidateName)
+
+	return comparison.Input{
+		BaselineCampaign:  baselineName,
+		BaselineHARPath:   filepath.Join(baselineReportDir, "campaign.har.json"),
+		BaselineJUnitPath: filepath.Join(baselineReportDir, "junit.xml"),
+		CandidateCampaign: candidateName,
+		CandidateBaseURL:  effective.BaseURL,
+		OutputDir:         candidateReportDir,
+	}
 }
