@@ -5,11 +5,11 @@ import "sort"
 const reportSchemaVersion = "1"
 
 type report struct {
-	SchemaVersion string          `json:"schema_version"`
-	Baseline      reportCampaign  `json:"baseline"`
-	Candidate     reportCandidate `json:"candidate"`
-	Summary       reportSummary   `json:"summary"`
-	Findings      []reportFinding `json:"findings"`
+	SchemaVersion string                      `json:"schema_version"`
+	Baseline      reportCampaign              `json:"baseline"`
+	Candidate     reportCandidate             `json:"candidate"`
+	Summary       reportSummary               `json:"summary"`
+	Interactions  []reportInteractionEvidence `json:"interactions"`
 }
 
 type reportCampaign struct {
@@ -46,7 +46,7 @@ type statusTransitionCount struct {
 	Count     int `json:"count"`
 }
 
-type reportFinding struct {
+type reportInteractionEvidence struct {
 	Interaction       int              `json:"interaction"`
 	Request           reportRequest    `json:"request"`
 	TargetURL         string           `json:"target_url"`
@@ -84,7 +84,7 @@ type reportInteraction struct {
 }
 
 func newReport(input reportInput) report {
-	findings := newReportFindings(input.Interactions)
+	interactions := newInteractionEvidence(input.Interactions)
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
@@ -97,45 +97,48 @@ func newReport(input reportInput) report {
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Summary:  newReportSummary(findings),
-		Findings: findings,
+		Summary:      newReportSummary(input.Interactions, interactions),
+		Interactions: interactions,
 	}
 }
 
-func newReportSummary(findings []reportFinding) reportSummary {
+func newReportSummary(
+	reportInteractions []reportInteraction,
+	evidence []reportInteractionEvidence,
+) reportSummary {
 	return reportSummary{
-		InteractionCount:  len(findings),
-		LatencyMS:         newReportLatency(findings),
-		StatusTransitions: newStatusTransitionCounts(findings),
+		InteractionCount:  len(reportInteractions),
+		LatencyMS:         newReportLatency(evidence),
+		StatusTransitions: newStatusTransitionCounts(evidence),
 	}
 }
 
-func newReportLatency(findings []reportFinding) reportLatency {
+func newReportLatency(evidence []reportInteractionEvidence) reportLatency {
 	var latency reportLatency
 	latencySum := 0
-	for index, finding := range findings {
-		latencySum += finding.LatencyMS
-		if index == 0 || finding.LatencyMS < latency.Minimum {
-			latency.Minimum = finding.LatencyMS
+	for index, interaction := range evidence {
+		latencySum += interaction.LatencyMS
+		if index == 0 || interaction.LatencyMS < latency.Minimum {
+			latency.Minimum = interaction.LatencyMS
 		}
-		if index == 0 || finding.LatencyMS > latency.Maximum {
-			latency.Maximum = finding.LatencyMS
+		if index == 0 || interaction.LatencyMS > latency.Maximum {
+			latency.Maximum = interaction.LatencyMS
 		}
 	}
-	if len(findings) != 0 {
-		latency.Average = latencySum / len(findings)
+	if len(evidence) != 0 {
+		latency.Average = latencySum / len(evidence)
 	}
 
 	return latency
 }
 
-func newStatusTransitionCounts(findings []reportFinding) []statusTransitionCount {
-	transitionCounts := make(map[[2]int]int, len(findings))
-	for _, finding := range findings {
-		if finding.StatusTransition.Baseline != nil {
+func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTransitionCount {
+	transitionCounts := make(map[[2]int]int, len(evidence))
+	for _, interaction := range evidence {
+		if interaction.StatusTransition.Baseline != nil {
 			transitionCounts[[2]int{
-				*finding.StatusTransition.Baseline,
-				finding.StatusTransition.Candidate,
+				*interaction.StatusTransition.Baseline,
+				interaction.StatusTransition.Candidate,
 			}]++
 		}
 	}
@@ -163,23 +166,23 @@ func newStatusTransitionCounts(findings []reportFinding) []statusTransitionCount
 	return transitions
 }
 
-func newReportFindings(interactions []reportInteraction) []reportFinding {
-	findings := make([]reportFinding, 0, len(interactions))
+func newInteractionEvidence(interactions []reportInteraction) []reportInteractionEvidence {
+	evidence := make([]reportInteractionEvidence, 0, len(interactions))
 	for index, interaction := range interactions {
-		findings = append(
-			findings,
-			newReportFinding(index+1, interaction.Baseline, interaction.Replay),
+		evidence = append(
+			evidence,
+			newReportInteractionEvidence(index+1, interaction.Baseline, interaction.Replay),
 		)
 	}
 
-	return findings
+	return evidence
 }
 
-func newReportFinding(
+func newReportInteractionEvidence(
 	interaction int,
 	baselineEntry harEntry,
 	replay replayResult,
-) reportFinding {
+) reportInteractionEvidence {
 	candidateResponse := replay.Entry.Response
 	transition := statusTransition{
 		Candidate: candidateResponse.Status,
@@ -195,7 +198,7 @@ func newReportFinding(
 		}
 	}
 
-	return reportFinding{
+	return reportInteractionEvidence{
 		Interaction: interaction,
 		Request: reportRequest{
 			Method:  baselineEntry.Request.Method,

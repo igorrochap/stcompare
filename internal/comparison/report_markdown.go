@@ -10,10 +10,10 @@ func renderMarkdown(document report) string {
 	var output strings.Builder
 	output.WriteString("# Campaign comparison\n\n")
 	writeMarkdownSummary(&output, document)
-	output.WriteString("\n## Findings\n")
+	output.WriteString("\n## Interaction evidence\n")
 
-	for _, finding := range document.Findings {
-		writeMarkdownFinding(&output, finding)
+	for _, interaction := range document.Interactions {
+		writeMarkdownInteraction(&output, interaction)
 	}
 
 	return output.String()
@@ -36,27 +36,30 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Candidate base URL: `%s`\n", document.Candidate.BaseURL)
 }
 
-func writeMarkdownFinding(output *strings.Builder, finding reportFinding) {
+func writeMarkdownInteraction(
+	output *strings.Builder,
+	interaction reportInteractionEvidence,
+) {
 	fmt.Fprintf(
 		output,
 		"\n### Interaction %d: `%s %s`\n\n",
-		finding.Interaction,
-		finding.Request.Method,
-		finding.Request.URL,
+		interaction.Interaction,
+		interaction.Request.Method,
+		interaction.Request.URL,
 	)
-	fmt.Fprintf(output, "- Candidate target: `%s`\n", finding.TargetURL)
-	fmt.Fprintf(output, "- Latency: %d ms\n", finding.LatencyMS)
-	writeMarkdownStatusTransition(output, finding.StatusTransition)
+	fmt.Fprintf(output, "- Candidate target: `%s`\n", interaction.TargetURL)
+	fmt.Fprintf(output, "- Latency: %d ms\n", interaction.LatencyMS)
+	writeMarkdownStatusTransition(output, interaction.StatusTransition)
 
-	writeMarkdownRequest(output, finding.Request)
+	writeMarkdownRequest(output, interaction.Request)
 
-	if finding.BaselineResponse == nil {
+	if interaction.BaselineResponse == nil {
 		output.WriteString("\n#### Baseline response: unknown\n")
 	} else {
-		writeMarkdownResponse(output, "Baseline", *finding.BaselineResponse)
+		writeMarkdownResponse(output, "Baseline", *interaction.BaselineResponse)
 	}
 
-	writeMarkdownResponse(output, "Candidate", finding.CandidateResponse)
+	writeMarkdownResponse(output, "Candidate", interaction.CandidateResponse)
 }
 
 func writeMarkdownRequest(output *strings.Builder, request reportRequest) {

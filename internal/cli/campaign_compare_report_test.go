@@ -214,19 +214,22 @@ func TestCampaignCompareReportsUnrecordedBaselineResponseAsUnknown(t *testing.T)
 			var document unrecordedBaselineResponseJSON
 			if err := json.Unmarshal(jsonContents, &document); err != nil {
 				got.Error = err.Error()
-			} else if len(document.Findings) != 1 {
-				got.Error = fmt.Sprintf("comparison JSON findings = %d, want 1", len(document.Findings))
+			} else if len(document.Interactions) != 1 {
+				got.Error = fmt.Sprintf(
+					"comparison JSON interactions = %d, want 1",
+					len(document.Interactions),
+				)
 			} else {
-				finding := document.Findings[0]
+				interaction := document.Interactions[0]
 				got.JSONStatusTransitions = string(document.Summary.StatusTransitions)
-				got.JSONBaselineResponse = string(finding.BaselineResponse)
-				got.JSONTransitionBaseline = string(finding.StatusTransition.Baseline)
-				got.JSONTransitionCandidate = finding.StatusTransition.Candidate
-				got.JSONRequestURL = finding.Request.URL
-				got.JSONTargetURL = finding.TargetURL
-				got.JSONCandidateStatus = finding.CandidateResponse.Status
-				got.JSONCandidateBody = finding.CandidateResponse.Body
-				got.JSONLatencyMS = finding.LatencyMS
+				got.JSONBaselineResponse = string(interaction.BaselineResponse)
+				got.JSONTransitionBaseline = string(interaction.StatusTransition.Baseline)
+				got.JSONTransitionCandidate = interaction.StatusTransition.Candidate
+				got.JSONRequestURL = interaction.Request.URL
+				got.JSONTargetURL = interaction.TargetURL
+				got.JSONCandidateStatus = interaction.CandidateResponse.Status
+				got.JSONCandidateBody = interaction.CandidateResponse.Body
+				got.JSONLatencyMS = interaction.LatencyMS
 			}
 		}
 		if got.Error == "" {
@@ -391,15 +394,15 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 				{Baseline: http.StatusInternalServerError, Candidate: http.StatusOK, Count: 1},
 			},
 		},
-		Findings: []comparisonFinding{
-			expectedFirstComparisonFinding(baseURL),
-			expectedSecondComparisonFinding(baseURL),
+		Interactions: []comparisonInteractionEvidence{
+			expectedFirstComparisonInteraction(baseURL),
+			expectedSecondComparisonInteraction(baseURL),
 		},
 	}
 }
 
-func expectedFirstComparisonFinding(baseURL string) comparisonFinding {
-	return comparisonFinding{
+func expectedFirstComparisonInteraction(baseURL string) comparisonInteractionEvidence {
+	return comparisonInteractionEvidence{
 		Interaction: 1,
 		Request: comparisonRequest{
 			Method: "POST",
@@ -440,8 +443,8 @@ func expectedFirstComparisonFinding(baseURL string) comparisonFinding {
 	}
 }
 
-func expectedSecondComparisonFinding(baseURL string) comparisonFinding {
-	return comparisonFinding{
+func expectedSecondComparisonInteraction(baseURL string) comparisonInteractionEvidence {
+	return comparisonInteractionEvidence{
 		Interaction: 2,
 		Request: comparisonRequest{
 			Method: "GET",
@@ -544,7 +547,7 @@ type unrecordedBaselineResponseJSON struct {
 	Summary struct {
 		StatusTransitions json.RawMessage `json:"status_transitions"`
 	} `json:"summary"`
-	Findings []struct {
+	Interactions []struct {
 		Request struct {
 			URL string `json:"url"`
 		} `json:"request"`
@@ -559,15 +562,15 @@ type unrecordedBaselineResponseJSON struct {
 			Baseline  json.RawMessage `json:"baseline"`
 			Candidate int             `json:"candidate"`
 		} `json:"status_transition"`
-	} `json:"findings"`
+	} `json:"interactions"`
 }
 
 type comparisonReport struct {
-	SchemaVersion string              `json:"schema_version"`
-	Baseline      comparisonCampaign  `json:"baseline"`
-	Candidate     comparisonCandidate `json:"candidate"`
-	Summary       comparisonSummary   `json:"summary"`
-	Findings      []comparisonFinding `json:"findings"`
+	SchemaVersion string                          `json:"schema_version"`
+	Baseline      comparisonCampaign              `json:"baseline"`
+	Candidate     comparisonCandidate             `json:"candidate"`
+	Summary       comparisonSummary               `json:"summary"`
+	Interactions  []comparisonInteractionEvidence `json:"interactions"`
 }
 
 type comparisonCampaign struct {
@@ -599,7 +602,7 @@ type comparisonStatusTransitionCount struct {
 	Count     int `json:"count"`
 }
 
-type comparisonFinding struct {
+type comparisonInteractionEvidence struct {
 	Interaction       int                        `json:"interaction"`
 	Request           comparisonRequest          `json:"request"`
 	TargetURL         string                     `json:"target_url"`

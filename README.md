@@ -268,9 +268,9 @@ reports/gpt5.6/comparison.md
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.
-- A `findings` entry for every replayed interaction with the original request,
-  candidate target URL, baseline response when recorded, candidate response,
-  and bodies and headers needed to reproduce the request.
+- An `interactions` entry for every replayed interaction with the original
+  request, candidate target URL, baseline response when recorded, candidate
+  response, and bodies and headers needed to reproduce the request.
 
 When the baseline JUnit report is absent, the problem count is explicitly
 unknown rather than inferred from HTTP status codes. A malformed present JUnit
@@ -281,9 +281,9 @@ included in exact status-transition counts.
 These first-pass reports preserve raw evidence and transitions. Semantic outcome
 labels such as fixed, regressed, or still failing are not inferred yet.
 
-The current `findings` collection is therefore interaction-centric and can
-include healthy unchanged transitions such as `200 -> 200`. It is not yet the
-problem-centric result set used to judge fix effectiveness. The planned
+The current `interactions` collection is therefore raw interaction evidence and
+can include healthy unchanged transitions such as `200 -> 200`. It is not yet
+the problem-centric result set used to judge fix effectiveness. The planned
 classification layer will retain all traffic in `replay.har.json` while limiting
 detailed comparison findings to baseline Schemathesis problems, candidate
 regressions, and material or inconclusive changes.
