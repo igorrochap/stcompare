@@ -39,13 +39,6 @@ type preparedComparison struct {
 	replayRequests             []*http.Request
 }
 
-type comparisonArtifacts struct {
-	interactionCount   int
-	replayLogPath      string
-	jsonReportPath     string
-	markdownReportPath string
-}
-
 // Compare replays the baseline interactions and writes the comparison artifacts.
 func Compare(input Input, dependencies Dependencies) (Result, error) {
 	prepared, err := prepareComparison(input)
@@ -58,12 +51,7 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 		return Result{}, err
 	}
 
-	artifacts, err := persistComparisonArtifacts(input, prepared, replayResults)
-	if err != nil {
-		return Result{}, err
-	}
-
-	return newComparisonResult(artifacts), nil
+	return persistComparisonArtifacts(input, prepared, replayResults)
 }
 
 func prepareComparison(input Input) (preparedComparison, error) {
@@ -114,11 +102,11 @@ func persistComparisonArtifacts(
 	input Input,
 	prepared preparedComparison,
 	replayResults []replayResult,
-) (comparisonArtifacts, error) {
+) (Result, error) {
 	baselineEntries := prepared.baselineEntries
 	interactions, err := newReportInteractions(baselineEntries, replayResults)
 	if err != nil {
-		return comparisonArtifacts{}, err
+		return Result{}, err
 	}
 
 	replayEntries := make([]harEntry, 0, len(replayResults))
@@ -127,10 +115,10 @@ func persistComparisonArtifacts(
 	}
 	replayLogPath := filepath.Join(input.OutputDir, "replay.har.json")
 	if err := os.MkdirAll(filepath.Dir(replayLogPath), 0o755); err != nil {
-		return comparisonArtifacts{}, fmt.Errorf("create replay response log directory: %w", err)
+		return Result{}, fmt.Errorf("create replay response log directory: %w", err)
 	}
 	if err := writeReplayResponseLog(replayLogPath, replayEntries); err != nil {
-		return comparisonArtifacts{}, err
+		return Result{}, err
 	}
 
 	report := newReport(reportInput{
@@ -143,28 +131,19 @@ func persistComparisonArtifacts(
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {
-		return comparisonArtifacts{}, err
+		return Result{}, err
 	}
 	markdownReportPath := filepath.Join(input.OutputDir, "comparison.md")
 	if err := writeMarkdownReport(markdownReportPath, report); err != nil {
-		return comparisonArtifacts{}, err
+		return Result{}, err
 	}
 
-	return comparisonArtifacts{
-		interactionCount:   len(replayEntries),
-		replayLogPath:      replayLogPath,
-		jsonReportPath:     jsonReportPath,
-		markdownReportPath: markdownReportPath,
-	}, nil
-}
-
-func newComparisonResult(artifacts comparisonArtifacts) Result {
 	return Result{
-		InteractionCount:   artifacts.interactionCount,
-		ReplayLogPath:      artifacts.replayLogPath,
-		JSONReportPath:     artifacts.jsonReportPath,
-		MarkdownReportPath: artifacts.markdownReportPath,
-	}
+		InteractionCount:   len(replayEntries),
+		ReplayLogPath:      replayLogPath,
+		JSONReportPath:     jsonReportPath,
+		MarkdownReportPath: markdownReportPath,
+	}, nil
 }
 
 func newReportInteractions(
