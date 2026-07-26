@@ -268,6 +268,8 @@ reports/gpt5.6/comparison.md
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.
+- A disclosure that problem-level outcomes are unavailable until Schemathesis
+  problems are correlated with replay interactions.
 - An `interactions` entry for every replayed interaction with the original
   request, candidate target URL, baseline response when recorded, candidate
   response, and bodies and headers needed to reproduce the request.

@@ -2,14 +2,19 @@ package comparison
 
 import "sort"
 
-const reportSchemaVersion = "1"
+const (
+	reportSchemaVersion        = "1"
+	problemOutcomesUnavailable = "Schemathesis problems have not been correlated with replay interactions; no problem-level outcome is claimed."
+)
 
 type report struct {
-	SchemaVersion string                      `json:"schema_version"`
-	Baseline      reportCampaign              `json:"baseline"`
-	Candidate     reportCandidate             `json:"candidate"`
-	Summary       reportSummary               `json:"summary"`
-	Interactions  []reportInteractionEvidence `json:"interactions"`
+	SchemaVersion            string                      `json:"schema_version"`
+	Baseline                 reportCampaign              `json:"baseline"`
+	Candidate                reportCandidate             `json:"candidate"`
+	Summary                  reportSummary               `json:"summary"`
+	ProblemOutcomesAvailable bool                        `json:"problem_outcomes_available"`
+	ProblemOutcomesNote      string                      `json:"problem_outcomes_note"`
+	Interactions             []reportInteractionEvidence `json:"interactions"`
 }
 
 type reportCampaign struct {
@@ -97,8 +102,10 @@ func newReport(input reportInput) report {
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Summary:      newReportSummary(input.Interactions, interactions),
-		Interactions: interactions,
+		Summary:                  newReportSummary(input.Interactions, interactions),
+		ProblemOutcomesAvailable: false,
+		ProblemOutcomesNote:      problemOutcomesUnavailable,
+		Interactions:             interactions,
 	}
 }
 

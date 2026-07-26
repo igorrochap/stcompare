@@ -394,6 +394,9 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 				{Baseline: http.StatusInternalServerError, Candidate: http.StatusOK, Count: 1},
 			},
 		},
+		ProblemOutcomesAvailable: false,
+		ProblemOutcomesNote: "Schemathesis problems have not been correlated " +
+			"with replay interactions; no problem-level outcome is claimed.",
 		Interactions: []comparisonInteractionEvidence{
 			expectedFirstComparisonInteraction(baseURL),
 			expectedSecondComparisonInteraction(baseURL),
@@ -566,11 +569,13 @@ type unrecordedBaselineResponseJSON struct {
 }
 
 type comparisonReport struct {
-	SchemaVersion string                          `json:"schema_version"`
-	Baseline      comparisonCampaign              `json:"baseline"`
-	Candidate     comparisonCandidate             `json:"candidate"`
-	Summary       comparisonSummary               `json:"summary"`
-	Interactions  []comparisonInteractionEvidence `json:"interactions"`
+	SchemaVersion            string                          `json:"schema_version"`
+	Baseline                 comparisonCampaign              `json:"baseline"`
+	Candidate                comparisonCandidate             `json:"candidate"`
+	Summary                  comparisonSummary               `json:"summary"`
+	ProblemOutcomesAvailable bool                            `json:"problem_outcomes_available"`
+	ProblemOutcomesNote      string                          `json:"problem_outcomes_note"`
+	Interactions             []comparisonInteractionEvidence `json:"interactions"`
 }
 
 type comparisonCampaign struct {
