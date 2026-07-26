@@ -75,12 +75,16 @@ type reportInput struct {
 	BaselineProblemCountSource *string
 	CandidateCampaign          string
 	CandidateBaseURL           string
-	BaselineEntries            []harEntry
-	ReplayResults              []replayResult
+	Interactions               []reportInteraction
+}
+
+type reportInteraction struct {
+	Baseline harEntry
+	Replay   replayResult
 }
 
 func newReport(input reportInput) report {
-	findings := newReportFindings(input.BaselineEntries, input.ReplayResults)
+	findings := newReportFindings(input.Interactions)
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
@@ -159,15 +163,12 @@ func newStatusTransitionCounts(findings []reportFinding) []statusTransitionCount
 	return transitions
 }
 
-func newReportFindings(
-	baselineEntries []harEntry,
-	replayResults []replayResult,
-) []reportFinding {
-	findings := make([]reportFinding, 0, len(replayResults))
-	for index, replay := range replayResults {
+func newReportFindings(interactions []reportInteraction) []reportFinding {
+	findings := make([]reportFinding, 0, len(interactions))
+	for index, interaction := range interactions {
 		findings = append(
 			findings,
-			newReportFinding(index+1, baselineEntries[index], replay),
+			newReportFinding(index+1, interaction.Baseline, interaction.Replay),
 		)
 	}
 

@@ -61,6 +61,8 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 		return Result{}, fmt.Errorf("candidate API: %w", err)
 	}
 
+	interactions := newReportInteractions(baselineEntries, replayResults)
+
 	replayEntries := make([]harEntry, 0, len(replayResults))
 	for _, result := range replayResults {
 		replayEntries = append(replayEntries, result.Entry)
@@ -79,8 +81,7 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 		BaselineProblemCountSource: problemCountSource,
 		CandidateCampaign:          input.CandidateCampaign,
 		CandidateBaseURL:           input.CandidateBaseURL,
-		BaselineEntries:            baselineEntries,
-		ReplayResults:              replayResults,
+		Interactions:               interactions,
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {
@@ -97,4 +98,19 @@ func Compare(input Input, dependencies Dependencies) (Result, error) {
 		JSONReportPath:     jsonReportPath,
 		MarkdownReportPath: markdownReportPath,
 	}, nil
+}
+
+func newReportInteractions(
+	baselineEntries []harEntry,
+	replayResults []replayResult,
+) []reportInteraction {
+	interactions := make([]reportInteraction, 0, len(replayResults))
+	for index, replay := range replayResults {
+		interactions = append(interactions, reportInteraction{
+			Baseline: baselineEntries[index],
+			Replay:   replay,
+		})
+	}
+
+	return interactions
 }
