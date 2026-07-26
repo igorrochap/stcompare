@@ -29,9 +29,9 @@ type reportCandidate struct {
 }
 
 type reportSummary struct {
-	InteractionCount  int                     `json:"interaction_count"`
-	LatencyMS         reportLatency           `json:"latency_ms"`
-	StatusTransitions []statusTransitionCount `json:"status_transitions"`
+	InteractionCount  int                `json:"interaction_count"`
+	LatencyMS         reportLatency      `json:"latency_ms"`
+	StatusTransitions []statusTransition `json:"status_transitions"`
 }
 
 type reportLatency struct {
@@ -43,12 +43,7 @@ type reportLatency struct {
 type statusTransition struct {
 	Baseline  *int `json:"baseline"`
 	Candidate int  `json:"candidate"`
-}
-
-type statusTransitionCount struct {
-	Baseline  int `json:"baseline"`
-	Candidate int `json:"candidate"`
-	Count     int `json:"count"`
+	Count     int  `json:"count,omitempty"`
 }
 
 type reportInteractionEvidence struct {
@@ -139,7 +134,7 @@ func newReportLatency(evidence []reportInteractionEvidence) reportLatency {
 	return latency
 }
 
-func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTransitionCount {
+func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTransition {
 	transitionCounts := make(map[[2]int]int, len(evidence))
 	for _, interaction := range evidence {
 		if interaction.StatusTransition.Baseline != nil {
@@ -150,12 +145,13 @@ func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTra
 		}
 	}
 
-	transitions := make([]statusTransitionCount, 0, len(transitionCounts))
+	transitions := make([]statusTransition, 0, len(transitionCounts))
 	for transition, count := range transitionCounts {
+		baseline := transition[0]
 		transitions = append(
 			transitions,
-			statusTransitionCount{
-				Baseline:  transition[0],
+			statusTransition{
+				Baseline:  &baseline,
 				Candidate: transition[1],
 				Count:     count,
 			},
@@ -164,8 +160,8 @@ func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTra
 	sort.Slice(transitions, func(i, j int) bool {
 		left := transitions[i]
 		right := transitions[j]
-		if left.Baseline != right.Baseline {
-			return left.Baseline < right.Baseline
+		if *left.Baseline != *right.Baseline {
+			return *left.Baseline < *right.Baseline
 		}
 		return left.Candidate < right.Candidate
 	})

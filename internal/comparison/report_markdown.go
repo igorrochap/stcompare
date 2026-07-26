@@ -108,7 +108,7 @@ func writeMarkdownProblemCount(output *strings.Builder, baseline reportCampaign)
 
 func writeMarkdownStatusTransitions(
 	output *strings.Builder,
-	transitions []statusTransitionCount,
+	transitions []statusTransition,
 ) {
 	if len(transitions) == 0 {
 		output.WriteString("- Exact status transitions: none\n")
@@ -120,7 +120,7 @@ func writeMarkdownStatusTransitions(
 		fmt.Fprintf(
 			output,
 			"  - `%d -> %d`: %d\n",
-			transition.Baseline,
+			*transition.Baseline,
 			transition.Candidate,
 			transition.Count,
 		)
