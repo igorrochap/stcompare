@@ -15,6 +15,14 @@ type replayResult struct {
 	LatencyMS int
 }
 
+var staleReplayHeaders = []string{
+	"Host",
+	"Content-Length",
+	"Transfer-Encoding",
+	"Connection",
+	"Accept-Encoding",
+}
+
 func newReplayHTTPRequests(baseURL string, requests []harRequest) ([]*http.Request, error) {
 	httpRequests := make([]*http.Request, 0, len(requests))
 	for index, request := range requests {
@@ -111,14 +119,7 @@ func responseHeaders(headers http.Header) []harHeader {
 }
 
 func staleReplayHeader(name string) bool {
-	staleHeaders := []string{
-		"Host",
-		"Content-Length",
-		"Transfer-Encoding",
-		"Connection",
-		"Accept-Encoding",
-	}
-	for _, staleHeader := range staleHeaders {
+	for _, staleHeader := range staleReplayHeaders {
 		if strings.EqualFold(name, staleHeader) {
 			return true
 		}
