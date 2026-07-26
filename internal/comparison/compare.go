@@ -116,7 +116,10 @@ func persistComparisonArtifacts(
 	replayResults []replayResult,
 ) (comparisonArtifacts, error) {
 	baselineEntries := prepared.baselineEntries
-	interactions := newReportInteractions(baselineEntries, replayResults)
+	interactions, err := newReportInteractions(baselineEntries, replayResults)
+	if err != nil {
+		return comparisonArtifacts{}, err
+	}
 
 	replayEntries := make([]harEntry, 0, len(replayResults))
 	for _, result := range replayResults {
@@ -167,7 +170,15 @@ func newComparisonResult(artifacts comparisonArtifacts) Result {
 func newReportInteractions(
 	baselineEntries []harEntry,
 	replayResults []replayResult,
-) []reportInteraction {
+) ([]reportInteraction, error) {
+	if len(baselineEntries) != len(replayResults) {
+		return nil, fmt.Errorf(
+			"pair replay results with baseline entries: got %d replay results for %d baseline entries",
+			len(replayResults),
+			len(baselineEntries),
+		)
+	}
+
 	interactions := make([]reportInteraction, 0, len(replayResults))
 	for index, replay := range replayResults {
 		interactions = append(interactions, reportInteraction{
@@ -176,5 +187,5 @@ func newReportInteractions(
 		})
 	}
 
-	return interactions
+	return interactions, nil
 }
