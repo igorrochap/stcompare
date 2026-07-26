@@ -224,7 +224,7 @@ func TestCampaignCompareRequiresExactlyOneBaselineCampaign(t *testing.T) {
 				CandidateReportDirExists bool
 			}{
 				Error: fmt.Sprintf(
-					"baseline replay setup: expected exactly one baseline campaign, found %d",
+					"baseline campaign: expected exactly one baseline campaign, found %d",
 					test.baselineCount,
 				),
 			}
