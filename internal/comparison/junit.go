@@ -78,69 +78,80 @@ func isJUnitProblemElement(start xml.StartElement) bool {
 	return start.Name.Local == "failure" || start.Name.Local == "error"
 }
 
+type junitProblemParser struct {
+	problems          []baselineProblem
+	caseID            string
+	groupStart        int
+	activeProblem     int
+	detailLines       []string
+	commandLines      []string
+	collectingCommand bool
+}
+
 func parseJUnitProblems(body string) []baselineProblem {
-	const caseIDLabel = "Test Case ID:"
-
-	var (
-		problems          []baselineProblem
-		caseID            string
-		groupStart        int
-		activeProblem     = -1
-		detailLines       []string
-		commandLines      []string
-		collectingCommand bool
-	)
-	finalizeProblem := func() {
-		if activeProblem < 0 {
-			return
-		}
-		problems[activeProblem].Message = strings.TrimSpace(strings.Join(detailLines, "\n"))
-		activeProblem = -1
-		detailLines = nil
-	}
-	finalizeGroup := func() {
-		command := strings.TrimSpace(strings.Join(commandLines, "\n"))
-		for index := groupStart; index < len(problems); index++ {
-			problems[index].Reproduction.Command = command
-		}
-		groupStart = len(problems)
-		commandLines = nil
-		collectingCommand = false
-	}
-
+	parser := junitProblemParser{activeProblem: -1}
 	normalized := strings.ReplaceAll(body, "\r\n", "\n")
 	for _, line := range strings.Split(normalized, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if index := strings.Index(trimmed, caseIDLabel); index >= 0 {
-			finalizeProblem()
-			finalizeGroup()
-			caseID = strings.TrimSpace(trimmed[index+len(caseIDLabel):])
-			continue
-		}
-		if collectingCommand {
-			commandLines = append(commandLines, line)
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			finalizeProblem()
-			problems = append(problems, baselineProblem{
-				CheckName: strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")),
-				CaseID:    caseID,
-			})
-			activeProblem = len(problems) - 1
-			continue
-		}
-		if trimmed == "Reproduce with:" {
-			finalizeProblem()
-			collectingCommand = true
-			continue
-		}
-		if activeProblem >= 0 {
-			detailLines = append(detailLines, line)
-		}
+		parser.feed(line)
 	}
-	finalizeProblem()
-	finalizeGroup()
+	parser.finalizeProblem()
+	parser.finalizeGroup()
 
-	return problems
+	return parser.result()
+}
+
+func (p *junitProblemParser) feed(line string) {
+	const caseIDLabel = "Test Case ID:"
+
+	trimmed := strings.TrimSpace(line)
+	if index := strings.Index(trimmed, caseIDLabel); index >= 0 {
+		p.finalizeProblem()
+		p.finalizeGroup()
+		p.caseID = strings.TrimSpace(trimmed[index+len(caseIDLabel):])
+		return
+	}
+	if p.collectingCommand {
+		p.commandLines = append(p.commandLines, line)
+		return
+	}
+	if strings.HasPrefix(trimmed, "- ") {
+		p.finalizeProblem()
+		p.problems = append(p.problems, baselineProblem{
+			CheckName: strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")),
+			CaseID:    p.caseID,
+		})
+		p.activeProblem = len(p.problems) - 1
+		return
+	}
+	if trimmed == "Reproduce with:" {
+		p.finalizeProblem()
+		p.collectingCommand = true
+		return
+	}
+	if p.activeProblem >= 0 {
+		p.detailLines = append(p.detailLines, line)
+	}
+}
+
+func (p *junitProblemParser) finalizeProblem() {
+	if p.activeProblem < 0 {
+		return
+	}
+	p.problems[p.activeProblem].Message = strings.TrimSpace(strings.Join(p.detailLines, "\n"))
+	p.activeProblem = -1
+	p.detailLines = nil
+}
+
+func (p *junitProblemParser) finalizeGroup() {
+	command := strings.TrimSpace(strings.Join(p.commandLines, "\n"))
+	for index := p.groupStart; index < len(p.problems); index++ {
+		p.problems[index].Reproduction.Command = command
+	}
+	p.groupStart = len(p.problems)
+	p.commandLines = nil
+	p.collectingCommand = false
+}
+
+func (p junitProblemParser) result() []baselineProblem {
+	return p.problems
 }
