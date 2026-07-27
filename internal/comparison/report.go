@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 const (
-	reportSchemaVersion         = "2"
+	reportSchemaVersion         = "3"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -20,7 +21,7 @@ type report struct {
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
 	Problems                  []baselineProblem           `json:"problems"`
-	Interactions              []reportInteractionEvidence `json:"interactions"`
+	Findings                  []reportInteractionEvidence `json:"findings"`
 }
 
 type reportCampaign struct {
@@ -37,9 +38,27 @@ type reportCandidate struct {
 }
 
 type reportSummary struct {
-	InteractionCount  int                `json:"interaction_count"`
-	LatencyMS         reportLatency      `json:"latency_ms"`
-	StatusTransitions []statusTransition `json:"status_transitions"`
+	InteractionCount  int                    `json:"interaction_count"`
+	BaselineProblems  baselineProblemSummary `json:"baseline_problems"`
+	Traffic           trafficSummary         `json:"traffic"`
+	LatencyMS         reportLatency          `json:"latency_ms"`
+	StatusTransitions []statusTransition     `json:"status_transitions"`
+}
+
+type baselineProblemSummary struct {
+	Total        int `json:"total"`
+	Evaluable    int `json:"evaluable"`
+	Uncorrelated int `json:"uncorrelated"`
+	Fixed        int `json:"fixed"`
+	StillFailing int `json:"still_failing"`
+	Inconclusive int `json:"inconclusive"`
+}
+
+type trafficSummary struct {
+	Total            int `json:"total"`
+	SuccessUnchanged int `json:"success_unchanged"`
+	Changed          int `json:"changed"`
+	Regressed        int `json:"regressed"`
 }
 
 type reportLatency struct {
@@ -55,13 +74,14 @@ type statusTransition struct {
 }
 
 type reportInteractionEvidence struct {
-	Interaction       int              `json:"interaction"`
-	Request           reportRequest    `json:"request"`
-	TargetURL         string           `json:"target_url"`
-	BaselineResponse  *reportResponse  `json:"baseline_response"`
-	CandidateResponse reportResponse   `json:"candidate_response"`
-	LatencyMS         int              `json:"latency_ms"`
-	StatusTransition  statusTransition `json:"status_transition"`
+	Interaction       int                       `json:"interaction"`
+	Classification    interactionClassification `json:"classification,omitempty"`
+	Request           reportRequest             `json:"request"`
+	TargetURL         string                    `json:"target_url"`
+	BaselineResponse  *reportResponse           `json:"baseline_response"`
+	CandidateResponse reportResponse            `json:"candidate_response"`
+	LatencyMS         int                       `json:"latency_ms"`
+	StatusTransition  statusTransition          `json:"status_transition"`
 }
 
 type reportRequest struct {
@@ -106,9 +126,25 @@ type reportInteraction struct {
 	Replay   replayResult
 }
 
+type classifiedReport struct {
+	problems         []baselineProblem
+	interactions     []reportInteractionEvidence
+	baselineProblems baselineProblemSummary
+	traffic          trafficSummary
+}
+
+type interactionClassification string
+
+const (
+	interactionClassificationChanged          interactionClassification = "changed"
+	interactionClassificationRegressed        interactionClassification = "regressed"
+	interactionClassificationSuccessUnchanged interactionClassification = "success_unchanged"
+)
+
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
 	problemState := input.BaselineProblemEvidence.reportState()
+	classification := classifyReport(problemState.problems, interactions)
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
 
@@ -125,11 +161,11 @@ func newReport(input reportInput) report {
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Summary:                   newReportSummary(input.Interactions, interactions),
+		Summary:                   newReportSummary(input.Interactions, interactions, classification),
 		BaselineProblemsAvailable: problemState.available,
 		BaselineProblemsNote:      problemState.note,
-		Problems:                  problemState.problems,
-		Interactions:              interactions,
+		Problems:                  classification.problems,
+		Findings:                  classification.interactions,
 	}
 }
 
@@ -167,12 +203,170 @@ func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
 	return append([]baselineProblem(nil), problems...)
 }
 
+func classifyReport(
+	problems []baselineProblem,
+	interactions []reportInteractionEvidence,
+) classifiedReport {
+	classified := classifiedReport{}
+	if problems != nil {
+		classified.problems = make([]baselineProblem, len(problems))
+		copy(classified.problems, problems)
+	}
+	if interactions != nil {
+		classified.interactions = make([]reportInteractionEvidence, len(interactions))
+		copy(classified.interactions, interactions)
+	}
+	classified.baselineProblems.Total = len(classified.problems)
+	classified.traffic.Total = len(interactions)
+
+	for _, problem := range classified.problems {
+		if problem.CorrelationStatus == correlationStatusUncorrelated {
+			classified.baselineProblems.Uncorrelated++
+		}
+	}
+
+	for index := range classified.interactions {
+		interaction := &classified.interactions[index]
+		if isCandidateServerErrorRegression(classified.problems, *interaction) {
+			interaction.Classification = interactionClassificationRegressed
+			classified.traffic.Regressed++
+			continue
+		}
+		if interaction.StatusTransition.Baseline == nil {
+			interaction.Classification = interactionClassificationChanged
+			classified.traffic.Changed++
+			continue
+		}
+		if *interaction.StatusTransition.Baseline != interaction.StatusTransition.Candidate {
+			interaction.Classification = interactionClassificationChanged
+			classified.traffic.Changed++
+			continue
+		}
+		if isServerErrorStatus(interaction.CandidateResponse.Status) {
+			interaction.Classification = interactionClassificationChanged
+			classified.traffic.Changed++
+			continue
+		}
+
+		interaction.Classification = interactionClassificationSuccessUnchanged
+		classified.traffic.SuccessUnchanged++
+	}
+
+	for index := range classified.problems {
+		problem := &classified.problems[index]
+		if !isCorrelatedServerErrorProblem(*problem) {
+			continue
+		}
+		if problem.Interaction == nil || *problem.Interaction < 1 ||
+			*problem.Interaction > len(classified.interactions) {
+			continue
+		}
+		classified.baselineProblems.Evaluable++
+
+		interaction := classified.interactions[*problem.Interaction-1]
+		if isServerErrorStatus(interaction.CandidateResponse.Status) {
+			problem.Outcome = problemOutcomeStillFailing
+			classified.baselineProblems.StillFailing++
+		} else {
+			problem.Outcome = problemOutcomeInconclusive
+			classified.baselineProblems.Inconclusive++
+		}
+	}
+
+	classified.interactions = reportableInteractionFindings(
+		classified.problems,
+		classified.interactions,
+	)
+
+	return classified
+}
+
+func isCorrelatedServerErrorProblem(problem baselineProblem) bool {
+	return problem.CorrelationStatus == correlationStatusCorrelated &&
+		isServerErrorCheck(problem.CheckName)
+}
+
+func isServerErrorCheck(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "not_a_server_error", "server error":
+		return true
+	}
+
+	return false
+}
+
+func isServerErrorStatus(status int) bool {
+	return status >= 500 && status <= 599
+}
+
+func isCandidateServerErrorRegression(
+	problems []baselineProblem,
+	interaction reportInteractionEvidence,
+) bool {
+	if !isServerErrorStatus(interaction.CandidateResponse.Status) {
+		return false
+	}
+	if interaction.StatusTransition.Baseline != nil &&
+		isServerErrorStatus(*interaction.StatusTransition.Baseline) {
+		return false
+	}
+	for _, problem := range problems {
+		if problem.Interaction != nil && *problem.Interaction == interaction.Interaction &&
+			isServerErrorCheck(problem.CheckName) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func reportableInteractionFindings(
+	problems []baselineProblem,
+	interactions []reportInteractionEvidence,
+) []reportInteractionEvidence {
+	findings := make([]reportInteractionEvidence, 0, len(interactions))
+	for _, interaction := range interactions {
+		if interaction.Classification == interactionClassificationSuccessUnchanged {
+			continue
+		}
+		if isPersistentServerErrorExplainedByProblem(problems, interaction) {
+			continue
+		}
+		findings = append(findings, interaction)
+	}
+
+	return findings
+}
+
+func isPersistentServerErrorExplainedByProblem(
+	problems []baselineProblem,
+	interaction reportInteractionEvidence,
+) bool {
+	if interaction.Classification != interactionClassificationChanged ||
+		interaction.StatusTransition.Baseline == nil ||
+		*interaction.StatusTransition.Baseline != interaction.CandidateResponse.Status ||
+		!isServerErrorStatus(interaction.CandidateResponse.Status) {
+		return false
+	}
+	for _, problem := range problems {
+		if problem.Interaction != nil && *problem.Interaction == interaction.Interaction &&
+			isServerErrorCheck(problem.CheckName) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func newReportSummary(
 	reportInteractions []reportInteraction,
 	evidence []reportInteractionEvidence,
+	classification classifiedReport,
 ) reportSummary {
 	return reportSummary{
 		InteractionCount:  len(reportInteractions),
+		BaselineProblems:  classification.baselineProblems,
+		Traffic:           classification.traffic,
 		LatencyMS:         newReportLatency(evidence),
 		StatusTransitions: newStatusTransitionCounts(evidence),
 	}

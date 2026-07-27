@@ -116,6 +116,60 @@ http_interactions:
 	}
 }
 
+func TestPrepareComparisonCorrelatesRealJUnitProblemThroughRealHAR(t *testing.T) {
+	prepared, err := prepareComparison(Input{
+		BaselineHARPath:   filepath.Join("testdata", "schemathesis-matched-real.har.json"),
+		BaselineVCRPath:   filepath.Join(t.TempDir(), "missing.vcr.yaml"),
+		BaselineJUnitPath: filepath.Join("testdata", "schemathesis-matched-real.junit.xml"),
+		CandidateBaseURL:  "https://candidate.example.test",
+	})
+	if err != nil {
+		t.Fatalf("prepareComparison returned error: %v", err)
+	}
+
+	got := struct {
+		CheckName         string
+		CaseID            string
+		CorrelationStatus correlationStatus
+		Interaction       *int
+		Outcome           problemOutcome
+	}{
+		CheckName:         prepared.baselineProblemEvidence.Problems[0].CheckName,
+		CaseID:            prepared.baselineProblemEvidence.Problems[0].CaseID,
+		CorrelationStatus: prepared.baselineProblemEvidence.Problems[0].CorrelationStatus,
+		Interaction:       prepared.baselineProblemEvidence.Problems[0].Interaction,
+	}
+	document := newReport(reportInput{
+		BaselineProblemEvidence: prepared.baselineProblemEvidence,
+		Interactions: []reportInteraction{
+			{
+				Baseline: prepared.baselineEntries[0],
+				Replay: replayResult{
+					Entry: harEntry{Response: &harResponse{Status: 502}},
+				},
+			},
+		},
+	})
+	got.Outcome = document.Problems[0].Outcome
+	interaction := 1
+	want := struct {
+		CheckName         string
+		CaseID            string
+		CorrelationStatus correlationStatus
+		Interaction       *int
+		Outcome           problemOutcome
+	}{
+		CheckName:         "Server error",
+		CaseID:            "0DNKjC",
+		CorrelationStatus: correlationStatusCorrelated,
+		Interaction:       &interaction,
+		Outcome:           problemOutcomeStillFailing,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("real JUnit/HAR correlation = %#v, want %#v", got, want)
+	}
+}
+
 func TestPersistComparisonArtifactsWritesCorrelatedProblemEvidence(t *testing.T) {
 	interaction := 1
 	problem := baselineProblem{

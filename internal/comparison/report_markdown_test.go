@@ -163,3 +163,49 @@ func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T)
 		t.Fatalf("renderMarkdown missing extracted problem count:\n%s", markdown)
 	}
 }
+
+func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
+	document := report{
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:        2,
+				Evaluable:    1,
+				Uncorrelated: 1,
+				StillFailing: 1,
+			},
+			Traffic: trafficSummary{
+				Total:            3,
+				SuccessUnchanged: 1,
+				Changed:          1,
+				Regressed:        1,
+			},
+		},
+		Problems: []baselineProblem{
+			{
+				CheckName: "not_a_server_error",
+				Outcome:   problemOutcomeStillFailing,
+			},
+		},
+		Findings: []reportInteractionEvidence{
+			{
+				Interaction:    2,
+				Classification: interactionClassificationRegressed,
+			},
+		},
+	}
+
+	markdown := renderMarkdown(document)
+
+	wantLines := []string{
+		"- Baseline problem outcomes: total 2, evaluable 1, fixed 0, " +
+			"still failing 1, inconclusive 0, uncorrelated 1",
+		"- Traffic classifications: total 3, success unchanged 1, changed 1, regressed 1",
+		"- Outcome: `still_failing`",
+		"- Classification: `regressed`",
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(markdown, line) {
+			t.Fatalf("renderMarkdown missing %q:\n%s", line, markdown)
+		}
+	}
+}

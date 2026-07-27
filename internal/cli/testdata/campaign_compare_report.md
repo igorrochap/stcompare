@@ -4,6 +4,8 @@
 
 - Total interactions: 2
 - Baseline problems: 3 (source: `reports/baseline/junit.xml`)
+- Baseline problem outcomes: total 0, evaluable 0, fixed 0, still failing 0, inconclusive 0, uncorrelated 0
+- Traffic classifications: total 2, success unchanged 0, changed 2, regressed 0
 - Candidate latency: minimum 4 ms, maximum 10 ms, average 7 ms
 - Exact status transitions:
   - `200 -> 404`: 1
@@ -14,11 +16,12 @@
 
 > Baseline Schemathesis problems are unavailable: Baseline Schemathesis problems could not be extracted from structured evidence.
 
-## Interaction evidence
+## Findings
 
-### Interaction 1: `POST http://baseline.invalid/widgets?dryRun=true`
+### Finding 1: `POST http://baseline.invalid/widgets?dryRun=true`
 
 - Candidate target: `%[1]s/widgets?dryRun=true`
+- Classification: `changed`
 - Latency: 4 ms
 - Status transition: `200 -> 404`
 
@@ -70,9 +73,10 @@ Body:
 {"error":"widget not found"}
 ```
 
-### Interaction 2: `GET http://baseline.invalid/missing`
+### Finding 2: `GET http://baseline.invalid/missing`
 
 - Candidate target: `%[1]s/missing`
+- Classification: `changed`
 - Latency: 10 ms
 - Status transition: `500 -> 200`
 

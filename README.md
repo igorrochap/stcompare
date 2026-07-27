@@ -260,8 +260,8 @@ reports/gpt5.6/comparison.md
 ```
 
 `comparison.json` uses a versioned, stable schema for automation, while
-`comparison.md` presents the same evidence for review. Schema version 2 adds
-individual baseline problems and their replay-interaction correlations. The
+`comparison.md` presents the same evidence for review. Schema version 3 keeps
+Schemathesis problem outcomes separate from replay traffic classifications. The
 reports include:
 
 - Total replayed interactions.
@@ -275,14 +275,37 @@ reports include:
   problems, while `success`, `skip`, and `interrupted` remain recognized
   non-problem statuses. The two count values remain visible independently so
   extraction discrepancies are auditable.
-- Candidate latency per interaction plus minimum, maximum, and average latency
-  in milliseconds.
+- Problem outcome totals for extracted baseline Schemathesis problems:
+  `fixed`, `still_failing`, and `inconclusive`, plus separate total, evaluable,
+  and uncorrelated counts. A problem is `evaluable` when it is correlated to a
+  replay interaction and its check is one the comparison can evaluate, which
+  currently means the Schemathesis server-error check; the three outcome totals
+  always sum to the evaluable count. A correlated `not_a_server_error` problem
+  remains
+  `still_failing` when replay also returns a 5xx response. A replayed non-5xx
+  response is `inconclusive` until stronger evidence proves the relevant
+  Schemathesis behavior was exercised and fixed. The `fixed` outcome is reserved
+  for that stronger evidence; the current replay-only comparison does not infer
+  it from status changes.
+- Traffic classification totals for replay interactions: `success_unchanged`,
+  `changed`, and `regressed`. A candidate 5xx response is a `regressed` finding
+  when the baseline response was not already a server error and no corresponding
+  baseline Schemathesis problem explains it. A candidate 5xx response is never
+  counted as `success_unchanged`, so a baseline server error that persists is
+  reported as `changed` rather than as healthy traffic.
+- Candidate latency per finding plus minimum, maximum, and average in
+  milliseconds across all replayed interactions.
 - Exact status-code transition counts such as `200 -> 404`.
 - A baseline-problem availability state. Markdown shows an unavailable
   disclosure only when the JSON `baseline_problems_available` value is `false`.
-- An `interactions` entry for every replayed interaction with the original
+- A `findings` entry for every reportable traffic finding with the original
   request, candidate target URL, baseline response when recorded, candidate
-  response, and bodies and headers needed to reproduce the request.
+  response, classification, and bodies and headers needed to reproduce the
+  request. Healthy unchanged traffic is counted as `success_unchanged`, remains
+  available in `replay.har.json`, and is omitted from detailed comparison
+  findings. A persistent server error already explained by a correlated baseline
+  Schemathesis problem is likewise omitted, because that problem carries the
+  finding and its outcome; the interaction remains in `replay.har.json`.
 
 HAR remains the mandatory ordered replay transcript and the correlation anchor.
 Problems are matched to HAR entries only through the recorded
@@ -310,16 +333,10 @@ rather than being guessed onto one replay interaction.
 Likewise, a HAR entry without a recorded baseline response is reported as
 unknown and is not included in exact status-transition counts.
 
-These reports preserve correlated problem evidence and raw status transitions.
-Semantic outcome labels such as fixed, regressed, or still failing are not
-inferred yet.
-
-The current `interactions` collection is therefore raw interaction evidence and
-can include healthy unchanged transitions such as `200 -> 200`. It is not yet
-the problem-centric result set used to judge fix effectiveness. The planned
-classification layer will retain all traffic in `replay.har.json` while limiting
-detailed comparison findings to baseline Schemathesis problems, candidate
-regressions, and material or inconclusive changes.
+These reports preserve correlated problem evidence and raw status transitions
+without treating status transitions as problem outcomes. Equal HTTP status codes
+do not hide correlated baseline problems, and a status change alone never proves
+that a baseline Schemathesis problem was fixed.
 
 Schemathesis exits with status `1` when it finds API failures; `stcompare`
 treats that as a completed campaign and keeps the generated reports plus
