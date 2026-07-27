@@ -119,6 +119,27 @@ func TestRenderMarkdownMarksAmbiguousBaselineProblemsExplicitly(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownDoesNotPanicOnCorrelatedProblemWithoutInteraction(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Problems: []baselineProblem{
+			{
+				CheckName:         "status_code_conformance",
+				Message:           "Received an undocumented status code: 418",
+				EvidenceSource:    evidenceSourceVCR,
+				CaseID:            "case-42",
+				CorrelationStatus: correlationStatusCorrelated,
+			},
+		},
+	}
+
+	markdown := renderMarkdown(document)
+
+	if !strings.Contains(markdown, "- Correlation: uncorrelated") {
+		t.Fatalf("renderMarkdown missing defensive correlation fallback:\n%s", markdown)
+	}
+}
+
 func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T) {
 	aggregateCount := 3
 	aggregateSource := "junit.xml"

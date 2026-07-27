@@ -1,6 +1,11 @@
 package comparison
 
-import "sort"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+)
 
 const (
 	reportSchemaVersion         = "2"
@@ -159,19 +164,7 @@ func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
 		return nil
 	}
 
-	normalized := append([]baselineProblem(nil), problems...)
-	for index := range normalized {
-		if normalized[index].CorrelationStatus != "" {
-			continue
-		}
-		if normalized[index].Interaction != nil {
-			normalized[index].CorrelationStatus = correlationStatusCorrelated
-			continue
-		}
-		normalized[index].CorrelationStatus = correlationStatusUncorrelated
-	}
-
-	return normalized
+	return append([]baselineProblem(nil), problems...)
 }
 
 func newReportSummary(
@@ -237,6 +230,18 @@ func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTra
 	})
 
 	return transitions
+}
+
+func writeJSONReport(path string, document report) error {
+	contents, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode comparison JSON report: %w", err)
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		return fmt.Errorf("write comparison JSON report: %w", err)
+	}
+
+	return nil
 }
 
 func newInteractionEvidence(interactions []reportInteraction) []reportInteractionEvidence {
