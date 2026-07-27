@@ -51,7 +51,7 @@ func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
 		if err := decoder.DecodeElement(&body, &start); err != nil {
 			return nil, false, fmt.Errorf("decode baseline JUnit: %w", err)
 		}
-		extracted := parseJUnitFailure(body)
+		extracted := parseJUnitProblems(body)
 		if len(extracted) == 0 {
 			complete = false
 			continue
@@ -93,7 +93,7 @@ func readJUnitProblemCount(path string) (*int, error) {
 	return &count, nil
 }
 
-func parseJUnitFailure(body string) []baselineProblem {
+func parseJUnitProblems(body string) []baselineProblem {
 	const caseIDLabel = "Test Case ID:"
 
 	var (
