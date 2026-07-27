@@ -8,32 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type baselineProblem struct {
-	CheckName         string              `json:"check_name"`
-	Message           string              `json:"message"`
-	EvidenceSource    evidenceSource      `json:"evidence_source"`
-	CaseID            string              `json:"case_id"`
-	CorrelationStatus correlationStatus   `json:"correlation_status"`
-	Reproduction      problemReproduction `json:"reproduction"`
-	Interaction       *int                `json:"interaction"`
-}
-
-type correlationStatus string
-
-const (
-	correlationStatusCorrelated   correlationStatus = "correlated"
-	correlationStatusUncorrelated correlationStatus = "uncorrelated"
-	correlationStatusAmbiguous    correlationStatus = "ambiguous"
-)
-
-type problemReproduction struct {
-	Method  string      `json:"method"`
-	URL     string      `json:"url"`
-	Headers []harHeader `json:"headers"`
-	Body    string      `json:"body"`
-	Command string      `json:"command,omitempty"`
-}
-
 type vcrDocument struct {
 	HTTPInteractions []vcrInteraction `yaml:"http_interactions"`
 }

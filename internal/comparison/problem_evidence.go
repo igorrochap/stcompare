@@ -25,6 +25,32 @@ type parsedProblemEvidence struct {
 	Complete bool
 }
 
+type baselineProblem struct {
+	CheckName         string              `json:"check_name"`
+	Message           string              `json:"message"`
+	EvidenceSource    evidenceSource      `json:"evidence_source"`
+	CaseID            string              `json:"case_id"`
+	CorrelationStatus correlationStatus   `json:"correlation_status"`
+	Reproduction      problemReproduction `json:"reproduction"`
+	Interaction       *int                `json:"interaction"`
+}
+
+type correlationStatus string
+
+const (
+	correlationStatusCorrelated   correlationStatus = "correlated"
+	correlationStatusUncorrelated correlationStatus = "uncorrelated"
+	correlationStatusAmbiguous    correlationStatus = "ambiguous"
+)
+
+type problemReproduction struct {
+	Method  string      `json:"method"`
+	URL     string      `json:"url"`
+	Headers []harHeader `json:"headers"`
+	Body    string      `json:"body"`
+	Command string      `json:"command,omitempty"`
+}
+
 type checkStatus int
 
 const (
@@ -34,10 +60,9 @@ const (
 )
 
 type problemAccumulator struct {
-	source            evidenceSource
-	problems          []baselineProblem
-	unrecognized      int
-	incompleteExtract int
+	source     evidenceSource
+	problems   []baselineProblem
+	incomplete bool
 }
 
 func (a *problemAccumulator) observe(status string, build func() baselineProblem) {
@@ -45,7 +70,7 @@ func (a *problemAccumulator) observe(status string, build func() baselineProblem
 	case checkStatusFailing:
 		a.observeProblems([]baselineProblem{build()})
 	case checkStatusUnrecognized:
-		a.unrecognized++
+		a.markIncomplete()
 	}
 }
 
@@ -56,14 +81,14 @@ func (a *problemAccumulator) observeProblems(problems []baselineProblem) {
 	}
 }
 
-func (a *problemAccumulator) markIncompleteExtraction() {
-	a.incompleteExtract++
+func (a *problemAccumulator) markIncomplete() {
+	a.incomplete = true
 }
 
 func (a problemAccumulator) evidence() parsedProblemEvidence {
 	return parsedProblemEvidence{
 		Problems: a.problems,
-		Complete: a.unrecognized == 0 && a.incompleteExtract == 0,
+		Complete: !a.incomplete,
 	}
 }
 

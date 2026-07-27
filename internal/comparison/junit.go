@@ -14,7 +14,7 @@ func readJUnitProblemEvidence(path string) (parsedProblemEvidence, error) {
 	_, err := walkJUnitProblemElements(path, func(body string) {
 		extracted := parseJUnitProblems(body)
 		if len(extracted) == 0 {
-			accumulator.markIncompleteExtraction()
+			accumulator.markIncomplete()
 			return
 		}
 		accumulator.observeProblems(extracted)
