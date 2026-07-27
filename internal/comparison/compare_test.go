@@ -173,7 +173,7 @@ func TestPersistComparisonArtifactsWritesCorrelatedProblemEvidence(t *testing.T)
 		t.Fatalf("read comparison JSON report: %v", err)
 	}
 	type problemReportState struct {
-		Available bool              `json:"problem_outcomes_available"`
+		Available bool              `json:"baseline_problems_available"`
 		Problems  []baselineProblem `json:"problems"`
 	}
 	var got problemReportState

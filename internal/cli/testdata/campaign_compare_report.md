@@ -12,7 +12,7 @@
 - Candidate campaign: `gpt5.6`
 - Candidate base URL: `%[1]s`
 
-> Problem-level outcomes are unavailable: Schemathesis problems have not been correlated with replay interactions; no problem-level outcome is claimed.
+> Baseline Schemathesis problems are unavailable: Baseline Schemathesis problems could not be extracted from structured evidence.
 
 ## Interaction evidence
 

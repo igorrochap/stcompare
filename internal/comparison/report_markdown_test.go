@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-func TestRenderMarkdownOmitsUnavailableDisclosureWhenProblemOutcomesAvailable(t *testing.T) {
+func TestRenderMarkdownOmitsUnavailableDisclosureWhenBaselineProblemsAvailable(t *testing.T) {
 	document := report{
-		ProblemOutcomesAvailable: true,
-		ProblemOutcomesNote:      problemOutcomesUnavailable,
+		BaselineProblemsAvailable: true,
+		BaselineProblemsNote:      baselineProblemsUnavailable,
 	}
 
 	markdown := renderMarkdown(document)
 
-	if strings.Contains(markdown, "> Problem-level outcomes are unavailable:") {
+	if strings.Contains(markdown, "> Baseline Schemathesis problems are unavailable:") {
 		t.Fatalf("renderMarkdown included unavailable disclosure:\n%s", markdown)
 	}
 }
@@ -21,7 +21,7 @@ func TestRenderMarkdownOmitsUnavailableDisclosureWhenProblemOutcomesAvailable(t 
 func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 	interaction := 2
 	document := report{
-		ProblemOutcomesAvailable: true,
+		BaselineProblemsAvailable: true,
 		Problems: []baselineProblem{
 			{
 				CheckName:      "status_code_conformance",

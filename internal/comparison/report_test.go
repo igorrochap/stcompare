@@ -33,8 +33,8 @@ func TestNewReportPreservesUncorrelatedProblemWhenEvidenceAvailable(t *testing.T
 		Note      string
 		Problems  []baselineProblem
 	}{
-		Available: document.ProblemOutcomesAvailable,
-		Note:      document.ProblemOutcomesNote,
+		Available: document.BaselineProblemsAvailable,
+		Note:      document.BaselineProblemsNote,
 		Problems:  document.Problems,
 	}
 	want := struct {
@@ -61,7 +61,7 @@ func TestNewReportRepresentsAvailableZeroProblemEvidence(t *testing.T) {
 		Available bool
 		Problems  []baselineProblem
 	}{
-		Available: document.ProblemOutcomesAvailable,
+		Available: document.BaselineProblemsAvailable,
 		Problems:  document.Problems,
 	}
 	want := struct {

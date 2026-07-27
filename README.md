@@ -274,8 +274,8 @@ reports include:
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.
-- A problem-level availability state. Markdown shows an unavailable disclosure
-  only when the JSON `problem_outcomes_available` value is `false`.
+- A baseline-problem availability state. Markdown shows an unavailable
+  disclosure only when the JSON `baseline_problems_available` value is `false`.
 - An `interactions` entry for every replayed interaction with the original
   request, candidate target URL, baseline response when recorded, candidate
   response, and bodies and headers needed to reproduce the request.

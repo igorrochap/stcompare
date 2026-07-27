@@ -4,7 +4,7 @@ import "sort"
 
 const (
 	reportSchemaVersion        = "2"
-	problemOutcomesUnavailable = "Schemathesis problems have not been correlated with replay interactions; no problem-level outcome is claimed."
+	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
 type report struct {
@@ -12,8 +12,8 @@ type report struct {
 	Baseline                 reportCampaign              `json:"baseline"`
 	Candidate                reportCandidate             `json:"candidate"`
 	Summary                  reportSummary               `json:"summary"`
-	ProblemOutcomesAvailable bool                        `json:"problem_outcomes_available"`
-	ProblemOutcomesNote      string                      `json:"problem_outcomes_note"`
+	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
+	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
 	Problems                 []baselineProblem           `json:"problems"`
 	Interactions             []reportInteractionEvidence `json:"interactions"`
 }
@@ -97,9 +97,9 @@ func newReport(input reportInput) report {
 	if input.BaselineProblemEvidence.Available && problems == nil {
 		problems = []baselineProblem{}
 	}
-	problemOutcomesNote := problemOutcomesUnavailable
+	baselineProblemsNote := baselineProblemsUnavailable
 	if input.BaselineProblemEvidence.Available {
-		problemOutcomesNote = ""
+		baselineProblemsNote = ""
 	}
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
@@ -126,10 +126,10 @@ func newReport(input reportInput) report {
 			BaseURL:  input.CandidateBaseURL,
 		},
 		Summary:                  newReportSummary(input.Interactions, interactions),
-		ProblemOutcomesAvailable: input.BaselineProblemEvidence.Available,
-		ProblemOutcomesNote:      problemOutcomesNote,
-		Problems:                 problems,
-		Interactions:             interactions,
+		BaselineProblemsAvailable: input.BaselineProblemEvidence.Available,
+		BaselineProblemsNote:      baselineProblemsNote,
+		Problems:                  problems,
+		Interactions:              interactions,
 	}
 }
 

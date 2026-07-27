@@ -37,8 +37,8 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Baseline campaign: `%s`\n", document.Baseline.Campaign)
 	fmt.Fprintf(output, "- Candidate campaign: `%s`\n", document.Candidate.Campaign)
 	fmt.Fprintf(output, "- Candidate base URL: `%s`\n", document.Candidate.BaseURL)
-	if !document.ProblemOutcomesAvailable {
-		fmt.Fprintf(output, "\n> Problem-level outcomes are unavailable: %s\n", document.ProblemOutcomesNote)
+	if !document.BaselineProblemsAvailable {
+		fmt.Fprintf(output, "\n> Baseline Schemathesis problems are unavailable: %s\n", document.BaselineProblemsNote)
 	}
 }
 
