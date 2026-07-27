@@ -79,6 +79,58 @@ func TestCampaignCompareWritesReadableMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestCampaignCompareKeepsJSONAndMarkdownInSyncWhenBaselineProblemsAreAvailable(t *testing.T) {
+	fixture := newComparisonReportWithProblemsFixture(t)
+	root := cli.NewRootCommandWithDependencies(cli.Dependencies{Now: fixture.Now})
+	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", fixture.Server.URL})
+
+	got := availableBaselineProblemsOutcome{}
+	if err := root.Execute(); err != nil {
+		got.Error = err.Error()
+	} else {
+		jsonContents, err := os.ReadFile(filepath.Join("reports", "gpt5.6", "comparison.json"))
+		if err != nil {
+			got.Error = err.Error()
+		} else {
+			var document availableBaselineProblemsJSON
+			if err := json.Unmarshal(jsonContents, &document); err != nil {
+				got.Error = err.Error()
+			} else {
+				got.JSONAvailable = document.BaselineProblemsAvailable
+				got.JSONNote = document.BaselineProblemsNote
+				got.JSONProblemCount = len(document.Problems)
+			}
+		}
+		if got.Error == "" {
+			markdownContents, err := os.ReadFile(filepath.Join("reports", "gpt5.6", "comparison.md"))
+			if err != nil {
+				got.Error = err.Error()
+			} else {
+				markdown := string(markdownContents)
+				got.MarkdownHasUnavailableDisclosure = strings.Contains(
+					markdown,
+					"> Baseline Schemathesis problems are unavailable:",
+				)
+				got.MarkdownHasProblemSection = strings.Contains(
+					markdown,
+					"## Baseline problems",
+				)
+			}
+		}
+	}
+	want := availableBaselineProblemsOutcome{
+		JSONAvailable:                  true,
+		JSONNote:                       "",
+		JSONProblemCount:               1,
+		MarkdownHasUnavailableDisclosure: false,
+		MarkdownHasProblemSection:        true,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign compare available baseline problems outcome = %#v, want %#v", got, want)
+	}
+}
+
 func TestCampaignCompareReportsUnknownBaselineProblemsWithoutJUnit(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
 	t.Chdir(t.TempDir())
@@ -370,6 +422,56 @@ func newComparisonReportFixture(t *testing.T) comparisonReportFixture {
 	}
 }
 
+func newComparisonReportWithProblemsFixture(t *testing.T) comparisonReportFixture {
+	t.Helper()
+
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	writeBaselineHAR(t, filepath.Join("reports", "baseline", "campaign.har.json"), []harRequestFixture{
+		{
+			Method: "POST",
+			URL:    "http://baseline.invalid/widgets?dryRun=true",
+			Headers: []harHeaderFixture{
+				{Name: "X-Schemathesis-TestCaseId", Value: "case-42"},
+				{Name: "Content-Type", Value: "application/json"},
+			},
+			PostDataText:   firstRequestBody,
+			ResponseStatus: http.StatusOK,
+			ResponseHeaders: []harHeaderFixture{
+				{Name: "Content-Type", Value: "application/json"},
+			},
+			ResponseBody: firstBaselineBody,
+		},
+	})
+	writeBaselineVCR(t, filepath.Join("reports", "baseline", "campaign.vcr.yaml"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Date", fixedResponseDate)
+		response.Header().Set("Content-Type", "application/problem+json")
+		response.Header().Set("Content-Length", firstCandidateLength)
+		response.WriteHeader(http.StatusNotFound)
+		if _, err := response.Write([]byte(firstCandidateBody)); err != nil {
+			t.Fatalf("write candidate response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	clockValues := []time.Time{
+		time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+		time.Date(2026, time.January, 2, 3, 4, 5, int(4*time.Millisecond), time.UTC),
+	}
+	clockIndex := 0
+	return comparisonReportFixture{
+		Server: server,
+		Now: func() time.Time {
+			value := clockValues[clockIndex]
+			clockIndex++
+			return value
+		},
+	}
+}
+
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
 		SchemaVersion: "2",
@@ -516,6 +618,24 @@ type comparisonMarkdownOutcome struct {
 	Contents string
 }
 
+type availableBaselineProblemsOutcome struct {
+	Error                          string
+	JSONAvailable                  bool
+	JSONNote                       string
+	JSONProblemCount               int
+	MarkdownHasUnavailableDisclosure bool
+	MarkdownHasProblemSection        bool
+}
+
+type availableBaselineProblemsJSON struct {
+	BaselineProblemsAvailable bool `json:"baseline_problems_available"`
+	BaselineProblemsNote      string `json:"baseline_problems_note"`
+	Problems                  []struct {
+		CaseID      string `json:"case_id"`
+		Interaction *int   `json:"interaction"`
+	} `json:"problems"`
+}
+
 type unknownBaselineProblemsOutcome struct {
 	Error                    string
 	CandidateRequestCount    int
@@ -569,10 +689,10 @@ type unrecordedBaselineResponseJSON struct {
 }
 
 type comparisonReport struct {
-	SchemaVersion            string                          `json:"schema_version"`
-	Baseline                 comparisonCampaign              `json:"baseline"`
-	Candidate                comparisonCandidate             `json:"candidate"`
-	Summary                  comparisonSummary               `json:"summary"`
+	SchemaVersion             string                           `json:"schema_version"`
+	Baseline                  comparisonCampaign               `json:"baseline"`
+	Candidate                 comparisonCandidate              `json:"candidate"`
+	Summary                   comparisonSummary                `json:"summary"`
 	BaselineProblemsAvailable bool                            `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                          `json:"baseline_problems_note"`
 	Interactions              []comparisonInteractionEvidence `json:"interactions"`

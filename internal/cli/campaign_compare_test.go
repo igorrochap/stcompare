@@ -159,6 +159,33 @@ func writeBaselineJUnit(t *testing.T, path string) {
 	}
 }
 
+func writeBaselineVCR(t *testing.T, path string) {
+	t.Helper()
+
+	const document = `
+http_interactions:
+  - id: case-42
+    checks:
+      - name: status_code_conformance
+        status: FAILURE
+        message: "Received an undocumented status code: 418"
+    request:
+      uri: "http://baseline.invalid/widgets?dryRun=true"
+      method: POST
+      headers:
+        Content-Type:
+          - application/json
+      body:
+        string: "{\"name\":\"widget\"}"
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create baseline VCR directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
+		t.Fatalf("write baseline VCR: %v", err)
+	}
+}
+
 func responseLogHeaderValue(headers []responseLogHeader, name string) string {
 	for _, header := range headers {
 		if header.Name == name {
