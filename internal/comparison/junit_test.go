@@ -7,6 +7,83 @@ import (
 	"testing"
 )
 
+func TestReadJUnitProblemEvidenceParsesRealSchemathesisFixture(t *testing.T) {
+	got, err := readJUnitProblemEvidence(filepath.Join("testdata", "schemathesis-real.junit.xml"))
+	if err != nil {
+		t.Fatalf("readJUnitProblemEvidence returned error: %v", err)
+	}
+
+	want := []baselineProblem{
+		{
+			CheckName:      "Server error",
+			Message:        "",
+			EvidenceSource: "junit",
+			CaseID:         "9tVaJ3",
+			Reproduction: problemReproduction{
+				Command: `curl -X TRACE -H 'Content-Type: application/json' -d '{"name": ""}' http://127.0.0.1:18080/widgets`,
+			},
+		},
+		{
+			CheckName: "Unsupported methods",
+			Message: "Unsupported method TRACE returned 501, expected 405 Method Not Allowed\n\n" +
+				"    Return 405 for methods not listed in the OpenAPI spec\n\n" +
+				"[501] Not Implemented:\n\n" +
+				"    `<!DOCTYPE HTML>\n" +
+				"    <html lang=\"en\">\n" +
+				"        <head>\n" +
+				"            <meta charset=\"utf-8\">\n" +
+				"            <title>Error response</title>\n" +
+				"        </head>\n" +
+				"        <body>\n" +
+				"            <h1>Error response</h1>\n" +
+				"            <p>Error code: 501</p>\n" +
+				"            <p>Message: Unsupported method ('TRACE').</p>\n" +
+				"            <p>Error code explanation: 501 - Server does not support this operation.</p>\n" +
+				"        </body>\n" +
+				"    </html>`",
+			EvidenceSource: "junit",
+			CaseID:         "9tVaJ3",
+			Reproduction: problemReproduction{
+				Command: `curl -X TRACE -H 'Content-Type: application/json' -d '{"name": ""}' http://127.0.0.1:18080/widgets`,
+			},
+		},
+		{
+			CheckName: "Response violates schema",
+			Message: "\"name\" is a required property\n\n" +
+				"    Validated against the response schema for status code 201.\n\n" +
+				"    Schema:\n\n" +
+				"        {\n" +
+				"            \"required\": [\n" +
+				"                \"name\"\n" +
+				"            ],\n" +
+				"            \"type\": \"object\",\n" +
+				"            \"properties\": {\n" +
+				"                \"name\": {\n" +
+				"                    \"type\": \"string\"\n" +
+				"                }\n" +
+				"            }\n" +
+				"        }\n\n" +
+				"    Value:\n\n" +
+				"        {\n" +
+				"            \"unexpected\": true\n" +
+				"        }\n\n" +
+				"[201] Created:\n\n" +
+				"    `{\"unexpected\": true}`",
+			EvidenceSource: "junit",
+			CaseID:         "yYpDJG",
+			Reproduction: problemReproduction{
+				Command: `curl -X POST -H 'Content-Type: application/json' -d '{"name": ""}' http://127.0.0.1:18080/widgets`,
+			},
+		},
+	}
+	if !got.Complete {
+		t.Fatal("readJUnitProblemEvidence marked real Schemathesis fixture incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readJUnitProblemEvidence problems = %#v, want %#v", got.Problems, want)
+	}
+}
+
 func TestReadJUnitProblemCountCountsFailuresAndErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "junit.xml")
 	contents := []byte(`

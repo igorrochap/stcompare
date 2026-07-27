@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites errors="0" failures="1" skipped="0" tests="1" time="0.478192">
+  <testsuite name="schemathesis" hostname="192.168.0.15" errors="0" failures="1" skipped="0" tests="1" time="0.478192">
+    <testcase name="POST /widgets" time="0.478192">
+      <failure type="failure">1. Test Case ID: 9tVaJ3
+
+- Server error
+
+- Unsupported methods
+
+    Unsupported method TRACE returned 501, expected 405 Method Not Allowed
+
+    Return 405 for methods not listed in the OpenAPI spec
+
+[501] Not Implemented:
+
+    `&lt;!DOCTYPE HTML&gt;
+    &lt;html lang="en"&gt;
+        &lt;head&gt;
+            &lt;meta charset="utf-8"&gt;
+            &lt;title&gt;Error response&lt;/title&gt;
+        &lt;/head&gt;
+        &lt;body&gt;
+            &lt;h1&gt;Error response&lt;/h1&gt;
+            &lt;p&gt;Error code: 501&lt;/p&gt;
+            &lt;p&gt;Message: Unsupported method ('TRACE').&lt;/p&gt;
+            &lt;p&gt;Error code explanation: 501 - Server does not support this operation.&lt;/p&gt;
+        &lt;/body&gt;
+    &lt;/html&gt;`
+
+Reproduce with:
+
+    curl -X TRACE -H 'Content-Type: application/json' -d '{"name": ""}' http://127.0.0.1:18080/widgets</failure>
+      <failure type="failure">1. Test Case ID: yYpDJG
+
+- Response violates schema
+
+    "name" is a required property
+
+    Validated against the response schema for status code 201.
+
+    Schema:
+
+        {
+            "required": [
+                "name"
+            ],
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        }
+
+    Value:
+
+        {
+            "unexpected": true
+        }
+
+[201] Created:
+
+    `{"unexpected": true}`
+
+Reproduce with:
+
+    curl -X POST -H 'Content-Type: application/json' -d '{"name": ""}' http://127.0.0.1:18080/widgets</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
