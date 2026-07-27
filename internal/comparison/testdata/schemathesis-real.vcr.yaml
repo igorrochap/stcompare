@@ -1,0 +1,165 @@
+command: 'st run openapi.json --url http://127.0.0.1:18080 --workers 1 --seed 12345 --generation-deterministic --report junit,vcr,har,ndjson --report-junit-path reports/baseline/junit.xml --report-vcr-path reports/baseline/campaign.vcr.yaml --report-har-path reports/baseline/campaign.har.json --report-ndjson-path reports/baseline/campaign.ndjson --output-sanitize false --output-truncate false'
+recorded_with: 'Schemathesis 4.24.3'
+seed: 12345
+http_interactions:
+- id: 't7i8Oq'
+  status: 'FAILURE'
+  generation:
+    time: 6.669870344921947e-07
+    mode: negative
+  components:
+    body:
+      mode: 'positive'
+  phase:
+    name: 'coverage'
+    data:
+      description: "Unspecified HTTP method: TRACE"
+      location: null
+      parameter: null
+      parameter_location: null
+  recorded_at: '2026-07-27T03:02:45.165339+00:00'
+  checks:
+    - name: 'not_a_server_error'
+      status: 'FAILURE'
+      message: 'Server error'
+    - name: 'missing_required_header'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'unsupported_method'
+      status: 'FAILURE'
+      message: 'Unsupported methods'
+
+  request:
+    uri: 'http://127.0.0.1:18080/widgets'
+    method: 'TRACE'
+    headers:
+      "User-Agent":
+      - "schemathesis/4.24.3"
+      "Accept-Encoding":
+      - "gzip, deflate"
+      "Accept":
+      - "*/*"
+      "Connection":
+      - "keep-alive"
+      "X-Schemathesis-TestCaseId":
+      - "t7i8Oq"
+      "Content-Type":
+      - "application/json"
+      "Content-Length":
+      - "12"
+
+    body:
+      encoding: 'utf-8'
+      string: "{\"name\": \"\"}"
+  response:
+    status:
+      code: '501'
+      message: "Unsupported method ('TRACE')"
+    elapsed: '0.000611'
+    headers:
+      "server":
+      - "BaseHTTP/0.6 Python/3.13.13"
+      "date":
+      - "Mon, 27 Jul 2026 03:02:45 GMT"
+      "connection":
+      - "close"
+      "content-type":
+      - "text/html;charset=utf-8"
+      "content-length":
+      - "358"
+
+    body:
+      encoding: 'utf-8'
+      string: "<!DOCTYPE HTML>\n<html lang=\"en\">\n    <head>\n        <meta charset=\"utf-8\">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 501</p>\n        <p>Message: Unsupported method ('TRACE').</p>\n        <p>Error code explanation: 501 - Server does not support this operation.</p>\n    </body>\n</html>\n"
+    http_version: '1.0'
+- id: 'UMioVt'
+  status: 'FAILURE'
+  generation:
+    time: 0.010079333005705848
+    mode: positive
+  components:
+    body:
+      mode: 'positive'
+  phase:
+    name: 'fuzzing'
+    data: {}
+  recorded_at: '2026-07-27T03:02:45.380930+00:00'
+  checks:
+    - name: 'not_a_server_error'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'status_code_conformance'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'content_type_conformance'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'response_headers_conformance'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'response_schema_conformance'
+      status: 'FAILURE'
+      message: 'Response violates schema'
+    - name: 'negative_data_rejection'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'positive_data_acceptance'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'missing_required_header'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'unsupported_method'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'use_after_free'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'ensure_resource_availability'
+      status: 'SUCCESS'
+      message: ~
+    - name: 'ignored_auth'
+      status: 'SUCCESS'
+      message: ~
+
+  request:
+    uri: 'http://127.0.0.1:18080/widgets'
+    method: 'POST'
+    headers:
+      "User-Agent":
+      - "schemathesis/4.24.3"
+      "Accept-Encoding":
+      - "gzip, deflate"
+      "Accept":
+      - "*/*"
+      "Connection":
+      - "keep-alive"
+      "X-Schemathesis-TestCaseId":
+      - "UMioVt"
+      "Content-Type":
+      - "application/json"
+      "Content-Length":
+      - "12"
+
+    body:
+      encoding: 'utf-8'
+      string: "{\"name\": \"\"}"
+  response:
+    status:
+      code: '201'
+      message: "Created"
+    elapsed: '0.000694'
+    headers:
+      "server":
+      - "BaseHTTP/0.6 Python/3.13.13"
+      "date":
+      - "Mon, 27 Jul 2026 03:02:45 GMT"
+      "content-type":
+      - "application/json"
+      "content-length":
+      - "20"
+
+    body:
+      encoding: 'utf-8'
+      string: "{\"unexpected\": true}"
+    http_version: '1.0'

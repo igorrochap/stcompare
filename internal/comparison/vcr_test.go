@@ -7,6 +7,82 @@ import (
 	"testing"
 )
 
+func TestReadVCRProblemsParsesRealSchemathesisFixture(t *testing.T) {
+	got, err := readVCRProblems(filepath.Join("testdata", "schemathesis-real.vcr.yaml"))
+	if err != nil {
+		t.Fatalf("readVCRProblems returned error: %v", err)
+	}
+
+	want := []baselineProblem{
+		{
+			CheckName:      "not_a_server_error",
+			Message:        "Server error",
+			EvidenceSource: "vcr",
+			CaseID:         "t7i8Oq",
+			Reproduction: problemReproduction{
+				Method: "TRACE",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Accept", Value: "*/*"},
+					{Name: "Accept-Encoding", Value: "gzip, deflate"},
+					{Name: "Connection", Value: "keep-alive"},
+					{Name: "Content-Length", Value: "12"},
+					{Name: "Content-Type", Value: "application/json"},
+					{Name: "User-Agent", Value: "schemathesis/4.24.3"},
+					{Name: "X-Schemathesis-TestCaseId", Value: "t7i8Oq"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+		{
+			CheckName:      "unsupported_method",
+			Message:        "Unsupported methods",
+			EvidenceSource: "vcr",
+			CaseID:         "t7i8Oq",
+			Reproduction: problemReproduction{
+				Method: "TRACE",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Accept", Value: "*/*"},
+					{Name: "Accept-Encoding", Value: "gzip, deflate"},
+					{Name: "Connection", Value: "keep-alive"},
+					{Name: "Content-Length", Value: "12"},
+					{Name: "Content-Type", Value: "application/json"},
+					{Name: "User-Agent", Value: "schemathesis/4.24.3"},
+					{Name: "X-Schemathesis-TestCaseId", Value: "t7i8Oq"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+		{
+			CheckName:      "response_schema_conformance",
+			Message:        "Response violates schema",
+			EvidenceSource: "vcr",
+			CaseID:         "UMioVt",
+			Reproduction: problemReproduction{
+				Method: "POST",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Accept", Value: "*/*"},
+					{Name: "Accept-Encoding", Value: "gzip, deflate"},
+					{Name: "Connection", Value: "keep-alive"},
+					{Name: "Content-Length", Value: "12"},
+					{Name: "Content-Type", Value: "application/json"},
+					{Name: "User-Agent", Value: "schemathesis/4.24.3"},
+					{Name: "X-Schemathesis-TestCaseId", Value: "UMioVt"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+	}
+	if !got.Complete {
+		t.Fatal("readVCRProblems marked real Schemathesis fixture incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readVCRProblems problems = %#v, want %#v", got.Problems, want)
+	}
+}
+
 func TestReadVCRProblemsExpandsFailedChecks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "campaign.vcr.yaml")
 	contents := []byte(`

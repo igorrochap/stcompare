@@ -8,6 +8,64 @@ import (
 	"testing"
 )
 
+func TestReadNDJSONProblemsParsesRealSchemathesisFixture(t *testing.T) {
+	got, err := readNDJSONProblems(filepath.Join("testdata", "schemathesis-real.ndjson"))
+	if err != nil {
+		t.Fatalf("readNDJSONProblems returned error: %v", err)
+	}
+
+	want := []baselineProblem{
+		{
+			CheckName:      "not_a_server_error",
+			Message:        "Server error",
+			EvidenceSource: "ndjson",
+			CaseID:         "t7i8Oq",
+			Reproduction: problemReproduction{
+				Method: "TRACE",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Content-Type", Value: "application/json"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+		{
+			CheckName:      "unsupported_method",
+			Message:        "Unsupported methods\n\nUnsupported method TRACE returned 501, expected 405 Method Not Allowed\n\nReturn 405 for methods not listed in the OpenAPI spec",
+			EvidenceSource: "ndjson",
+			CaseID:         "t7i8Oq",
+			Reproduction: problemReproduction{
+				Method: "TRACE",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Content-Type", Value: "application/json"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+		{
+			CheckName:      "response_schema_conformance",
+			Message:        "Response violates schema\n\n\"name\" is a required property\n\nValidated against the response schema for status code 201.\n\nSchema:\n\n    {\n        \"required\": [\n            \"name\"\n        ],\n        \"type\": \"object\",\n        \"properties\": {\n            \"name\": {\n                \"type\": \"string\"\n            }\n        }\n    }\n\nValue:\n\n    {\n        \"unexpected\": true\n    }",
+			EvidenceSource: "ndjson",
+			CaseID:         "UMioVt",
+			Reproduction: problemReproduction{
+				Method: "POST",
+				URL:    "http://127.0.0.1:18080/widgets",
+				Headers: []harHeader{
+					{Name: "Content-Type", Value: "application/json"},
+				},
+				Body: "{\"name\": \"\"}",
+			},
+		},
+	}
+	if !got.Complete {
+		t.Fatal("readNDJSONProblems marked real Schemathesis fixture incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readNDJSONProblems problems = %#v, want %#v", got.Problems, want)
+	}
+}
+
 func TestReadNDJSONProblemsExtractsScenarioFailures(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "campaign.ndjson")
 	contents := []byte(
