@@ -6,6 +6,20 @@ import (
 	"strings"
 )
 
+type evidenceSource string
+
+const (
+	evidenceSourceVCR    evidenceSource = "vcr"
+	evidenceSourceNDJSON evidenceSource = "ndjson"
+	evidenceSourceJUnit  evidenceSource = "junit"
+)
+
+var problemEvidencePrecedence = []evidenceSource{
+	evidenceSourceVCR,
+	evidenceSourceNDJSON,
+	evidenceSourceJUnit,
+}
+
 type parsedProblemEvidence struct {
 	Problems []baselineProblem
 	Complete bool
@@ -46,14 +60,16 @@ func selectBaselineProblemEvidence(
 	ndjson baselineProblemEvidence,
 	junit baselineProblemEvidence,
 ) baselineProblemEvidence {
-	if vcr.Available {
-		return vcr
+	candidates := map[evidenceSource]baselineProblemEvidence{
+		evidenceSourceVCR:    vcr,
+		evidenceSourceNDJSON: ndjson,
+		evidenceSourceJUnit:  junit,
 	}
-	if ndjson.Available {
-		return ndjson
-	}
-	if junit.Available {
-		return junit
+	for _, source := range problemEvidencePrecedence {
+		evidence := candidates[source]
+		if evidence.Available {
+			return evidence
+		}
 	}
 
 	return baselineProblemEvidence{}

@@ -11,7 +11,7 @@ import (
 type baselineProblem struct {
 	CheckName         string              `json:"check_name"`
 	Message           string              `json:"message"`
-	EvidenceSource    string              `json:"evidence_source"`
+	EvidenceSource    evidenceSource      `json:"evidence_source"`
 	CaseID            string              `json:"case_id"`
 	CorrelationStatus correlationStatus   `json:"correlation_status"`
 	Reproduction      problemReproduction `json:"reproduction"`
@@ -94,7 +94,7 @@ func readVCRProblems(path string) (parsedProblemEvidence, error) {
 			problems = append(problems, baselineProblem{
 				CheckName:      check.Name,
 				Message:        check.Message,
-				EvidenceSource: "vcr",
+				EvidenceSource: evidenceSourceVCR,
 				CaseID:         interaction.ID,
 				Reproduction: problemReproduction{
 					Method:  interaction.Request.Method,

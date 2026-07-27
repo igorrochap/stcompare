@@ -133,7 +133,7 @@ func parseJUnitProblems(body string) []baselineProblem {
 			finalizeProblem()
 			problems = append(problems, baselineProblem{
 				CheckName:      strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")),
-				EvidenceSource: "junit",
+				EvidenceSource: evidenceSourceJUnit,
 				CaseID:         caseID,
 			})
 			activeProblem = len(problems) - 1

@@ -88,6 +88,14 @@ type baselineProblemEvidence struct {
 	Problems  []baselineProblem
 }
 
+type baselineProblemReportState struct {
+	available                   bool
+	note                        string
+	problems                    []baselineProblem
+	extractedProblemCount       *int
+	extractedProblemCountSource *string
+}
+
 type reportInteraction struct {
 	Baseline harEntry
 	Replay   replayResult
@@ -95,26 +103,9 @@ type reportInteraction struct {
 
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
-	problems := normalizedBaselineProblems(input.BaselineProblemEvidence.Problems)
-	if input.BaselineProblemEvidence.Available && problems == nil {
-		problems = []baselineProblem{}
-	}
-	baselineProblemsNote := baselineProblemsUnavailable
-	if input.BaselineProblemEvidence.Available {
-		baselineProblemsNote = ""
-	}
+	problemState := input.BaselineProblemEvidence.reportState()
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
-	var extractedProblemCount *int
-	var extractedProblemCountSource *string
-	if input.BaselineProblemEvidence.Available {
-		count := len(problems)
-		extractedProblemCount = &count
-		if input.BaselineProblemEvidence.Source != "" {
-			source := input.BaselineProblemEvidence.Source
-			extractedProblemCountSource = &source
-		}
-	}
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
@@ -122,19 +113,45 @@ func newReport(input reportInput) report {
 			Campaign:                    input.BaselineCampaign,
 			ProblemCount:                problemCount,
 			ProblemCountSource:          problemCountSource,
-			ExtractedProblemCount:       extractedProblemCount,
-			ExtractedProblemCountSource: extractedProblemCountSource,
+			ExtractedProblemCount:       problemState.extractedProblemCount,
+			ExtractedProblemCountSource: problemState.extractedProblemCountSource,
 		},
 		Candidate: reportCandidate{
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
 		Summary:                   newReportSummary(input.Interactions, interactions),
-		BaselineProblemsAvailable: input.BaselineProblemEvidence.Available,
-		BaselineProblemsNote:      baselineProblemsNote,
-		Problems:                  problems,
+		BaselineProblemsAvailable: problemState.available,
+		BaselineProblemsNote:      problemState.note,
+		Problems:                  problemState.problems,
 		Interactions:              interactions,
 	}
+}
+
+func (e baselineProblemEvidence) reportState() baselineProblemReportState {
+	problems := normalizedBaselineProblems(e.Problems)
+	if e.Available && problems == nil {
+		problems = []baselineProblem{}
+	}
+
+	state := baselineProblemReportState{
+		available: e.Available,
+		note:      baselineProblemsUnavailable,
+		problems:  problems,
+	}
+	if !e.Available {
+		return state
+	}
+
+	state.note = ""
+	count := len(problems)
+	state.extractedProblemCount = &count
+	if e.Source != "" {
+		source := e.Source
+		state.extractedProblemCountSource = &source
+	}
+
+	return state
 }
 
 func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {

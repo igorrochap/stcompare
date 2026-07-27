@@ -110,7 +110,7 @@ func readNDJSONProblems(path string) (parsedProblemEvidence, error) {
 						problems = append(problems, baselineProblem{
 							CheckName:      check.Name,
 							Message:        message,
-							EvidenceSource: "ndjson",
+							EvidenceSource: evidenceSourceNDJSON,
 							CaseID:         caseID,
 							Reproduction: problemReproduction{
 								Method:  interaction.Request.Method,
