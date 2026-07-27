@@ -58,10 +58,13 @@ func writeMarkdownProblem(
 	fmt.Fprintf(output, "- Message: %s\n", problem.Message)
 	fmt.Fprintf(output, "- Evidence source: `%s`\n", problem.EvidenceSource)
 	fmt.Fprintf(output, "- Case ID: `%s`\n", problem.CaseID)
-	if problem.Interaction == nil {
-		output.WriteString("- Correlation: uncorrelated\n")
-	} else {
+	switch problem.CorrelationStatus {
+	case correlationStatusCorrelated:
 		fmt.Fprintf(output, "- Correlation: interaction %d\n", *problem.Interaction)
+	case correlationStatusAmbiguous:
+		output.WriteString("- Correlation: ambiguous\n")
+	default:
+		output.WriteString("- Correlation: uncorrelated\n")
 	}
 
 	writeMarkdownProblemReproduction(output, problem.Reproduction)

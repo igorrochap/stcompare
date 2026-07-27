@@ -7,10 +7,11 @@ import (
 
 func TestNewReportPreservesUncorrelatedProblemWhenEvidenceAvailable(t *testing.T) {
 	problem := baselineProblem{
-		CheckName:      "status_code_conformance",
-		Message:        "Received an undocumented status code: 418",
-		EvidenceSource: "vcr",
-		CaseID:         "case-missing-from-har",
+		CheckName:         "status_code_conformance",
+		Message:           "Received an undocumented status code: 418",
+		EvidenceSource:    "vcr",
+		CaseID:            "case-missing-from-har",
+		CorrelationStatus: correlationStatusUncorrelated,
 		Reproduction: problemReproduction{
 			Method: "POST",
 			URL:    "https://baseline.example.test/widgets",
@@ -120,9 +121,10 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 			Available: true,
 			Problems: []baselineProblem{
 				{
-					EvidenceSource: "vcr",
-					CaseID:         "case-42",
-					Interaction:    &interaction,
+					EvidenceSource:    "vcr",
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
 				},
 			},
 		},

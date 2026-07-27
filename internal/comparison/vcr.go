@@ -9,13 +9,22 @@ import (
 )
 
 type baselineProblem struct {
-	CheckName      string              `json:"check_name"`
-	Message        string              `json:"message"`
-	EvidenceSource string              `json:"evidence_source"`
-	CaseID         string              `json:"case_id"`
-	Reproduction   problemReproduction `json:"reproduction"`
-	Interaction    *int                `json:"interaction"`
+	CheckName         string              `json:"check_name"`
+	Message           string              `json:"message"`
+	EvidenceSource    string              `json:"evidence_source"`
+	CaseID            string              `json:"case_id"`
+	CorrelationStatus correlationStatus   `json:"correlation_status"`
+	Reproduction      problemReproduction `json:"reproduction"`
+	Interaction       *int                `json:"interaction"`
 }
+
+type correlationStatus string
+
+const (
+	correlationStatusCorrelated   correlationStatus = "correlated"
+	correlationStatusUncorrelated correlationStatus = "uncorrelated"
+	correlationStatusAmbiguous    correlationStatus = "ambiguous"
+)
 
 type problemReproduction struct {
 	Method  string      `json:"method"`

@@ -24,10 +24,11 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 		BaselineProblemsAvailable: true,
 		Problems: []baselineProblem{
 			{
-				CheckName:      "status_code_conformance",
-				Message:        "Received an undocumented status code: 418",
-				EvidenceSource: "vcr",
-				CaseID:         "case-42",
+				CheckName:         "status_code_conformance",
+				Message:           "Received an undocumented status code: 418",
+				EvidenceSource:    "vcr",
+				CaseID:            "case-42",
+				CorrelationStatus: correlationStatusCorrelated,
 				Reproduction: problemReproduction{
 					Method: "POST",
 					URL:    "https://baseline.example.test/widgets",
@@ -39,10 +40,11 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 				Interaction: &interaction,
 			},
 			{
-				CheckName:      "API accepted schema-violating request",
-				Message:        "Server accepted invalid input.",
-				EvidenceSource: "junit",
-				CaseID:         "case-junit",
+				CheckName:         "API accepted schema-violating request",
+				Message:           "Server accepted invalid input.",
+				EvidenceSource:    "junit",
+				CaseID:            "case-junit",
+				CorrelationStatus: correlationStatusUncorrelated,
 				Reproduction: problemReproduction{
 					Command: "curl https://baseline.example.test/widgets",
 				},
@@ -93,5 +95,26 @@ curl https://baseline.example.test/widgets
 `
 	if !strings.Contains(markdown, want) {
 		t.Fatalf("renderMarkdown missing baseline problems section:\n%s", markdown)
+	}
+}
+
+func TestRenderMarkdownMarksAmbiguousBaselineProblemsExplicitly(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Problems: []baselineProblem{
+			{
+				CheckName:         "status_code_conformance",
+				Message:           "Received an undocumented status code: 418",
+				EvidenceSource:    "vcr",
+				CaseID:            "case-42",
+				CorrelationStatus: correlationStatusAmbiguous,
+			},
+		},
+	}
+
+	markdown := renderMarkdown(document)
+
+	if !strings.Contains(markdown, "- Correlation: ambiguous") {
+		t.Fatalf("renderMarkdown missing ambiguous correlation status:\n%s", markdown)
 	}
 }

@@ -90,10 +90,11 @@ http_interactions:
 		Source:    vcrPath,
 		Problems: []baselineProblem{
 			{
-				CheckName:      "status_code_conformance",
-				Message:        "Received an undocumented status code: 418",
-				EvidenceSource: "vcr",
-				CaseID:         "case-42",
+				CheckName:         "status_code_conformance",
+				Message:           "Received an undocumented status code: 418",
+				EvidenceSource:    "vcr",
+				CaseID:            "case-42",
+				CorrelationStatus: correlationStatusCorrelated,
 				Reproduction: problemReproduction{
 					Method: "POST",
 					URL:    "https://baseline.example.test/widgets",
@@ -118,10 +119,11 @@ http_interactions:
 func TestPersistComparisonArtifactsWritesCorrelatedProblemEvidence(t *testing.T) {
 	interaction := 1
 	problem := baselineProblem{
-		CheckName:      "status_code_conformance",
-		Message:        "Received an undocumented status code: 418",
-		EvidenceSource: "vcr",
-		CaseID:         "case-42",
+		CheckName:         "status_code_conformance",
+		Message:           "Received an undocumented status code: 418",
+		EvidenceSource:    "vcr",
+		CaseID:            "case-42",
+		CorrelationStatus: correlationStatusCorrelated,
 		Reproduction: problemReproduction{
 			Method: "POST",
 			URL:    "https://baseline.example.test/widgets",
@@ -212,10 +214,11 @@ func TestPrepareComparisonSelectsAndCorrelatesFallbackProblemEvidence(t *testing
 				Available: true,
 				Problems: []baselineProblem{
 					{
-						CheckName:      "not_a_server_error",
-						Message:        "Received 500",
-						EvidenceSource: "ndjson",
-						CaseID:         "case-ndjson",
+						CheckName:         "not_a_server_error",
+						Message:           "Received 500",
+						EvidenceSource:    "ndjson",
+						CaseID:            "case-ndjson",
+						CorrelationStatus: correlationStatusCorrelated,
 						Reproduction: problemReproduction{
 							Method: "GET",
 							URL:    "https://baseline.example.test/probe",
@@ -250,10 +253,11 @@ curl https://baseline.example.test/probe
 				Available: true,
 				Problems: []baselineProblem{
 					{
-						CheckName:      "API accepted schema-violating request",
-						Message:        "Server accepted invalid input.",
-						EvidenceSource: "junit",
-						CaseID:         "case-junit",
+						CheckName:         "API accepted schema-violating request",
+						Message:           "Server accepted invalid input.",
+						EvidenceSource:    "junit",
+						CaseID:            "case-junit",
+						CorrelationStatus: correlationStatusCorrelated,
 						Reproduction: problemReproduction{
 							Command: "curl https://baseline.example.test/probe",
 						},
@@ -464,30 +468,33 @@ curl https://baseline.example.test/two
 				Source:    junitPath,
 				Problems: []baselineProblem{
 					{
-						CheckName:      "First failed check",
-						Message:        "First diagnostic.",
-						EvidenceSource: "junit",
-						CaseID:         "case-1",
+						CheckName:         "First failed check",
+						Message:           "First diagnostic.",
+						EvidenceSource:    "junit",
+						CaseID:            "case-1",
+						CorrelationStatus: correlationStatusCorrelated,
 						Reproduction: problemReproduction{
 							Command: "curl https://baseline.example.test/one",
 						},
 						Interaction: &interactionOne,
 					},
 					{
-						CheckName:      "Second failed check",
-						Message:        "Second diagnostic.",
-						EvidenceSource: "junit",
-						CaseID:         "case-1",
+						CheckName:         "Second failed check",
+						Message:           "Second diagnostic.",
+						EvidenceSource:    "junit",
+						CaseID:            "case-1",
+						CorrelationStatus: correlationStatusCorrelated,
 						Reproduction: problemReproduction{
 							Command: "curl https://baseline.example.test/one",
 						},
 						Interaction: &interactionOne,
 					},
 					{
-						CheckName:      "Third failed check",
-						Message:        "Third diagnostic.",
-						EvidenceSource: "junit",
-						CaseID:         "case-2",
+						CheckName:         "Third failed check",
+						Message:           "Third diagnostic.",
+						EvidenceSource:    "junit",
+						CaseID:            "case-2",
+						CorrelationStatus: correlationStatusCorrelated,
 						Reproduction: problemReproduction{
 							Command: "curl https://baseline.example.test/two",
 						},

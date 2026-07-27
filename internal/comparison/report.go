@@ -93,7 +93,7 @@ type reportInteraction struct {
 
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
-	problems := input.BaselineProblemEvidence.Problems
+	problems := normalizedBaselineProblems(input.BaselineProblemEvidence.Problems)
 	if input.BaselineProblemEvidence.Available && problems == nil {
 		problems = []baselineProblem{}
 	}
@@ -131,6 +131,26 @@ func newReport(input reportInput) report {
 		Problems:                  problems,
 		Interactions:              interactions,
 	}
+}
+
+func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
+	if problems == nil {
+		return nil
+	}
+
+	normalized := append([]baselineProblem(nil), problems...)
+	for index := range normalized {
+		if normalized[index].CorrelationStatus != "" {
+			continue
+		}
+		if normalized[index].Interaction != nil {
+			normalized[index].CorrelationStatus = correlationStatusCorrelated
+			continue
+		}
+		normalized[index].CorrelationStatus = correlationStatusUncorrelated
+	}
+
+	return normalized
 }
 
 func newReportSummary(
