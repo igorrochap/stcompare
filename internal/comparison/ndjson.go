@@ -92,7 +92,7 @@ func readNDJSONProblems(path string) (parsedProblemEvidence, error) {
 							err,
 						)
 					}
-					headers := flattenNDJSONHeaders(interaction.Request.Headers)
+					headers := flattenHeaderMap(interaction.Request.Headers)
 
 					for _, check := range recorder.Checks[caseID] {
 						if !isFailingCheckStatus(check.Status) {
@@ -135,15 +135,4 @@ func readNDJSONProblems(path string) (parsedProblemEvidence, error) {
 		Problems: problems,
 		Complete: failingChecks == 0 || len(problems) != 0,
 	}, nil
-}
-
-func flattenNDJSONHeaders(headers map[string][]string) []harHeader {
-	var flattened []harHeader
-	for name, values := range headers {
-		for _, value := range values {
-			flattened = append(flattened, harHeader{Name: name, Value: value})
-		}
-	}
-
-	return sortedHARHeaders(flattened)
 }

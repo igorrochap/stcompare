@@ -10,41 +10,18 @@ import (
 )
 
 func readJUnitProblemEvidence(path string) (baselineProblemEvidence, error) {
-	document, err := os.Open(path)
-	if err != nil {
-		return baselineProblemEvidence{}, fmt.Errorf("read baseline JUnit: %w", err)
-	}
-	defer func() {
-		_ = document.Close()
-	}()
-
 	var problems []baselineProblem
 	complete := true
-	decoder := xml.NewDecoder(document)
-	for {
-		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return baselineProblemEvidence{}, fmt.Errorf("decode baseline JUnit: %w", err)
-		}
-
-		start, ok := token.(xml.StartElement)
-		if !ok || (start.Name.Local != "failure" && start.Name.Local != "error") {
-			continue
-		}
-
-		var body string
-		if err := decoder.DecodeElement(&body, &start); err != nil {
-			return baselineProblemEvidence{}, fmt.Errorf("decode baseline JUnit: %w", err)
-		}
+	_, err := walkJUnitProblemElements(path, func(body string) {
 		extracted := parseJUnitProblems(body)
 		if len(extracted) == 0 {
 			complete = false
-			continue
+			return
 		}
 		problems = append(problems, extracted...)
+	})
+	if err != nil {
+		return baselineProblemEvidence{}, err
 	}
 
 	if !complete {
@@ -58,12 +35,21 @@ func readJUnitProblemEvidence(path string) (baselineProblemEvidence, error) {
 }
 
 func readJUnitProblemCount(path string) (*int, error) {
-	document, err := os.Open(path)
+	count, err := walkJUnitProblemElements(path, func(string) {})
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read baseline JUnit: %w", err)
+		return nil, err
+	}
+
+	return &count, nil
+}
+
+func walkJUnitProblemElements(path string, visit func(string)) (int, error) {
+	document, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("read baseline JUnit: %w", err)
 	}
 	defer func() {
 		_ = document.Close()
@@ -77,15 +63,27 @@ func readJUnitProblemCount(path string) (*int, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("decode baseline JUnit: %w", err)
+			return 0, fmt.Errorf("decode baseline JUnit: %w", err)
 		}
+
 		start, ok := token.(xml.StartElement)
-		if ok && (start.Name.Local == "failure" || start.Name.Local == "error") {
-			count++
+		if !ok || !isJUnitProblemElement(start) {
+			continue
 		}
+		count++
+
+		var body string
+		if err := decoder.DecodeElement(&body, &start); err != nil {
+			return 0, fmt.Errorf("decode baseline JUnit: %w", err)
+		}
+		visit(body)
 	}
 
-	return &count, nil
+	return count, nil
+}
+
+func isJUnitProblemElement(start xml.StartElement) bool {
+	return start.Name.Local == "failure" || start.Name.Local == "error"
 }
 
 func parseJUnitProblems(body string) []baselineProblem {

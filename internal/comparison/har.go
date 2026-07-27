@@ -56,3 +56,14 @@ func sortedHARHeaders(headers []harHeader) []harHeader {
 
 	return sorted
 }
+
+func flattenHeaderMap(headers map[string][]string) []harHeader {
+	var flattened []harHeader
+	for name, values := range headers {
+		for _, value := range values {
+			flattened = append(flattened, harHeader{Name: name, Value: value})
+		}
+	}
+
+	return sortedHARHeaders(flattened)
+}

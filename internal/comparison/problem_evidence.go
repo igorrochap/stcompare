@@ -37,6 +37,10 @@ func readOptionalProblemEvidence(
 	}, nil
 }
 
+// selectBaselineProblemEvidence applies the report precedence contract:
+// prefer VCR first, then NDJSON, then structured JUnit.
+// VCR and NDJSON carry richer structured evidence; JUnit is last because its
+// problems are recovered from failure text.
 func selectBaselineProblemEvidence(
 	vcr baselineProblemEvidence,
 	ndjson baselineProblemEvidence,
