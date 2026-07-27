@@ -10,24 +10,20 @@ import (
 )
 
 func readJUnitProblemEvidence(path string) (parsedProblemEvidence, error) {
-	var problems []baselineProblem
-	complete := true
+	accumulator := problemAccumulator{source: evidenceSourceJUnit}
 	_, err := walkJUnitProblemElements(path, func(body string) {
 		extracted := parseJUnitProblems(body)
 		if len(extracted) == 0 {
-			complete = false
+			accumulator.markIncompleteExtraction()
 			return
 		}
-		problems = append(problems, extracted...)
+		accumulator.observeProblems(extracted)
 	})
 	if err != nil {
 		return parsedProblemEvidence{}, err
 	}
 
-	return parsedProblemEvidence{
-		Problems: problems,
-		Complete: complete,
-	}, nil
+	return accumulator.evidence(), nil
 }
 
 func readJUnitProblemCount(path string) (*int, error) {
@@ -128,9 +124,8 @@ func parseJUnitProblems(body string) []baselineProblem {
 		if strings.HasPrefix(trimmed, "- ") {
 			finalizeProblem()
 			problems = append(problems, baselineProblem{
-				CheckName:      strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")),
-				EvidenceSource: evidenceSourceJUnit,
-				CaseID:         caseID,
+				CheckName: strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")),
+				CaseID:    caseID,
 			})
 			activeProblem = len(problems) - 1
 			continue

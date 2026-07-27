@@ -34,26 +34,36 @@ const (
 )
 
 type problemAccumulator struct {
-	source       evidenceSource
-	problems     []baselineProblem
-	unrecognized int
+	source            evidenceSource
+	problems          []baselineProblem
+	unrecognized      int
+	incompleteExtract int
 }
 
 func (a *problemAccumulator) observe(status string, build func() baselineProblem) {
 	switch classifyCheckStatus(status) {
 	case checkStatusFailing:
-		problem := build()
-		problem.EvidenceSource = a.source
-		a.problems = append(a.problems, problem)
+		a.observeProblems([]baselineProblem{build()})
 	case checkStatusUnrecognized:
 		a.unrecognized++
 	}
 }
 
+func (a *problemAccumulator) observeProblems(problems []baselineProblem) {
+	for _, problem := range problems {
+		problem.EvidenceSource = a.source
+		a.problems = append(a.problems, problem)
+	}
+}
+
+func (a *problemAccumulator) markIncompleteExtraction() {
+	a.incompleteExtract++
+}
+
 func (a problemAccumulator) evidence() parsedProblemEvidence {
 	return parsedProblemEvidence{
 		Problems: a.problems,
-		Complete: a.unrecognized == 0,
+		Complete: a.unrecognized == 0 && a.incompleteExtract == 0,
 	}
 }
 
