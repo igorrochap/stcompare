@@ -9,22 +9,10 @@ import (
 	"strings"
 )
 
-func readJUnitProblems(path string) (parsedProblemEvidence, error) {
-	problems, complete, err := readJUnitProblemEvidence(path)
-	if err != nil {
-		return parsedProblemEvidence{}, err
-	}
-
-	return parsedProblemEvidence{
-		Problems: problems,
-		Complete: complete,
-	}, nil
-}
-
-func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
+func readJUnitProblemEvidence(path string) (baselineProblemEvidence, error) {
 	document, err := os.Open(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("read baseline JUnit: %w", err)
+		return baselineProblemEvidence{}, fmt.Errorf("read baseline JUnit: %w", err)
 	}
 	defer func() {
 		_ = document.Close()
@@ -39,7 +27,7 @@ func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
 			break
 		}
 		if err != nil {
-			return nil, false, fmt.Errorf("decode baseline JUnit: %w", err)
+			return baselineProblemEvidence{}, fmt.Errorf("decode baseline JUnit: %w", err)
 		}
 
 		start, ok := token.(xml.StartElement)
@@ -49,7 +37,7 @@ func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
 
 		var body string
 		if err := decoder.DecodeElement(&body, &start); err != nil {
-			return nil, false, fmt.Errorf("decode baseline JUnit: %w", err)
+			return baselineProblemEvidence{}, fmt.Errorf("decode baseline JUnit: %w", err)
 		}
 		extracted := parseJUnitProblems(body)
 		if len(extracted) == 0 {
@@ -59,7 +47,14 @@ func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
 		problems = append(problems, extracted...)
 	}
 
-	return problems, complete, nil
+	if !complete {
+		return baselineProblemEvidence{}, nil
+	}
+
+	return baselineProblemEvidence{
+		Available: true,
+		Problems:  problems,
+	}, nil
 }
 
 func readJUnitProblemCount(path string) (*int, error) {

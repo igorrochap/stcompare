@@ -39,7 +39,7 @@ func TestReadJUnitProblemCountCountsFailuresAndErrors(t *testing.T) {
 	}
 }
 
-func TestReadJUnitProblemsExtractsFailureEvidence(t *testing.T) {
+func TestReadJUnitProblemEvidenceExtractsFailureEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "junit.xml")
 	contents := []byte(`
 <testsuites>
@@ -65,9 +65,9 @@ curl -X POST 'https://baseline.example.test/widgets' \
 		t.Fatalf("write JUnit fixture: %v", err)
 	}
 
-	got, err := readJUnitProblems(path)
+	got, err := readJUnitProblemEvidence(path)
 	if err != nil {
-		t.Fatalf("readJUnitProblems returned error: %v", err)
+		t.Fatalf("readJUnitProblemEvidence returned error: %v", err)
 	}
 
 	want := []baselineProblem{
@@ -83,15 +83,15 @@ curl -X POST 'https://baseline.example.test/widgets' \
 			},
 		},
 	}
-	if !got.Complete {
-		t.Fatal("readJUnitProblems marked complete JUnit evidence incomplete")
+	if !got.Available {
+		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence unavailable")
 	}
 	if !reflect.DeepEqual(got.Problems, want) {
-		t.Fatalf("readJUnitProblems problems = %#v, want %#v", got.Problems, want)
+		t.Fatalf("readJUnitProblemEvidence problems = %#v, want %#v", got.Problems, want)
 	}
 }
 
-func TestReadJUnitProblemsIgnoresUnstructuredFailure(t *testing.T) {
+func TestReadJUnitProblemEvidenceIgnoresUnstructuredFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "junit.xml")
 	contents := []byte(`
 <testsuites>
@@ -105,13 +105,15 @@ func TestReadJUnitProblemsIgnoresUnstructuredFailure(t *testing.T) {
 		t.Fatalf("write JUnit fixture: %v", err)
 	}
 
-	problems, err := readJUnitProblems(path)
+	problems, err := readJUnitProblemEvidence(path)
 
 	got := struct {
 		Error    string
 		Problems []baselineProblem
+		Available bool
 	}{
 		Problems: problems.Problems,
+		Available: problems.Available,
 	}
 	if err != nil {
 		got.Error = err.Error()
@@ -119,13 +121,14 @@ func TestReadJUnitProblemsIgnoresUnstructuredFailure(t *testing.T) {
 	want := struct {
 		Error    string
 		Problems []baselineProblem
+		Available bool
 	}{}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("readJUnitProblems unstructured outcome = %#v, want %#v", got, want)
+		t.Fatalf("readJUnitProblemEvidence unstructured outcome = %#v, want %#v", got, want)
 	}
 }
 
-func TestReadJUnitProblemsExpandsNumberedFailureGroups(t *testing.T) {
+func TestReadJUnitProblemEvidenceExpandsNumberedFailureGroups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "junit.xml")
 	contents := []byte(`
 <testsuites>
@@ -163,9 +166,9 @@ curl https://baseline.example.test/two
 		t.Fatalf("write JUnit fixture: %v", err)
 	}
 
-	got, err := readJUnitProblems(path)
+	got, err := readJUnitProblemEvidence(path)
 	if err != nil {
-		t.Fatalf("readJUnitProblems returned error: %v", err)
+		t.Fatalf("readJUnitProblemEvidence returned error: %v", err)
 	}
 
 	want := []baselineProblem{
@@ -197,10 +200,10 @@ curl https://baseline.example.test/two
 			},
 		},
 	}
-	if !got.Complete {
-		t.Fatal("readJUnitProblems marked complete JUnit evidence incomplete")
+	if !got.Available {
+		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence unavailable")
 	}
 	if !reflect.DeepEqual(got.Problems, want) {
-		t.Fatalf("readJUnitProblems problems = %#v, want %#v", got.Problems, want)
+		t.Fatalf("readJUnitProblemEvidence problems = %#v, want %#v", got.Problems, want)
 	}
 }

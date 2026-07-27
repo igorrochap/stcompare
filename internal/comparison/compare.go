@@ -86,16 +86,12 @@ func prepareComparison(input Input) (preparedComparison, error) {
 
 	var junitEvidence baselineProblemEvidence
 	if problemCount != nil {
-		problems, complete, err := readJUnitProblemEvidence(input.BaselineJUnitPath)
+		junitEvidence, err = readJUnitProblemEvidence(input.BaselineJUnitPath)
 		if err != nil {
 			return preparedComparison{}, err
 		}
-		if complete {
-			junitEvidence = baselineProblemEvidence{
-				Available: true,
-				Source:    input.BaselineJUnitPath,
-				Problems:  problems,
-			}
+		if junitEvidence.Available {
+			junitEvidence.Source = input.BaselineJUnitPath
 		}
 	}
 
