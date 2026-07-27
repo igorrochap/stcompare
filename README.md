@@ -301,6 +301,9 @@ produces an available state with a zero count and an empty `problems` array.
 
 Problems without a matching HAR case ID remain in `problems` with
 `interaction: null`; they are not discarded or assigned by request similarity.
+When the same recorded case ID appears on multiple HAR entries, the problem is
+reported with `correlation_status: "ambiguous"` and no `interaction` number
+rather than being guessed onto one replay interaction.
 Likewise, a HAR entry without a recorded baseline response is reported as
 unknown and is not included in exact status-transition counts.
 

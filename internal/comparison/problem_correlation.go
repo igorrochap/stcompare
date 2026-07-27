@@ -26,6 +26,8 @@ func correlateBaselineProblems(
 	return correlated
 }
 
+// matchingInteractions returns 1-based interaction numbers whose request carries
+// the matching Schemathesis case ID header.
 func matchingInteractions(caseID string, entries []harEntry) []int {
 	if caseID == "" {
 		return nil
