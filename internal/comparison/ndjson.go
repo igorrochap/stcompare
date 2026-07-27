@@ -132,12 +132,12 @@ func accumulateNDJSONRecorderProblems(
 					CheckName: check.Name,
 					Message:   message,
 					CaseID:    caseID,
-					Reproduction: problemReproduction{
-						Method:  interaction.Request.Method,
-						URL:     interaction.Request.URI,
-						Headers: headers,
-						Body:    string(body),
-					},
+					Reproduction: newStructuredProblemReproduction(
+						interaction.Request.Method,
+						interaction.Request.URI,
+						headers,
+						body,
+					),
 				}
 			})
 		}

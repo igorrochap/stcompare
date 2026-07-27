@@ -51,6 +51,20 @@ type problemReproduction struct {
 	Command string      `json:"command,omitempty"`
 }
 
+func newStructuredProblemReproduction(
+	method string,
+	url string,
+	headers []harHeader,
+	body []byte,
+) problemReproduction {
+	return problemReproduction{
+		Method:  method,
+		URL:     url,
+		Headers: headers,
+		Body:    string(body),
+	}
+}
+
 type checkStatus int
 
 const (

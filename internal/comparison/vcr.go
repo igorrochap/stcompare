@@ -73,12 +73,12 @@ func accumulateVCRInteractionProblems(
 				CheckName: check.Name,
 				Message:   check.Message,
 				CaseID:    interaction.ID,
-				Reproduction: problemReproduction{
-					Method:  interaction.Request.Method,
-					URL:     interaction.Request.URI,
-					Headers: headers,
-					Body:    string(body),
-				},
+				Reproduction: newStructuredProblemReproduction(
+					interaction.Request.Method,
+					interaction.Request.URI,
+					headers,
+					body,
+				),
 			}
 		})
 	}
