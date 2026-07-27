@@ -75,14 +75,20 @@ func TestReadOptionalProblemEvidenceTreatsIncompleteStructuredEvidenceAsUnavaila
 	}
 }
 
-func TestIsFailingCheckStatusMatchesCaseInsensitively(t *testing.T) {
-	tests := []string{"FAILURE", "failure", "Failure"}
-	for _, status := range tests {
-		if !isFailingCheckStatus(status) {
-			t.Fatalf("isFailingCheckStatus(%q) = false, want true", status)
-		}
+func TestClassifyCheckStatusRecognizesFailingPassingAndUnknownValues(t *testing.T) {
+	tests := []struct {
+		status string
+		want   checkStatus
+	}{
+		{status: "FAILURE", want: checkStatusFailing},
+		{status: "failure", want: checkStatusFailing},
+		{status: "success", want: checkStatusPassing},
+		{status: "PASSED", want: checkStatusPassing},
+		{status: "skipped", want: checkStatusUnrecognized},
 	}
-	if isFailingCheckStatus("success") {
-		t.Fatal(`isFailingCheckStatus("success") = true, want false`)
+	for _, test := range tests {
+		if got := classifyCheckStatus(test.status); got != test.want {
+			t.Fatalf("classifyCheckStatus(%q) = %v, want %v", test.status, got, test.want)
+		}
 	}
 }

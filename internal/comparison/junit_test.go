@@ -83,8 +83,8 @@ curl -X POST 'https://baseline.example.test/widgets' \
 			},
 		},
 	}
-	if !got.Available {
-		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence unavailable")
+	if !got.Complete {
+		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence incomplete")
 	}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Fatalf("readJUnitProblemEvidence problems = %#v, want %#v", got.Problems, want)
@@ -110,10 +110,10 @@ func TestReadJUnitProblemEvidenceIgnoresUnstructuredFailure(t *testing.T) {
 	got := struct {
 		Error    string
 		Problems []baselineProblem
-		Available bool
+		Complete bool
 	}{
 		Problems: problems.Problems,
-		Available: problems.Available,
+		Complete: problems.Complete,
 	}
 	if err != nil {
 		got.Error = err.Error()
@@ -121,7 +121,7 @@ func TestReadJUnitProblemEvidenceIgnoresUnstructuredFailure(t *testing.T) {
 	want := struct {
 		Error    string
 		Problems []baselineProblem
-		Available bool
+		Complete bool
 	}{}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("readJUnitProblemEvidence unstructured outcome = %#v, want %#v", got, want)
@@ -200,8 +200,8 @@ curl https://baseline.example.test/two
 			},
 		},
 	}
-	if !got.Available {
-		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence unavailable")
+	if !got.Complete {
+		t.Fatal("readJUnitProblemEvidence marked complete JUnit evidence incomplete")
 	}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Fatalf("readJUnitProblemEvidence problems = %#v, want %#v", got.Problems, want)

@@ -25,6 +25,38 @@ type parsedProblemEvidence struct {
 	Complete bool
 }
 
+type checkStatus int
+
+const (
+	checkStatusPassing checkStatus = iota
+	checkStatusFailing
+	checkStatusUnrecognized
+)
+
+type problemAccumulator struct {
+	source       evidenceSource
+	problems     []baselineProblem
+	unrecognized int
+}
+
+func (a *problemAccumulator) observe(status string, build func() baselineProblem) {
+	switch classifyCheckStatus(status) {
+	case checkStatusFailing:
+		problem := build()
+		problem.EvidenceSource = a.source
+		a.problems = append(a.problems, problem)
+	case checkStatusUnrecognized:
+		a.unrecognized++
+	}
+}
+
+func (a problemAccumulator) evidence() parsedProblemEvidence {
+	return parsedProblemEvidence{
+		Problems: a.problems,
+		Complete: a.unrecognized == 0,
+	}
+}
+
 func readOptionalProblemEvidence(
 	path string,
 	readProblems func(string) (parsedProblemEvidence, error),
@@ -75,6 +107,13 @@ func selectBaselineProblemEvidence(
 	return baselineProblemEvidence{}
 }
 
-func isFailingCheckStatus(status string) bool {
-	return strings.EqualFold(status, "failure")
+func classifyCheckStatus(status string) checkStatus {
+	if strings.EqualFold(status, "failure") {
+		return checkStatusFailing
+	}
+	if strings.EqualFold(status, "success") || strings.EqualFold(status, "passed") {
+		return checkStatusPassing
+	}
+
+	return checkStatusUnrecognized
 }

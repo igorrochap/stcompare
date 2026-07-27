@@ -132,3 +132,31 @@ func TestReadNDJSONProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
 		t.Fatalf("readNDJSONProblems problems = %d, want 1", len(got.Problems))
 	}
 }
+
+func TestReadNDJSONProblemsMarksUnrecognizedCheckStatusIncomplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign.ndjson")
+	contents := []byte(
+		`{"ScenarioFinished":{"recorder":{"checks":{"case-42":[` +
+			`{"name":"status_code_conformance","status":"BROKEN",` +
+			`"failure_info":{"failure":{"title":"Undocumented status code","message":""}}}` +
+			`]},"interactions":{"case-42":{"request":{` +
+			`"method":"POST","uri":"https://baseline.example.test/widgets",` +
+			`"headers":{"Content-Type":["application/json"]},` +
+			`"body":{"$base64":"eyJuYW1lIjoiQWRhIn0="}` +
+			`}}}}}}` + "\n",
+	)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write NDJSON fixture: %v", err)
+	}
+
+	got, err := readNDJSONProblems(path)
+	if err != nil {
+		t.Fatalf("readNDJSONProblems returned error: %v", err)
+	}
+	if got.Complete {
+		t.Fatal("readNDJSONProblems marked unrecognized NDJSON status complete")
+	}
+	if len(got.Problems) != 0 {
+		t.Fatalf("readNDJSONProblems problems = %d, want 0", len(got.Problems))
+	}
+}

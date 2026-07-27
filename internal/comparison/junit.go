@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func readJUnitProblemEvidence(path string) (baselineProblemEvidence, error) {
+func readJUnitProblemEvidence(path string) (parsedProblemEvidence, error) {
 	var problems []baselineProblem
 	complete := true
 	_, err := walkJUnitProblemElements(path, func(body string) {
@@ -21,16 +21,12 @@ func readJUnitProblemEvidence(path string) (baselineProblemEvidence, error) {
 		problems = append(problems, extracted...)
 	})
 	if err != nil {
-		return baselineProblemEvidence{}, err
+		return parsedProblemEvidence{}, err
 	}
 
-	if !complete {
-		return baselineProblemEvidence{}, nil
-	}
-
-	return baselineProblemEvidence{
-		Available: true,
-		Problems:  problems,
+	return parsedProblemEvidence{
+		Problems: problems,
+		Complete: complete,
 	}, nil
 }
 

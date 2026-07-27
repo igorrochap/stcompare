@@ -73,41 +73,55 @@ func readVCRProblems(path string) (parsedProblemEvidence, error) {
 		return parsedProblemEvidence{}, fmt.Errorf("decode baseline VCR: %w", err)
 	}
 
-	var problems []baselineProblem
-	failingChecks := 0
+	accumulator := problemAccumulator{source: evidenceSourceVCR}
 	for _, interaction := range document.HTTPInteractions {
-		body := []byte(interaction.Request.Body.String)
-		if interaction.Request.Body.Base64String != nil {
-			decoded, err := base64.StdEncoding.DecodeString(*interaction.Request.Body.Base64String)
-			if err != nil {
-				return parsedProblemEvidence{}, fmt.Errorf("decode baseline VCR request body: %w", err)
-			}
-			body = decoded
+		if err := accumulateVCRInteractionProblems(&accumulator, interaction); err != nil {
+			return parsedProblemEvidence{}, err
 		}
-		headers := flattenHeaderMap(interaction.Request.Headers)
+	}
 
-		for _, check := range interaction.Checks {
-			if !isFailingCheckStatus(check.Status) {
-				continue
-			}
-			failingChecks++
-			problems = append(problems, baselineProblem{
-				CheckName:      check.Name,
-				Message:        check.Message,
-				EvidenceSource: evidenceSourceVCR,
-				CaseID:         interaction.ID,
+	return accumulator.evidence(), nil
+}
+
+func accumulateVCRInteractionProblems(
+	accumulator *problemAccumulator,
+	interaction vcrInteraction,
+) error {
+	body, err := vcrRequestBody(interaction.Request.Body)
+	if err != nil {
+		return err
+	}
+	headers := flattenHeaderMap(interaction.Request.Headers)
+
+	for _, check := range interaction.Checks {
+		accumulator.observe(check.Status, func() baselineProblem {
+			return baselineProblem{
+				CheckName: check.Name,
+				Message:   check.Message,
+				CaseID:    interaction.ID,
 				Reproduction: problemReproduction{
 					Method:  interaction.Request.Method,
 					URL:     interaction.Request.URI,
 					Headers: headers,
 					Body:    string(body),
 				},
-			})
-		}
+			}
+		})
 	}
 
-	return parsedProblemEvidence{
-		Problems: problems,
-		Complete: failingChecks == 0 || len(problems) != 0,
-	}, nil
+	return nil
+}
+
+func vcrRequestBody(body vcrBody) ([]byte, error) {
+	requestBody := []byte(body.String)
+	if body.Base64String == nil {
+		return requestBody, nil
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(*body.Base64String)
+	if err != nil {
+		return nil, fmt.Errorf("decode baseline VCR request body: %w", err)
+	}
+
+	return decoded, nil
 }

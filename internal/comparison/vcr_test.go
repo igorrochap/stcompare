@@ -144,3 +144,34 @@ http_interactions:
 		t.Fatalf("readVCRProblems problems = %d, want 1", len(got.Problems))
 	}
 }
+
+func TestReadVCRProblemsMarksUnrecognizedCheckStatusIncomplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign.vcr.yaml")
+	contents := []byte(`
+http_interactions:
+  - id: case-unknown
+    checks:
+      - name: status_code_conformance
+        status: BROKEN
+        message: "Received an undocumented status code: 418"
+    request:
+      uri: "https://baseline.example.test/widgets"
+      method: POST
+      body:
+        string: '{"name":"Ada"}'
+`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write VCR fixture: %v", err)
+	}
+
+	got, err := readVCRProblems(path)
+	if err != nil {
+		t.Fatalf("readVCRProblems returned error: %v", err)
+	}
+	if got.Complete {
+		t.Fatal("readVCRProblems marked unrecognized VCR status complete")
+	}
+	if len(got.Problems) != 0 {
+		t.Fatalf("readVCRProblems problems = %d, want 0", len(got.Problems))
+	}
+}

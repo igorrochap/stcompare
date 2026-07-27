@@ -348,6 +348,102 @@ curl https://baseline.example.test/probe
 	}
 }
 
+func TestPrepareComparisonFallsThroughWhenHigherPrecedenceEvidenceIsIncomplete(t *testing.T) {
+	tempDir := t.TempDir()
+	harPath := filepath.Join(tempDir, "campaign.har.json")
+	harContents := []byte(`
+{
+  "log": {
+    "entries": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "https://baseline.example.test/probe",
+          "headers": [
+            {
+              "name": "X-Schemathesis-TestCaseId",
+              "value": "case-ndjson"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}`)
+	if err := os.WriteFile(harPath, harContents, 0o644); err != nil {
+		t.Fatalf("write HAR fixture: %v", err)
+	}
+
+	vcrPath := filepath.Join(tempDir, "campaign.vcr.yaml")
+	vcrContents := []byte(`
+http_interactions:
+  - id: case-vcr
+    checks:
+      - name: status_code_conformance
+        status: BROKEN
+        message: "Received an undocumented status code: 418"
+    request:
+      uri: "https://baseline.example.test/widgets"
+      method: POST
+      body:
+        string: '{"name":"Ada"}'
+`)
+	if err := os.WriteFile(vcrPath, vcrContents, 0o644); err != nil {
+		t.Fatalf("write VCR fixture: %v", err)
+	}
+
+	ndjsonPath := filepath.Join(tempDir, "campaign.ndjson")
+	ndjsonContents := []byte(
+		`{"ScenarioFinished":{"recorder":{"checks":{"case-ndjson":[` +
+			`{"name":"not_a_server_error","status":"failure",` +
+			`"failure_info":{"failure":{"title":"Server error","message":"Received 500"}}}` +
+			`]},"interactions":{"case-ndjson":{"request":{` +
+			`"method":"GET","uri":"https://baseline.example.test/probe","headers":{}` +
+			`}}}}}}` + "\n",
+	)
+	if err := os.WriteFile(ndjsonPath, ndjsonContents, 0o644); err != nil {
+		t.Fatalf("write NDJSON fixture: %v", err)
+	}
+
+	prepared, err := prepareComparison(Input{
+		BaselineHARPath:    harPath,
+		BaselineVCRPath:    vcrPath,
+		BaselineNDJSONPath: ndjsonPath,
+		BaselineJUnitPath:  filepath.Join(tempDir, "missing-junit.xml"),
+		CandidateBaseURL:   "https://candidate.example.test",
+	})
+	if err != nil {
+		t.Fatalf("prepareComparison returned error: %v", err)
+	}
+
+	interaction := 1
+	want := baselineProblemEvidence{
+		Available: true,
+		Source:    ndjsonPath,
+		Problems: []baselineProblem{
+			{
+				CheckName:         "not_a_server_error",
+				Message:           "Received 500",
+				EvidenceSource:    evidenceSourceNDJSON,
+				CaseID:            "case-ndjson",
+				CorrelationStatus: correlationStatusCorrelated,
+				Reproduction: problemReproduction{
+					Method: "GET",
+					URL:    "https://baseline.example.test/probe",
+				},
+				Interaction: &interaction,
+			},
+		},
+	}
+	if !reflect.DeepEqual(prepared.baselineProblemEvidence, want) {
+		t.Fatalf(
+			"prepareComparison incomplete-fallback evidence = %#v, want %#v",
+			prepared.baselineProblemEvidence,
+			want,
+		)
+	}
+}
+
 func TestPrepareComparisonRequiresCompleteJUnitProblemExtraction(t *testing.T) {
 	const groupedFailure = `
 <failure><![CDATA[
