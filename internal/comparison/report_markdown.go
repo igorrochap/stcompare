@@ -10,6 +10,9 @@ func renderMarkdown(document report) string {
 	var output strings.Builder
 	output.WriteString("# Campaign comparison\n\n")
 	writeMarkdownSummary(&output, document)
+	if len(document.Problems) != 0 {
+		writeMarkdownProblems(&output, document.Problems)
+	}
 	output.WriteString("\n## Interaction evidence\n")
 
 	for _, interaction := range document.Interactions {
@@ -23,6 +26,7 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	output.WriteString("## Summary\n\n")
 	fmt.Fprintf(output, "- Total interactions: %d\n", document.Summary.InteractionCount)
 	writeMarkdownProblemCount(output, document.Baseline)
+	writeMarkdownExtractedProblemCount(output, document.Baseline)
 	fmt.Fprintf(
 		output,
 		"- Candidate latency: minimum %d ms, maximum %d ms, average %d ms\n",
@@ -34,7 +38,67 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Baseline campaign: `%s`\n", document.Baseline.Campaign)
 	fmt.Fprintf(output, "- Candidate campaign: `%s`\n", document.Candidate.Campaign)
 	fmt.Fprintf(output, "- Candidate base URL: `%s`\n", document.Candidate.BaseURL)
-	fmt.Fprintf(output, "\n> Problem-level outcomes are unavailable: %s\n", document.ProblemOutcomesNote)
+	if !document.BaselineProblemsAvailable {
+		fmt.Fprintf(output, "\n> Baseline Schemathesis problems are unavailable: %s\n", document.BaselineProblemsNote)
+	}
+}
+
+func writeMarkdownProblems(output *strings.Builder, problems []baselineProblem) {
+	output.WriteString("\n## Baseline problems\n")
+	for index, problem := range problems {
+		writeMarkdownProblem(output, index+1, problem)
+	}
+}
+
+func writeMarkdownProblem(
+	output *strings.Builder,
+	number int,
+	problem baselineProblem,
+) {
+	fmt.Fprintf(output, "\n### Problem %d: `%s`\n\n", number, problem.CheckName)
+	fmt.Fprintf(output, "- Message: %s\n", problem.Message)
+	fmt.Fprintf(output, "- Evidence source: `%s`\n", problem.EvidenceSource)
+	fmt.Fprintf(output, "- Case ID: `%s`\n", problem.CaseID)
+	switch problem.CorrelationStatus {
+	case correlationStatusCorrelated:
+		if problem.Interaction == nil {
+			output.WriteString("- Correlation: uncorrelated\n")
+			break
+		}
+		fmt.Fprintf(output, "- Correlation: interaction %d\n", *problem.Interaction)
+	case correlationStatusAmbiguous:
+		output.WriteString("- Correlation: ambiguous\n")
+	default:
+		output.WriteString("- Correlation: uncorrelated\n")
+	}
+
+	writeMarkdownProblemReproduction(output, problem.Reproduction)
+}
+
+func writeMarkdownProblemReproduction(
+	output *strings.Builder,
+	reproduction problemReproduction,
+) {
+	if reproduction.Command != "" {
+		output.WriteString("\n#### Reproduction command\n\n```shell\n")
+		output.WriteString(reproduction.Command)
+		output.WriteString("\n```\n")
+		return
+	}
+	if reproduction.Method == "" &&
+		reproduction.URL == "" &&
+		len(reproduction.Headers) == 0 &&
+		reproduction.Body == "" {
+		return
+	}
+
+	output.WriteString("\n#### Reproduction request\n\n")
+	fmt.Fprintf(output, "- Method: `%s`\n", reproduction.Method)
+	fmt.Fprintf(output, "- URL: `%s`\n", reproduction.URL)
+	output.WriteString("\nHeaders:\n\n")
+	writeMarkdownHeaders(output, reproduction.Headers)
+	output.WriteString("\nBody:\n\n")
+	writeMarkdownBody(output, reproduction.Body)
 }
 
 func writeMarkdownInteraction(
@@ -104,6 +168,23 @@ func writeMarkdownProblemCount(output *strings.Builder, baseline reportCampaign)
 			*baseline.ProblemCountSource,
 		)
 	}
+}
+
+func writeMarkdownExtractedProblemCount(output *strings.Builder, baseline reportCampaign) {
+	if baseline.ExtractedProblemCount == nil {
+		return
+	}
+	if baseline.ExtractedProblemCountSource == nil {
+		fmt.Fprintf(output, "- Extracted baseline problems: %d\n", *baseline.ExtractedProblemCount)
+		return
+	}
+
+	fmt.Fprintf(
+		output,
+		"- Extracted baseline problems: %d (source: `%s`)\n",
+		*baseline.ExtractedProblemCount,
+		*baseline.ExtractedProblemCountSource,
+	)
 }
 
 func writeMarkdownStatusTransitions(

@@ -456,6 +456,132 @@ func TestCampaignCompareRejectsMalformedBaselineJUnitBeforeCandidateSideEffects(
 	}
 }
 
+func TestCampaignCompareRejectsMalformedBaselineVCRBeforeCandidateSideEffects(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	writeBaselineHAR(t, filepath.Join("reports", "baseline", "campaign.har.json"), []harRequestFixture{
+		{
+			Method: "GET",
+			URL:    "http://baseline.invalid/probe",
+		},
+	})
+	if err := os.WriteFile(
+		filepath.Join("reports", "baseline", "campaign.vcr.yaml"),
+		[]byte(`http_interactions: [`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write malformed baseline VCR: %v", err)
+	}
+
+	var (
+		mu                    sync.Mutex
+		candidateRequestCount int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		candidateRequestCount++
+		mu.Unlock()
+	}))
+	defer server.Close()
+
+	root := cli.NewRootCommand()
+	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", server.URL})
+	err := root.Execute()
+
+	_, statErr := os.Stat(filepath.Join("reports", "gpt5.6"))
+	got := struct {
+		ErrorHasSetupDecodePrefix bool
+		CandidateRequestCount     int
+		CandidateReportDirExists  bool
+	}{
+		CandidateReportDirExists: !os.IsNotExist(statErr),
+	}
+	if err != nil {
+		got.ErrorHasSetupDecodePrefix = strings.HasPrefix(
+			err.Error(),
+			"baseline replay setup: decode baseline VCR:",
+		)
+	}
+	mu.Lock()
+	got.CandidateRequestCount = candidateRequestCount
+	mu.Unlock()
+	want := struct {
+		ErrorHasSetupDecodePrefix bool
+		CandidateRequestCount     int
+		CandidateReportDirExists  bool
+	}{
+		ErrorHasSetupDecodePrefix: true,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign compare malformed VCR outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignCompareRejectsMalformedBaselineNDJSONBeforeCandidateSideEffects(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	writeBaselineHAR(t, filepath.Join("reports", "baseline", "campaign.har.json"), []harRequestFixture{
+		{
+			Method: "GET",
+			URL:    "http://baseline.invalid/probe",
+		},
+	})
+	if err := os.WriteFile(
+		filepath.Join("reports", "baseline", "campaign.ndjson"),
+		[]byte(`{"ScenarioFinished":`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write malformed baseline NDJSON: %v", err)
+	}
+
+	var (
+		mu                    sync.Mutex
+		candidateRequestCount int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		candidateRequestCount++
+		mu.Unlock()
+	}))
+	defer server.Close()
+
+	root := cli.NewRootCommand()
+	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", server.URL})
+	err := root.Execute()
+
+	_, statErr := os.Stat(filepath.Join("reports", "gpt5.6"))
+	got := struct {
+		ErrorHasSetupDecodePrefix bool
+		CandidateRequestCount     int
+		CandidateReportDirExists  bool
+	}{
+		CandidateReportDirExists: !os.IsNotExist(statErr),
+	}
+	if err != nil {
+		got.ErrorHasSetupDecodePrefix = strings.HasPrefix(
+			err.Error(),
+			"baseline replay setup: decode baseline NDJSON line 1:",
+		)
+	}
+	mu.Lock()
+	got.CandidateRequestCount = candidateRequestCount
+	mu.Unlock()
+	want := struct {
+		ErrorHasSetupDecodePrefix bool
+		CandidateRequestCount     int
+		CandidateReportDirExists  bool
+	}{
+		ErrorHasSetupDecodePrefix: true,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign compare malformed NDJSON outcome = %#v, want %#v", got, want)
+	}
+}
+
 type malformedJUnitOutcome struct {
 	ErrorHasSetupDecodePrefix bool
 	CandidateRequestCount     int

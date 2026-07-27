@@ -1,26 +1,34 @@
 package comparison
 
-import "sort"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+)
 
 const (
-	reportSchemaVersion        = "1"
-	problemOutcomesUnavailable = "Schemathesis problems have not been correlated with replay interactions; no problem-level outcome is claimed."
+	reportSchemaVersion         = "2"
+	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
 type report struct {
-	SchemaVersion            string                      `json:"schema_version"`
-	Baseline                 reportCampaign              `json:"baseline"`
-	Candidate                reportCandidate             `json:"candidate"`
-	Summary                  reportSummary               `json:"summary"`
-	ProblemOutcomesAvailable bool                        `json:"problem_outcomes_available"`
-	ProblemOutcomesNote      string                      `json:"problem_outcomes_note"`
-	Interactions             []reportInteractionEvidence `json:"interactions"`
+	SchemaVersion             string                      `json:"schema_version"`
+	Baseline                  reportCampaign              `json:"baseline"`
+	Candidate                 reportCandidate             `json:"candidate"`
+	Summary                   reportSummary               `json:"summary"`
+	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
+	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
+	Problems                  []baselineProblem           `json:"problems"`
+	Interactions              []reportInteractionEvidence `json:"interactions"`
 }
 
 type reportCampaign struct {
-	Campaign           string  `json:"campaign"`
-	ProblemCount       *int    `json:"problem_count"`
-	ProblemCountSource *string `json:"problem_count_source"`
+	Campaign                    string  `json:"campaign"`
+	ProblemCount                *int    `json:"problem_count"`
+	ProblemCountSource          *string `json:"problem_count_source"`
+	ExtractedProblemCount       *int    `json:"extracted_problem_count"`
+	ExtractedProblemCountSource *string `json:"extracted_problem_count_source"`
 }
 
 type reportCandidate struct {
@@ -73,9 +81,24 @@ type reportInput struct {
 	BaselineCampaign           string
 	BaselineProblemCount       *int
 	BaselineProblemCountSource *string
+	BaselineProblemEvidence    baselineProblemEvidence
 	CandidateCampaign          string
 	CandidateBaseURL           string
 	Interactions               []reportInteraction
+}
+
+type baselineProblemEvidence struct {
+	Available  bool
+	SourcePath string
+	Problems   []baselineProblem
+}
+
+type baselineProblemReportState struct {
+	available                   bool
+	note                        string
+	problems                    []baselineProblem
+	extractedProblemCount       *int
+	extractedProblemCountSource *string
 }
 
 type reportInteraction struct {
@@ -85,23 +108,63 @@ type reportInteraction struct {
 
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
+	problemState := input.BaselineProblemEvidence.reportState()
+	problemCount := input.BaselineProblemCount
+	problemCountSource := input.BaselineProblemCountSource
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
 		Baseline: reportCampaign{
-			Campaign:           input.BaselineCampaign,
-			ProblemCount:       input.BaselineProblemCount,
-			ProblemCountSource: input.BaselineProblemCountSource,
+			Campaign:                    input.BaselineCampaign,
+			ProblemCount:                problemCount,
+			ProblemCountSource:          problemCountSource,
+			ExtractedProblemCount:       problemState.extractedProblemCount,
+			ExtractedProblemCountSource: problemState.extractedProblemCountSource,
 		},
 		Candidate: reportCandidate{
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Summary:                  newReportSummary(input.Interactions, interactions),
-		ProblemOutcomesAvailable: false,
-		ProblemOutcomesNote:      problemOutcomesUnavailable,
-		Interactions:             interactions,
+		Summary:                   newReportSummary(input.Interactions, interactions),
+		BaselineProblemsAvailable: problemState.available,
+		BaselineProblemsNote:      problemState.note,
+		Problems:                  problemState.problems,
+		Interactions:              interactions,
 	}
+}
+
+func (e baselineProblemEvidence) reportState() baselineProblemReportState {
+	problems := normalizedBaselineProblems(e.Problems)
+	if e.Available && problems == nil {
+		problems = []baselineProblem{}
+	}
+
+	state := baselineProblemReportState{
+		available: e.Available,
+		note:      baselineProblemsUnavailable,
+		problems:  problems,
+	}
+	if !e.Available {
+		return state
+	}
+
+	state.note = ""
+	count := len(problems)
+	state.extractedProblemCount = &count
+	if e.SourcePath != "" {
+		source := e.SourcePath
+		state.extractedProblemCountSource = &source
+	}
+
+	return state
+}
+
+func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
+	if problems == nil {
+		return nil
+	}
+
+	return append([]baselineProblem(nil), problems...)
 }
 
 func newReportSummary(
@@ -167,6 +230,18 @@ func newStatusTransitionCounts(evidence []reportInteractionEvidence) []statusTra
 	})
 
 	return transitions
+}
+
+func writeJSONReport(path string, document report) error {
+	contents, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode comparison JSON report: %w", err)
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		return fmt.Errorf("write comparison JSON report: %w", err)
+	}
+
+	return nil
 }
 
 func newInteractionEvidence(interactions []reportInteraction) []reportInteractionEvidence {
