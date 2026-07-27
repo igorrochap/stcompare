@@ -260,28 +260,52 @@ reports/gpt5.6/comparison.md
 ```
 
 `comparison.json` uses a versioned, stable schema for automation, while
-`comparison.md` presents the same evidence for review. Both reports include:
+`comparison.md` presents the same evidence for review. Schema version 2 adds
+individual baseline problems and their replay-interaction correlations. The
+reports include:
 
 - Total replayed interactions.
-- Baseline Schemathesis problem counts from individual JUnit `failure` and
-  `error` elements.
+- Individual baseline Schemathesis problems with their check name, message,
+  evidence source, recorded case ID, reproduction context, and correlated
+  interaction number when available.
+- An exact baseline problem count from the selected structured evidence when
+  available. Otherwise, when a JUnit artifact is present, its older
+  `failure`/`error` element count remains visible as aggregate-only evidence.
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.
-- A disclosure that problem-level outcomes are unavailable until Schemathesis
-  problems are correlated with replay interactions.
+- A problem-level availability state. Markdown shows an unavailable disclosure
+  only when the JSON `problem_outcomes_available` value is `false`.
 - An `interactions` entry for every replayed interaction with the original
   request, candidate target URL, baseline response when recorded, candidate
   response, and bodies and headers needed to reproduce the request.
 
-When the baseline JUnit report is absent, the problem count is explicitly
-unknown rather than inferred from HTTP status codes. A malformed present JUnit
-report fails comparison setup before candidate traffic begins. Likewise, a HAR
-entry without a recorded baseline response is reported as unknown and is not
-included in exact status-transition counts.
+HAR remains the mandatory ordered replay transcript and the correlation anchor.
+Problems are matched to HAR entries only through the recorded
+`X-Schemathesis-TestCaseId`; method, URL, and operation name are never treated
+as unique keys. Problem evidence uses this deterministic precedence:
 
-These first-pass reports preserve raw evidence and transitions. Semantic outcome
-labels such as fixed, regressed, or still failing are not inferred yet.
+1. VCR checks and interaction IDs.
+2. NDJSON recorder checks and interactions.
+3. Structured JUnit failure text, but only when every counted JUnit
+   `failure`/`error` has been extracted.
+
+All present artifacts are parsed before replay, including lower-precedence
+sources. A malformed HAR, VCR, NDJSON, or JUnit artifact therefore fails
+comparison setup before candidate traffic or output creation. Missing VCR,
+NDJSON, and JUnit artifacts are optional, and selection falls through to the
+next source. Problem evidence is unavailable only when no complete structured
+source is available. A valid selected artifact with no failed checks instead
+produces an available state with a zero count and an empty `problems` array.
+
+Problems without a matching HAR case ID remain in `problems` with
+`interaction: null`; they are not discarded or assigned by request similarity.
+Likewise, a HAR entry without a recorded baseline response is reported as
+unknown and is not included in exact status-transition counts.
+
+These reports preserve correlated problem evidence and raw status transitions.
+Semantic outcome labels such as fixed, regressed, or still failing are not
+inferred yet.
 
 The current `interactions` collection is therefore raw interaction evidence and
 can include healthy unchanged transitions such as `200 -> 200`. It is not yet

@@ -3,7 +3,7 @@ package comparison
 import "sort"
 
 const (
-	reportSchemaVersion        = "1"
+	reportSchemaVersion        = "2"
 	problemOutcomesUnavailable = "Schemathesis problems have not been correlated with replay interactions; no problem-level outcome is claimed."
 )
 
@@ -14,6 +14,7 @@ type report struct {
 	Summary                  reportSummary               `json:"summary"`
 	ProblemOutcomesAvailable bool                        `json:"problem_outcomes_available"`
 	ProblemOutcomesNote      string                      `json:"problem_outcomes_note"`
+	Problems                 []baselineProblem           `json:"problems"`
 	Interactions             []reportInteractionEvidence `json:"interactions"`
 }
 
@@ -73,9 +74,16 @@ type reportInput struct {
 	BaselineCampaign           string
 	BaselineProblemCount       *int
 	BaselineProblemCountSource *string
+	BaselineProblemEvidence    baselineProblemEvidence
 	CandidateCampaign          string
 	CandidateBaseURL           string
 	Interactions               []reportInteraction
+}
+
+type baselineProblemEvidence struct {
+	Available bool
+	Source    string
+	Problems  []baselineProblem
 }
 
 type reportInteraction struct {
@@ -85,21 +93,42 @@ type reportInteraction struct {
 
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
+	problems := input.BaselineProblemEvidence.Problems
+	if input.BaselineProblemEvidence.Available && problems == nil {
+		problems = []baselineProblem{}
+	}
+	problemOutcomesNote := problemOutcomesUnavailable
+	if input.BaselineProblemEvidence.Available {
+		problemOutcomesNote = ""
+	}
+	problemCount := input.BaselineProblemCount
+	problemCountSource := input.BaselineProblemCountSource
+	if input.BaselineProblemEvidence.Available {
+		count := len(problems)
+		problemCount = &count
+		if input.BaselineProblemEvidence.Source == "" {
+			problemCountSource = nil
+		} else {
+			source := input.BaselineProblemEvidence.Source
+			problemCountSource = &source
+		}
+	}
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
 		Baseline: reportCampaign{
 			Campaign:           input.BaselineCampaign,
-			ProblemCount:       input.BaselineProblemCount,
-			ProblemCountSource: input.BaselineProblemCountSource,
+			ProblemCount:       problemCount,
+			ProblemCountSource: problemCountSource,
 		},
 		Candidate: reportCandidate{
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
 		Summary:                  newReportSummary(input.Interactions, interactions),
-		ProblemOutcomesAvailable: false,
-		ProblemOutcomesNote:      problemOutcomesUnavailable,
+		ProblemOutcomesAvailable: input.BaselineProblemEvidence.Available,
+		ProblemOutcomesNote:      problemOutcomesNote,
+		Problems:                 problems,
 		Interactions:             interactions,
 	}
 }

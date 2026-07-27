@@ -11,12 +11,14 @@ import (
 // Input identifies the baseline evidence, candidate target, and output location
 // for one comparison.
 type Input struct {
-	BaselineCampaign  string
-	BaselineHARPath   string
-	BaselineJUnitPath string
-	CandidateCampaign string
-	CandidateBaseURL  string
-	OutputDir         string
+	BaselineCampaign   string
+	BaselineHARPath    string
+	BaselineVCRPath    string
+	BaselineNDJSONPath string
+	BaselineJUnitPath  string
+	CandidateCampaign  string
+	CandidateBaseURL   string
+	OutputDir          string
 }
 
 // Dependencies contains replaceable runtime dependencies used by a comparison.
@@ -36,6 +38,7 @@ type preparedComparison struct {
 	baselineEntries            []harEntry
 	baselineProblemCount       *int
 	baselineProblemCountSource *string
+	baselineProblemEvidence    baselineProblemEvidence
 	replayRequests             []*http.Request
 }
 
@@ -60,6 +63,18 @@ func prepareComparison(input Input) (preparedComparison, error) {
 		return preparedComparison{}, err
 	}
 
+	vcrEvidence, err := readOptionalProblemEvidence(input.BaselineVCRPath, readVCRProblems)
+	if err != nil {
+		return preparedComparison{}, err
+	}
+	ndjsonEvidence, err := readOptionalProblemEvidence(
+		input.BaselineNDJSONPath,
+		readNDJSONProblems,
+	)
+	if err != nil {
+		return preparedComparison{}, err
+	}
+
 	problemCount, err := readJUnitProblemCount(input.BaselineJUnitPath)
 	if err != nil {
 		return preparedComparison{}, err
@@ -67,6 +82,29 @@ func prepareComparison(input Input) (preparedComparison, error) {
 	var problemCountSource *string
 	if problemCount != nil {
 		problemCountSource = &input.BaselineJUnitPath
+	}
+
+	var junitEvidence baselineProblemEvidence
+	if problemCount != nil {
+		problems, complete, err := readJUnitProblemEvidence(input.BaselineJUnitPath)
+		if err != nil {
+			return preparedComparison{}, err
+		}
+		if complete {
+			junitEvidence = baselineProblemEvidence{
+				Available: true,
+				Source:    input.BaselineJUnitPath,
+				Problems:  problems,
+			}
+		}
+	}
+
+	problemEvidence := selectBaselineProblemEvidence(vcrEvidence, ndjsonEvidence, junitEvidence)
+	if len(problemEvidence.Problems) != 0 {
+		problemEvidence.Problems = correlateBaselineProblems(
+			problemEvidence.Problems,
+			baselineEntries,
+		)
 	}
 
 	requests := make([]harRequest, 0, len(baselineEntries))
@@ -82,6 +120,7 @@ func prepareComparison(input Input) (preparedComparison, error) {
 		baselineEntries:            baselineEntries,
 		baselineProblemCount:       problemCount,
 		baselineProblemCountSource: problemCountSource,
+		baselineProblemEvidence:    problemEvidence,
 		replayRequests:             httpRequests,
 	}, nil
 }
@@ -113,6 +152,7 @@ func persistComparisonArtifacts(
 		BaselineCampaign:           input.BaselineCampaign,
 		BaselineProblemCount:       prepared.baselineProblemCount,
 		BaselineProblemCountSource: prepared.baselineProblemCountSource,
+		BaselineProblemEvidence:    prepared.baselineProblemEvidence,
 		CandidateCampaign:          input.CandidateCampaign,
 		CandidateBaseURL:           input.CandidateBaseURL,
 		Interactions:               interactions,

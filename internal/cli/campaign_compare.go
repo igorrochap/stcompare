@@ -107,11 +107,13 @@ func campaignComparisonInput(
 	candidateReportDir := campaignReportDir(effective, candidateName)
 
 	return comparison.Input{
-		BaselineCampaign:  baselineName,
-		BaselineHARPath:   filepath.Join(baselineReportDir, "campaign.har.json"),
-		BaselineJUnitPath: filepath.Join(baselineReportDir, "junit.xml"),
-		CandidateCampaign: candidateName,
-		CandidateBaseURL:  effective.BaseURL,
-		OutputDir:         candidateReportDir,
+		BaselineCampaign:   baselineName,
+		BaselineHARPath:    filepath.Join(baselineReportDir, "campaign.har.json"),
+		BaselineVCRPath:    filepath.Join(baselineReportDir, "campaign.vcr.yaml"),
+		BaselineNDJSONPath: filepath.Join(baselineReportDir, "campaign.ndjson"),
+		BaselineJUnitPath:  filepath.Join(baselineReportDir, "junit.xml"),
+		CandidateCampaign:  candidateName,
+		CandidateBaseURL:   effective.BaseURL,
+		OutputDir:          candidateReportDir,
 	}
 }

@@ -372,7 +372,7 @@ func newComparisonReportFixture(t *testing.T) comparisonReportFixture {
 
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "1",
+		SchemaVersion: "2",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,
