@@ -114,15 +114,20 @@ http_interactions:
 	}
 }
 
-func TestReadVCRProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
+func TestReadVCRProblemsRoutesRecognizedStatusesThroughAccumulator(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "campaign.vcr.yaml")
 	contents := []byte(`
 http_interactions:
-  - id: case-lower
+  - id: case-problem
     checks:
       - name: status_code_conformance
-        status: failure
+        status: error
         message: "Received an undocumented status code: 418"
+  - id: case-non-problem
+    checks:
+      - name: not_a_server_error
+        status: interrupted
+        message: "Run stopped early"
     request:
       uri: "https://baseline.example.test/widgets"
       method: POST
@@ -138,10 +143,13 @@ http_interactions:
 		t.Fatalf("readVCRProblems returned error: %v", err)
 	}
 	if !got.Complete {
-		t.Fatal("readVCRProblems marked lowercase failure status incomplete")
+		t.Fatal("readVCRProblems marked recognized VCR statuses incomplete")
 	}
 	if len(got.Problems) != 1 {
 		t.Fatalf("readVCRProblems problems = %d, want 1", len(got.Problems))
+	}
+	if got.Problems[0].CheckName != "status_code_conformance" {
+		t.Fatalf("readVCRProblems problem check = %q, want status_code_conformance", got.Problems[0].CheckName)
 	}
 }
 

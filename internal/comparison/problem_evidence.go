@@ -108,10 +108,10 @@ func selectBaselineProblemEvidence(
 }
 
 func classifyCheckStatus(status string) checkStatus {
-	if strings.EqualFold(status, "failure") {
+	switch strings.ToLower(status) {
+	case "failure", "error":
 		return checkStatusFailing
-	}
-	if strings.EqualFold(status, "success") || strings.EqualFold(status, "passed") {
+	case "success", "skip", "interrupted":
 		return checkStatusPassing
 	}
 

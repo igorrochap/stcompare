@@ -105,16 +105,22 @@ func TestReadNDJSONProblemsHandlesLargeScenarioEvent(t *testing.T) {
 	}
 }
 
-func TestReadNDJSONProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
+func TestReadNDJSONProblemsRoutesRecognizedStatusesThroughAccumulator(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "campaign.ndjson")
 	contents := []byte(
-		`{"ScenarioFinished":{"recorder":{"checks":{"case-42":[` +
-			`{"name":"status_code_conformance","status":"FAILURE",` +
+		`{"ScenarioFinished":{"recorder":{"checks":{"case-problem":[` +
+			`{"name":"status_code_conformance","status":"error",` +
 			`"failure_info":{"failure":{"title":"Undocumented status code","message":""}}}` +
-			`]},"interactions":{"case-42":{"request":{` +
+			`],"case-non-problem":[` +
+			`{"name":"not_a_server_error","status":"skip"}` +
+			`]},"interactions":{"case-problem":{"request":{` +
 			`"method":"POST","uri":"https://baseline.example.test/widgets",` +
 			`"headers":{"Content-Type":["application/json"]},` +
 			`"body":{"$base64":"eyJuYW1lIjoiQWRhIn0="}` +
+			`}},"case-non-problem":{"request":{` +
+			`"method":"POST","uri":"https://baseline.example.test/widgets",` +
+			`"headers":{"Content-Type":["application/json"]},` +
+			`"body":{"$base64":"e30="}` +
 			`}}}}}}` + "\n",
 	)
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
@@ -126,10 +132,13 @@ func TestReadNDJSONProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
 		t.Fatalf("readNDJSONProblems returned error: %v", err)
 	}
 	if !got.Complete {
-		t.Fatal("readNDJSONProblems marked uppercase failure status incomplete")
+		t.Fatal("readNDJSONProblems marked recognized NDJSON statuses incomplete")
 	}
 	if len(got.Problems) != 1 {
 		t.Fatalf("readNDJSONProblems problems = %d, want 1", len(got.Problems))
+	}
+	if got.Problems[0].CaseID != "case-problem" {
+		t.Fatalf("readNDJSONProblems problem case = %q, want case-problem", got.Problems[0].CaseID)
 	}
 }
 

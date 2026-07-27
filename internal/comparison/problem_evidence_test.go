@@ -82,9 +82,11 @@ func TestClassifyCheckStatusRecognizesFailingPassingAndUnknownValues(t *testing.
 	}{
 		{status: "FAILURE", want: checkStatusFailing},
 		{status: "failure", want: checkStatusFailing},
+		{status: "error", want: checkStatusFailing},
 		{status: "success", want: checkStatusPassing},
-		{status: "PASSED", want: checkStatusPassing},
-		{status: "skipped", want: checkStatusUnrecognized},
+		{status: "skip", want: checkStatusPassing},
+		{status: "interrupted", want: checkStatusPassing},
+		{status: "nonsense", want: checkStatusUnrecognized},
 	}
 	for _, test := range tests {
 		if got := classifyCheckStatus(test.status); got != test.want {

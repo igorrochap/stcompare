@@ -270,8 +270,11 @@ reports include:
   interaction number when available.
 - A baseline problem aggregate count from JUnit `failure`/`error` elements
   when that artifact is present, plus a separate extracted structured-problem
-  count when structured evidence is available. The two values remain visible
-  independently so extraction discrepancies are auditable.
+  count when structured evidence is available. Structured VCR and NDJSON
+  evidence likewise treat Schemathesis `failure` and `error` checks as
+  problems, while `success`, `skip`, and `interrupted` remain recognized
+  non-problem statuses. The two count values remain visible independently so
+  extraction discrepancies are auditable.
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.
