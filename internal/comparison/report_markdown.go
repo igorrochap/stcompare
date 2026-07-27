@@ -26,6 +26,7 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	output.WriteString("## Summary\n\n")
 	fmt.Fprintf(output, "- Total interactions: %d\n", document.Summary.InteractionCount)
 	writeMarkdownProblemCount(output, document.Baseline)
+	writeMarkdownExtractedProblemCount(output, document.Baseline)
 	fmt.Fprintf(
 		output,
 		"- Candidate latency: minimum %d ms, maximum %d ms, average %d ms\n",
@@ -163,6 +164,23 @@ func writeMarkdownProblemCount(output *strings.Builder, baseline reportCampaign)
 			*baseline.ProblemCountSource,
 		)
 	}
+}
+
+func writeMarkdownExtractedProblemCount(output *strings.Builder, baseline reportCampaign) {
+	if baseline.ExtractedProblemCount == nil {
+		return
+	}
+	if baseline.ExtractedProblemCountSource == nil {
+		fmt.Fprintf(output, "- Extracted baseline problems: %d\n", *baseline.ExtractedProblemCount)
+		return
+	}
+
+	fmt.Fprintf(
+		output,
+		"- Extracted baseline problems: %d (source: `%s`)\n",
+		*baseline.ExtractedProblemCount,
+		*baseline.ExtractedProblemCountSource,
+	)
 }
 
 func writeMarkdownStatusTransitions(

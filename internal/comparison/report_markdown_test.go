@@ -118,3 +118,27 @@ func TestRenderMarkdownMarksAmbiguousBaselineProblemsExplicitly(t *testing.T) {
 		t.Fatalf("renderMarkdown missing ambiguous correlation status:\n%s", markdown)
 	}
 }
+
+func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T) {
+	aggregateCount := 3
+	aggregateSource := "junit.xml"
+	extractedCount := 2
+	extractedSource := "campaign.vcr.yaml"
+	document := report{
+		Baseline: reportCampaign{
+			ProblemCount:                &aggregateCount,
+			ProblemCountSource:          &aggregateSource,
+			ExtractedProblemCount:       &extractedCount,
+			ExtractedProblemCountSource: &extractedSource,
+		},
+	}
+
+	markdown := renderMarkdown(document)
+
+	if !strings.Contains(markdown, "- Baseline problems: 3 (source: `junit.xml`)") {
+		t.Fatalf("renderMarkdown missing aggregate problem count:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "- Extracted baseline problems: 2 (source: `campaign.vcr.yaml`)") {
+		t.Fatalf("renderMarkdown missing extracted problem count:\n%s", markdown)
+	}
+}

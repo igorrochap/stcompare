@@ -268,9 +268,10 @@ reports include:
 - Individual baseline Schemathesis problems with their check name, message,
   evidence source, recorded case ID, reproduction context, and correlated
   interaction number when available.
-- An exact baseline problem count from the selected structured evidence when
-  available. Otherwise, when a JUnit artifact is present, its older
-  `failure`/`error` element count remains visible as aggregate-only evidence.
+- A baseline problem aggregate count from JUnit `failure`/`error` elements
+  when that artifact is present, plus a separate extracted structured-problem
+  count when structured evidence is available. The two values remain visible
+  independently so extraction discrepancies are auditable.
 - Candidate latency per interaction plus minimum, maximum, and average latency
   in milliseconds.
 - Exact status-code transition counts such as `200 -> 404`.

@@ -77,7 +77,7 @@ func TestNewReportRepresentsAvailableZeroProblemEvidence(t *testing.T) {
 	}
 }
 
-func TestNewReportUsesStructuredProblemCountAndSourceWhenAvailable(t *testing.T) {
+func TestNewReportKeepsJUnitProblemCountAndAddsStructuredExtractedCount(t *testing.T) {
 	legacyCount := 1
 	legacySource := "junit.xml"
 	document := newReport(reportInput{
@@ -94,20 +94,28 @@ func TestNewReportUsesStructuredProblemCountAndSourceWhenAvailable(t *testing.T)
 	})
 
 	got := struct {
-		ProblemCount       *int
-		ProblemCountSource *string
+		ProblemCount                *int
+		ProblemCountSource          *string
+		ExtractedProblemCount       *int
+		ExtractedProblemCountSource *string
 	}{
-		ProblemCount:       document.Baseline.ProblemCount,
-		ProblemCountSource: document.Baseline.ProblemCountSource,
+		ProblemCount:                document.Baseline.ProblemCount,
+		ProblemCountSource:          document.Baseline.ProblemCountSource,
+		ExtractedProblemCount:       document.Baseline.ExtractedProblemCount,
+		ExtractedProblemCountSource: document.Baseline.ExtractedProblemCountSource,
 	}
 	structuredCount := 2
 	structuredSource := "campaign.vcr.yaml"
 	want := struct {
-		ProblemCount       *int
-		ProblemCountSource *string
+		ProblemCount                *int
+		ProblemCountSource          *string
+		ExtractedProblemCount       *int
+		ExtractedProblemCountSource *string
 	}{
-		ProblemCount:       &structuredCount,
-		ProblemCountSource: &structuredSource,
+		ProblemCount:                &legacyCount,
+		ProblemCountSource:          &legacySource,
+		ExtractedProblemCount:       &structuredCount,
+		ExtractedProblemCountSource: &structuredSource,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport baseline problem summary = %#v, want %#v", got, want)

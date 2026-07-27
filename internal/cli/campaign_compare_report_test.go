@@ -99,6 +99,7 @@ func TestCampaignCompareKeepsJSONAndMarkdownInSyncWhenBaselineProblemsAreAvailab
 				got.JSONAvailable = document.BaselineProblemsAvailable
 				got.JSONNote = document.BaselineProblemsNote
 				got.JSONProblemCount = len(document.Problems)
+				got.JSONExtractedProblemCount = valueOrZero(document.Baseline.ExtractedProblemCount)
 			}
 		}
 		if got.Error == "" {
@@ -119,9 +120,10 @@ func TestCampaignCompareKeepsJSONAndMarkdownInSyncWhenBaselineProblemsAreAvailab
 		}
 	}
 	want := availableBaselineProblemsOutcome{
-		JSONAvailable:                  true,
-		JSONNote:                       "",
-		JSONProblemCount:               1,
+		JSONAvailable:                    true,
+		JSONNote:                         "",
+		JSONProblemCount:                 1,
+		JSONExtractedProblemCount:        1,
 		MarkdownHasUnavailableDisclosure: false,
 		MarkdownHasProblemSection:        true,
 	}
@@ -619,18 +621,22 @@ type comparisonMarkdownOutcome struct {
 }
 
 type availableBaselineProblemsOutcome struct {
-	Error                          string
-	JSONAvailable                  bool
-	JSONNote                       string
-	JSONProblemCount               int
+	Error                            string
+	JSONAvailable                    bool
+	JSONNote                         string
+	JSONProblemCount                 int
+	JSONExtractedProblemCount        int
 	MarkdownHasUnavailableDisclosure bool
 	MarkdownHasProblemSection        bool
 }
 
 type availableBaselineProblemsJSON struct {
-	BaselineProblemsAvailable bool `json:"baseline_problems_available"`
+	BaselineProblemsAvailable bool   `json:"baseline_problems_available"`
 	BaselineProblemsNote      string `json:"baseline_problems_note"`
-	Problems                  []struct {
+	Baseline                  struct {
+		ExtractedProblemCount *int `json:"extracted_problem_count"`
+	} `json:"baseline"`
+	Problems []struct {
 		CaseID      string `json:"case_id"`
 		Interaction *int   `json:"interaction"`
 	} `json:"problems"`
@@ -689,19 +695,21 @@ type unrecordedBaselineResponseJSON struct {
 }
 
 type comparisonReport struct {
-	SchemaVersion             string                           `json:"schema_version"`
-	Baseline                  comparisonCampaign               `json:"baseline"`
-	Candidate                 comparisonCandidate              `json:"candidate"`
-	Summary                   comparisonSummary                `json:"summary"`
+	SchemaVersion             string                          `json:"schema_version"`
+	Baseline                  comparisonCampaign              `json:"baseline"`
+	Candidate                 comparisonCandidate             `json:"candidate"`
+	Summary                   comparisonSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                            `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                          `json:"baseline_problems_note"`
 	Interactions              []comparisonInteractionEvidence `json:"interactions"`
 }
 
 type comparisonCampaign struct {
-	Campaign           string `json:"campaign"`
-	ProblemCount       int    `json:"problem_count"`
-	ProblemCountSource string `json:"problem_count_source"`
+	Campaign                    string  `json:"campaign"`
+	ProblemCount                int     `json:"problem_count"`
+	ProblemCountSource          string  `json:"problem_count_source"`
+	ExtractedProblemCount       *int    `json:"extracted_problem_count"`
+	ExtractedProblemCountSource *string `json:"extracted_problem_count_source"`
 }
 
 type comparisonCandidate struct {
@@ -753,4 +761,12 @@ type comparisonResponse struct {
 type comparisonStatusTransition struct {
 	Baseline  int `json:"baseline"`
 	Candidate int `json:"candidate"`
+}
+
+func valueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+
+	return *value
 }

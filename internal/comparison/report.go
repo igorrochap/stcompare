@@ -3,25 +3,27 @@ package comparison
 import "sort"
 
 const (
-	reportSchemaVersion        = "2"
+	reportSchemaVersion         = "2"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
 type report struct {
-	SchemaVersion            string                      `json:"schema_version"`
-	Baseline                 reportCampaign              `json:"baseline"`
-	Candidate                reportCandidate             `json:"candidate"`
-	Summary                  reportSummary               `json:"summary"`
+	SchemaVersion             string                      `json:"schema_version"`
+	Baseline                  reportCampaign              `json:"baseline"`
+	Candidate                 reportCandidate             `json:"candidate"`
+	Summary                   reportSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
-	Problems                 []baselineProblem           `json:"problems"`
-	Interactions             []reportInteractionEvidence `json:"interactions"`
+	Problems                  []baselineProblem           `json:"problems"`
+	Interactions              []reportInteractionEvidence `json:"interactions"`
 }
 
 type reportCampaign struct {
-	Campaign           string  `json:"campaign"`
-	ProblemCount       *int    `json:"problem_count"`
-	ProblemCountSource *string `json:"problem_count_source"`
+	Campaign                    string  `json:"campaign"`
+	ProblemCount                *int    `json:"problem_count"`
+	ProblemCountSource          *string `json:"problem_count_source"`
+	ExtractedProblemCount       *int    `json:"extracted_problem_count"`
+	ExtractedProblemCountSource *string `json:"extracted_problem_count_source"`
 }
 
 type reportCandidate struct {
@@ -103,29 +105,31 @@ func newReport(input reportInput) report {
 	}
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
+	var extractedProblemCount *int
+	var extractedProblemCountSource *string
 	if input.BaselineProblemEvidence.Available {
 		count := len(problems)
-		problemCount = &count
-		if input.BaselineProblemEvidence.Source == "" {
-			problemCountSource = nil
-		} else {
+		extractedProblemCount = &count
+		if input.BaselineProblemEvidence.Source != "" {
 			source := input.BaselineProblemEvidence.Source
-			problemCountSource = &source
+			extractedProblemCountSource = &source
 		}
 	}
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
 		Baseline: reportCampaign{
-			Campaign:           input.BaselineCampaign,
-			ProblemCount:       problemCount,
-			ProblemCountSource: problemCountSource,
+			Campaign:                    input.BaselineCampaign,
+			ProblemCount:                problemCount,
+			ProblemCountSource:          problemCountSource,
+			ExtractedProblemCount:       extractedProblemCount,
+			ExtractedProblemCountSource: extractedProblemCountSource,
 		},
 		Candidate: reportCandidate{
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Summary:                  newReportSummary(input.Interactions, interactions),
+		Summary:                   newReportSummary(input.Interactions, interactions),
 		BaselineProblemsAvailable: input.BaselineProblemEvidence.Available,
 		BaselineProblemsNote:      baselineProblemsNote,
 		Problems:                  problems,
