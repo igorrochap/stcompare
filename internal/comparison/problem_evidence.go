@@ -57,6 +57,8 @@ func newStructuredProblemReproduction(
 	headers []harHeader,
 	body []byte,
 ) problemReproduction {
+	// Structured evidence carries full HTTP reproduction data; JUnit only carries
+	// a replay command and does not use this helper.
 	return problemReproduction{
 		Method:  method,
 		URL:     url,

@@ -152,6 +152,6 @@ func (p *junitProblemParser) finalizeGroup() {
 	p.collectingCommand = false
 }
 
-func (p junitProblemParser) result() []baselineProblem {
+func (p *junitProblemParser) result() []baselineProblem {
 	return p.problems
 }
