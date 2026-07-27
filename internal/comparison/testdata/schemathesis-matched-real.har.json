@@ -1,0 +1,31 @@
+{
+    "log": {
+        "version": "1.2",
+        "creator": {
+            "name": "harfile",
+            "version": "0.5.0"
+        },
+        "browser": {
+            "name": "",
+            "version": ""
+        },
+        "entries": [
+            {
+                "startedDateTime": "2026-07-27T17:18:45.845872+00:00",
+                "time": 0.59,
+                "request": {"method": "TRACE", "url": "http://127.0.0.1:18080/widgets", "httpVersion": "HTTP/1.0", "cookies": [], "headers": [{"name": "User-Agent", "value": "schemathesis/4.24.3"}, {"name": "Accept-Encoding", "value": "gzip, deflate"}, {"name": "Accept", "value": "*/*"}, {"name": "Connection", "value": "keep-alive"}, {"name": "X-Schemathesis-TestCaseId", "value": "0DNKjC"}, {"name": "Content-Type", "value": "application/json"}, {"name": "Content-Length", "value": "12"}], "queryString": [], "headersSize": 189, "bodySize": 12, "postData": {"mimeType": "application/json", "text": "{\"name\": \"\"}"}},
+                "response": {"status": 501, "statusText": "Unsupported method ('TRACE')", "httpVersion": "HTTP/1.0", "cookies": [], "headers": [{"name": "server", "value": "BaseHTTP/0.6 Python/3.13.13"}, {"name": "date", "value": "Mon, 27 Jul 2026 17:18:45 GMT"}, {"name": "connection", "value": "close"}, {"name": "content-type", "value": "text/html;charset=utf-8"}, {"name": "content-length", "value": "358"}], "content": {"size": 358, "mimeType": "", "text": "<!DOCTYPE HTML>\n<html lang=\"en\">\n    <head>\n        <meta charset=\"utf-8\">\n        <title>Error response</title>\n    </head>\n    <body>\n        <h1>Error response</h1>\n        <p>Error code: 501</p>\n        <p>Message: Unsupported method ('TRACE').</p>\n        <p>Error code explanation: 501 - Server does not support this operation.</p>\n    </body>\n</html>\n"}, "redirectURL": "", "headersSize": 153, "bodySize": 358},
+                "timings": {"send": 0, "wait": 0, "receive": 0.59, "blocked": 0, "dns": 0, "connect": 0, "ssl": 0},
+                "cache": {}
+            },
+            {
+                "startedDateTime": "2026-07-27T17:18:45.984588+00:00",
+                "time": 0.53,
+                "request": {"method": "POST", "url": "http://127.0.0.1:18080/widgets", "httpVersion": "HTTP/1.0", "cookies": [], "headers": [{"name": "User-Agent", "value": "schemathesis/4.24.3"}, {"name": "Accept-Encoding", "value": "gzip, deflate"}, {"name": "Accept", "value": "*/*"}, {"name": "Connection", "value": "keep-alive"}, {"name": "X-Schemathesis-TestCaseId", "value": "VCAcgA"}, {"name": "Content-Type", "value": "application/json"}, {"name": "Content-Length", "value": "12"}], "queryString": [], "headersSize": 189, "bodySize": 12, "postData": {"mimeType": "application/json", "text": "{\"name\": \"\"}"}},
+                "response": {"status": 201, "statusText": "Created", "httpVersion": "HTTP/1.0", "cookies": [], "headers": [{"name": "server", "value": "BaseHTTP/0.6 Python/3.13.13"}, {"name": "date", "value": "Mon, 27 Jul 2026 17:18:45 GMT"}, {"name": "content-type", "value": "application/json"}], "content": {"size": 20, "mimeType": "", "text": "{\"unexpected\": true}"}, "redirectURL": "", "headersSize": 106, "bodySize": 20},
+                "timings": {"send": 0, "wait": 0, "receive": 0.53, "blocked": 0, "dns": 0, "connect": 0, "ssl": 0},
+                "cache": {}
+            }
+        ]
+    }
+}

@@ -31,9 +31,18 @@ type baselineProblem struct {
 	EvidenceSource    evidenceSource      `json:"evidence_source"`
 	CaseID            string              `json:"case_id"`
 	CorrelationStatus correlationStatus   `json:"correlation_status"`
+	Outcome           problemOutcome      `json:"outcome,omitempty"`
 	Reproduction      problemReproduction `json:"reproduction"`
 	Interaction       *int                `json:"interaction"`
 }
+
+type problemOutcome string
+
+const (
+	problemOutcomeFixed        problemOutcome = "fixed"
+	problemOutcomeStillFailing problemOutcome = "still_failing"
+	problemOutcomeInconclusive problemOutcome = "inconclusive"
+)
 
 type correlationStatus string
 

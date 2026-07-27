@@ -268,15 +268,16 @@ func TestCampaignCompareReportsUnrecordedBaselineResponseAsUnknown(t *testing.T)
 			var document unrecordedBaselineResponseJSON
 			if err := json.Unmarshal(jsonContents, &document); err != nil {
 				got.Error = err.Error()
-			} else if len(document.Interactions) != 1 {
+			} else if len(document.Findings) != 1 {
 				got.Error = fmt.Sprintf(
-					"comparison JSON interactions = %d, want 1",
-					len(document.Interactions),
+					"comparison JSON findings = %d, want 1",
+					len(document.Findings),
 				)
 			} else {
-				interaction := document.Interactions[0]
+				interaction := document.Findings[0]
 				got.JSONStatusTransitions = string(document.Summary.StatusTransitions)
 				got.JSONBaselineResponse = string(interaction.BaselineResponse)
+				got.JSONClassification = interaction.Classification
 				got.JSONTransitionBaseline = string(interaction.StatusTransition.Baseline)
 				got.JSONTransitionCandidate = interaction.StatusTransition.Candidate
 				got.JSONRequestURL = interaction.Request.URL
@@ -293,8 +294,9 @@ func TestCampaignCompareReportsUnrecordedBaselineResponseAsUnknown(t *testing.T)
 			} else {
 				focusedPrefixes := []string{
 					"- Exact status transitions:",
-					"### Interaction ",
+					"### Finding ",
 					"- Candidate target:",
+					"- Classification:",
 					"- Latency:",
 					"- Status transition:",
 					"#### Baseline response:",
@@ -318,6 +320,7 @@ func TestCampaignCompareReportsUnrecordedBaselineResponseAsUnknown(t *testing.T)
 		CandidateRequestCount:   1,
 		JSONStatusTransitions:   "[]",
 		JSONBaselineResponse:    "null",
+		JSONClassification:      "changed",
 		JSONTransitionBaseline:  "null",
 		JSONTransitionCandidate: http.StatusOK,
 		JSONRequestURL:          "http://baseline.invalid/no-recorded-response",
@@ -327,8 +330,9 @@ func TestCampaignCompareReportsUnrecordedBaselineResponseAsUnknown(t *testing.T)
 		JSONLatencyMS:           2,
 		MarkdownLines: []string{
 			"- Exact status transitions: none",
-			"### Interaction 1: `GET http://baseline.invalid/no-recorded-response`",
+			"### Finding 1: `GET http://baseline.invalid/no-recorded-response`",
 			"- Candidate target: `" + server.URL + "/no-recorded-response`",
+			"- Classification: `changed`",
 			"- Latency: 2 ms",
 			"- Status transition: `unknown -> 200`",
 			"#### Baseline response: unknown",
@@ -476,7 +480,7 @@ func newComparisonReportWithProblemsFixture(t *testing.T) comparisonReportFixtur
 
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "2",
+		SchemaVersion: "3",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,
@@ -488,6 +492,11 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 		},
 		Summary: comparisonSummary{
 			InteractionCount: 2,
+			BaselineProblems: comparisonBaselineProblemSummary{},
+			Traffic: comparisonTrafficSummary{
+				Total:   2,
+				Changed: 2,
+			},
 			LatencyMS: comparisonLatency{
 				Minimum: 4,
 				Maximum: 10,
@@ -501,7 +510,7 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 		BaselineProblemsAvailable: false,
 		BaselineProblemsNote: "Baseline Schemathesis problems could not be " +
 			"extracted from structured evidence.",
-		Interactions: []comparisonInteractionEvidence{
+		Findings: []comparisonInteractionEvidence{
 			expectedFirstComparisonInteraction(baseURL),
 			expectedSecondComparisonInteraction(baseURL),
 		},
@@ -510,7 +519,8 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 
 func expectedFirstComparisonInteraction(baseURL string) comparisonInteractionEvidence {
 	return comparisonInteractionEvidence{
-		Interaction: 1,
+		Interaction:    1,
+		Classification: "changed",
 		Request: comparisonRequest{
 			Method: "POST",
 			URL:    "http://baseline.invalid/widgets?dryRun=true",
@@ -552,7 +562,8 @@ func expectedFirstComparisonInteraction(baseURL string) comparisonInteractionEvi
 
 func expectedSecondComparisonInteraction(baseURL string) comparisonInteractionEvidence {
 	return comparisonInteractionEvidence{
-		Interaction: 2,
+		Interaction:    2,
+		Classification: "changed",
 		Request: comparisonRequest{
 			Method: "GET",
 			URL:    "http://baseline.invalid/missing",
@@ -662,6 +673,7 @@ type unrecordedBaselineResponseOutcome struct {
 	CandidateRequestCount   int
 	JSONStatusTransitions   string
 	JSONBaselineResponse    string
+	JSONClassification      string
 	JSONTransitionBaseline  string
 	JSONTransitionCandidate int
 	JSONRequestURL          string
@@ -676,8 +688,9 @@ type unrecordedBaselineResponseJSON struct {
 	Summary struct {
 		StatusTransitions json.RawMessage `json:"status_transitions"`
 	} `json:"summary"`
-	Interactions []struct {
-		Request struct {
+	Findings []struct {
+		Classification string `json:"classification"`
+		Request        struct {
 			URL string `json:"url"`
 		} `json:"request"`
 		TargetURL         string          `json:"target_url"`
@@ -691,7 +704,7 @@ type unrecordedBaselineResponseJSON struct {
 			Baseline  json.RawMessage `json:"baseline"`
 			Candidate int             `json:"candidate"`
 		} `json:"status_transition"`
-	} `json:"interactions"`
+	} `json:"findings"`
 }
 
 type comparisonReport struct {
@@ -701,7 +714,7 @@ type comparisonReport struct {
 	Summary                   comparisonSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                            `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                          `json:"baseline_problems_note"`
-	Interactions              []comparisonInteractionEvidence `json:"interactions"`
+	Findings                  []comparisonInteractionEvidence `json:"findings"`
 }
 
 type comparisonCampaign struct {
@@ -719,8 +732,26 @@ type comparisonCandidate struct {
 
 type comparisonSummary struct {
 	InteractionCount  int                               `json:"interaction_count"`
+	BaselineProblems  comparisonBaselineProblemSummary  `json:"baseline_problems"`
+	Traffic           comparisonTrafficSummary          `json:"traffic"`
 	LatencyMS         comparisonLatency                 `json:"latency_ms"`
 	StatusTransitions []comparisonStatusTransitionCount `json:"status_transitions"`
+}
+
+type comparisonBaselineProblemSummary struct {
+	Total        int `json:"total"`
+	Evaluable    int `json:"evaluable"`
+	Uncorrelated int `json:"uncorrelated"`
+	Fixed        int `json:"fixed"`
+	StillFailing int `json:"still_failing"`
+	Inconclusive int `json:"inconclusive"`
+}
+
+type comparisonTrafficSummary struct {
+	Total            int `json:"total"`
+	SuccessUnchanged int `json:"success_unchanged"`
+	Changed          int `json:"changed"`
+	Regressed        int `json:"regressed"`
 }
 
 type comparisonLatency struct {
@@ -737,6 +768,7 @@ type comparisonStatusTransitionCount struct {
 
 type comparisonInteractionEvidence struct {
 	Interaction       int                        `json:"interaction"`
+	Classification    string                     `json:"classification"`
 	Request           comparisonRequest          `json:"request"`
 	TargetURL         string                     `json:"target_url"`
 	BaselineResponse  comparisonResponse         `json:"baseline_response"`

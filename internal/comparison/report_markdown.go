@@ -13,9 +13,9 @@ func renderMarkdown(document report) string {
 	if len(document.Problems) != 0 {
 		writeMarkdownProblems(&output, document.Problems)
 	}
-	output.WriteString("\n## Interaction evidence\n")
+	output.WriteString("\n## Findings\n")
 
-	for _, interaction := range document.Interactions {
+	for _, interaction := range document.Findings {
 		writeMarkdownInteraction(&output, interaction)
 	}
 
@@ -27,6 +27,8 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Total interactions: %d\n", document.Summary.InteractionCount)
 	writeMarkdownProblemCount(output, document.Baseline)
 	writeMarkdownExtractedProblemCount(output, document.Baseline)
+	writeMarkdownBaselineProblemSummary(output, document.Summary.BaselineProblems)
+	writeMarkdownTrafficSummary(output, document.Summary.Traffic)
 	fmt.Fprintf(
 		output,
 		"- Candidate latency: minimum %d ms, maximum %d ms, average %d ms\n",
@@ -39,7 +41,11 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Candidate campaign: `%s`\n", document.Candidate.Campaign)
 	fmt.Fprintf(output, "- Candidate base URL: `%s`\n", document.Candidate.BaseURL)
 	if !document.BaselineProblemsAvailable {
-		fmt.Fprintf(output, "\n> Baseline Schemathesis problems are unavailable: %s\n", document.BaselineProblemsNote)
+		fmt.Fprintf(
+			output,
+			"\n> Baseline Schemathesis problems are unavailable: %s\n",
+			document.BaselineProblemsNote,
+		)
 	}
 }
 
@@ -59,6 +65,9 @@ func writeMarkdownProblem(
 	fmt.Fprintf(output, "- Message: %s\n", problem.Message)
 	fmt.Fprintf(output, "- Evidence source: `%s`\n", problem.EvidenceSource)
 	fmt.Fprintf(output, "- Case ID: `%s`\n", problem.CaseID)
+	if problem.Outcome != "" {
+		fmt.Fprintf(output, "- Outcome: `%s`\n", problem.Outcome)
+	}
 	switch problem.CorrelationStatus {
 	case correlationStatusCorrelated:
 		if problem.Interaction == nil {
@@ -107,12 +116,15 @@ func writeMarkdownInteraction(
 ) {
 	fmt.Fprintf(
 		output,
-		"\n### Interaction %d: `%s %s`\n\n",
+		"\n### Finding %d: `%s %s`\n\n",
 		interaction.Interaction,
 		interaction.Request.Method,
 		interaction.Request.URL,
 	)
 	fmt.Fprintf(output, "- Candidate target: `%s`\n", interaction.TargetURL)
+	if interaction.Classification != "" {
+		fmt.Fprintf(output, "- Classification: `%s`\n", interaction.Classification)
+	}
 	fmt.Fprintf(output, "- Latency: %d ms\n", interaction.LatencyMS)
 	writeMarkdownStatusTransition(output, interaction.StatusTransition)
 
@@ -184,6 +196,34 @@ func writeMarkdownExtractedProblemCount(output *strings.Builder, baseline report
 		"- Extracted baseline problems: %d (source: `%s`)\n",
 		*baseline.ExtractedProblemCount,
 		*baseline.ExtractedProblemCountSource,
+	)
+}
+
+func writeMarkdownBaselineProblemSummary(
+	output *strings.Builder,
+	summary baselineProblemSummary,
+) {
+	fmt.Fprintf(
+		output,
+		"- Baseline problem outcomes: total %d, evaluable %d, fixed %d, "+
+			"still failing %d, inconclusive %d, uncorrelated %d\n",
+		summary.Total,
+		summary.Evaluable,
+		summary.Fixed,
+		summary.StillFailing,
+		summary.Inconclusive,
+		summary.Uncorrelated,
+	)
+}
+
+func writeMarkdownTrafficSummary(output *strings.Builder, summary trafficSummary) {
+	fmt.Fprintf(
+		output,
+		"- Traffic classifications: total %d, success unchanged %d, changed %d, regressed %d\n",
+		summary.Total,
+		summary.SuccessUnchanged,
+		summary.Changed,
+		summary.Regressed,
 	)
 }
 
