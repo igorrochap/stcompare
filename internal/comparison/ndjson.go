@@ -55,23 +55,24 @@ type ndjsonBody struct {
 	Base64 string `json:"$base64"`
 }
 
-func readNDJSONProblems(path string) ([]baselineProblem, error) {
+func readNDJSONProblems(path string) (parsedProblemEvidence, error) {
 	document, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read baseline NDJSON: %w", err)
+		return parsedProblemEvidence{}, fmt.Errorf("read baseline NDJSON: %w", err)
 	}
 	defer func() {
 		_ = document.Close()
 	}()
 
 	var problems []baselineProblem
+	failingChecks := 0
 	reader := bufio.NewReader(document)
 	for lineNumber := 1; ; lineNumber++ {
 		line, readErr := reader.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) != 0 {
 			var event ndjsonEvent
 			if err := json.Unmarshal(line, &event); err != nil {
-				return nil, fmt.Errorf("decode baseline NDJSON line %d: %w", lineNumber, err)
+				return parsedProblemEvidence{}, fmt.Errorf("decode baseline NDJSON line %d: %w", lineNumber, err)
 			}
 			if event.ScenarioFinished != nil {
 				recorder := event.ScenarioFinished.Recorder
@@ -85,7 +86,7 @@ func readNDJSONProblems(path string) ([]baselineProblem, error) {
 					interaction := recorder.Interactions[caseID]
 					body, err := base64.StdEncoding.DecodeString(interaction.Request.Body.Base64)
 					if err != nil {
-						return nil, fmt.Errorf(
+						return parsedProblemEvidence{}, fmt.Errorf(
 							"decode baseline NDJSON request body for case %q: %w",
 							caseID,
 							err,
@@ -94,9 +95,10 @@ func readNDJSONProblems(path string) ([]baselineProblem, error) {
 					headers := flattenNDJSONHeaders(interaction.Request.Headers)
 
 					for _, check := range recorder.Checks[caseID] {
-						if check.Status != "failure" {
+						if !isFailingCheckStatus(check.Status) {
 							continue
 						}
+						failingChecks++
 
 						message := ""
 						if check.FailureInfo != nil {
@@ -125,11 +127,14 @@ func readNDJSONProblems(path string) ([]baselineProblem, error) {
 			break
 		}
 		if readErr != nil {
-			return nil, fmt.Errorf("read baseline NDJSON line %d: %w", lineNumber, readErr)
+			return parsedProblemEvidence{}, fmt.Errorf("read baseline NDJSON line %d: %w", lineNumber, readErr)
 		}
 	}
 
-	return problems, nil
+	return parsedProblemEvidence{
+		Problems: problems,
+		Complete: failingChecks == 0 || len(problems) != 0,
+	}, nil
 }
 
 func flattenNDJSONHeaders(headers map[string][]string) []harHeader {

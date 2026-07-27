@@ -53,33 +53,35 @@ type vcrBody struct {
 	Base64String *string `yaml:"base64_string"`
 }
 
-func readVCRProblems(path string) ([]baselineProblem, error) {
+func readVCRProblems(path string) (parsedProblemEvidence, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read baseline VCR: %w", err)
+		return parsedProblemEvidence{}, fmt.Errorf("read baseline VCR: %w", err)
 	}
 
 	var document vcrDocument
 	if err := yaml.Unmarshal(contents, &document); err != nil {
-		return nil, fmt.Errorf("decode baseline VCR: %w", err)
+		return parsedProblemEvidence{}, fmt.Errorf("decode baseline VCR: %w", err)
 	}
 
 	var problems []baselineProblem
+	failingChecks := 0
 	for _, interaction := range document.HTTPInteractions {
 		body := []byte(interaction.Request.Body.String)
 		if interaction.Request.Body.Base64String != nil {
 			decoded, err := base64.StdEncoding.DecodeString(*interaction.Request.Body.Base64String)
 			if err != nil {
-				return nil, fmt.Errorf("decode baseline VCR request body: %w", err)
+				return parsedProblemEvidence{}, fmt.Errorf("decode baseline VCR request body: %w", err)
 			}
 			body = decoded
 		}
 		headers := flattenVCRHeaders(interaction.Request.Headers)
 
 		for _, check := range interaction.Checks {
-			if check.Status != "FAILURE" {
+			if !isFailingCheckStatus(check.Status) {
 				continue
 			}
+			failingChecks++
 			problems = append(problems, baselineProblem{
 				CheckName:      check.Name,
 				Message:        check.Message,
@@ -95,7 +97,10 @@ func readVCRProblems(path string) ([]baselineProblem, error) {
 		}
 	}
 
-	return problems, nil
+	return parsedProblemEvidence{
+		Problems: problems,
+		Complete: failingChecks == 0 || len(problems) != 0,
+	}, nil
 }
 
 func flattenVCRHeaders(headers map[string][]string) []harHeader {

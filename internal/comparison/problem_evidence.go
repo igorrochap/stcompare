@@ -3,28 +3,37 @@ package comparison
 import (
 	"errors"
 	"os"
+	"strings"
 )
+
+type parsedProblemEvidence struct {
+	Problems []baselineProblem
+	Complete bool
+}
 
 func readOptionalProblemEvidence(
 	path string,
-	readProblems func(string) ([]baselineProblem, error),
+	readProblems func(string) (parsedProblemEvidence, error),
 ) (baselineProblemEvidence, error) {
 	if path == "" {
 		return baselineProblemEvidence{}, nil
 	}
 
-	problems, err := readProblems(path)
+	parsed, err := readProblems(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return baselineProblemEvidence{}, nil
 	}
 	if err != nil {
 		return baselineProblemEvidence{}, err
 	}
+	if !parsed.Complete {
+		return baselineProblemEvidence{}, nil
+	}
 
 	return baselineProblemEvidence{
 		Available: true,
 		Source:    path,
-		Problems:  problems,
+		Problems:  parsed.Problems,
 	}, nil
 }
 
@@ -44,4 +53,8 @@ func selectBaselineProblemEvidence(
 	}
 
 	return baselineProblemEvidence{}
+}
+
+func isFailingCheckStatus(status string) bool {
+	return strings.EqualFold(status, "failure")
 }

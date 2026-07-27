@@ -71,8 +71,11 @@ http_interactions:
 			},
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("readVCRProblems = %#v, want %#v", got, want)
+	if !got.Complete {
+		t.Fatal("readVCRProblems marked complete VCR evidence incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readVCRProblems problems = %#v, want %#v", got.Problems, want)
 	}
 }
 
@@ -101,12 +104,43 @@ http_interactions:
 		t.Fatalf("readVCRProblems returned error: %v", err)
 	}
 
-	bodies := make([]string, 0, len(problems))
-	for _, problem := range problems {
+	bodies := make([]string, 0, len(problems.Problems))
+	for _, problem := range problems.Problems {
 		bodies = append(bodies, problem.Reproduction.Body)
 	}
 	want := []string{`{"name":"Ada"}`}
 	if !reflect.DeepEqual(bodies, want) {
 		t.Fatalf("readVCRProblems bodies = %#v, want %#v", bodies, want)
+	}
+}
+
+func TestReadVCRProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign.vcr.yaml")
+	contents := []byte(`
+http_interactions:
+  - id: case-lower
+    checks:
+      - name: status_code_conformance
+        status: failure
+        message: "Received an undocumented status code: 418"
+    request:
+      uri: "https://baseline.example.test/widgets"
+      method: POST
+      body:
+        string: '{"name":"Ada"}'
+`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write VCR fixture: %v", err)
+	}
+
+	got, err := readVCRProblems(path)
+	if err != nil {
+		t.Fatalf("readVCRProblems returned error: %v", err)
+	}
+	if !got.Complete {
+		t.Fatal("readVCRProblems marked lowercase failure status incomplete")
+	}
+	if len(got.Problems) != 1 {
+		t.Fatalf("readVCRProblems problems = %d, want 1", len(got.Problems))
 	}
 }

@@ -47,8 +47,11 @@ func TestReadNDJSONProblemsExtractsScenarioFailures(t *testing.T) {
 			},
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("readNDJSONProblems = %#v, want %#v", got, want)
+	if !got.Complete {
+		t.Fatal("readNDJSONProblems marked complete NDJSON evidence incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readNDJSONProblems problems = %#v, want %#v", got.Problems, want)
 	}
 }
 
@@ -80,7 +83,7 @@ func TestReadNDJSONProblemsHandlesLargeScenarioEvent(t *testing.T) {
 	if err != nil {
 		got.Error = err.Error()
 	}
-	for _, problem := range problems {
+	for _, problem := range problems.Problems {
 		got.Problems = append(got.Problems, problemIdentity{
 			CaseID:    problem.CaseID,
 			CheckName: problem.CheckName,
@@ -99,5 +102,33 @@ func TestReadNDJSONProblemsHandlesLargeScenarioEvent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("readNDJSONProblems large-line outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadNDJSONProblemsMatchesFailureStatusCaseInsensitively(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "campaign.ndjson")
+	contents := []byte(
+		`{"ScenarioFinished":{"recorder":{"checks":{"case-42":[` +
+			`{"name":"status_code_conformance","status":"FAILURE",` +
+			`"failure_info":{"failure":{"title":"Undocumented status code","message":""}}}` +
+			`]},"interactions":{"case-42":{"request":{` +
+			`"method":"POST","uri":"https://baseline.example.test/widgets",` +
+			`"headers":{"Content-Type":["application/json"]},` +
+			`"body":{"$base64":"eyJuYW1lIjoiQWRhIn0="}` +
+			`}}}}}}` + "\n",
+	)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write NDJSON fixture: %v", err)
+	}
+
+	got, err := readNDJSONProblems(path)
+	if err != nil {
+		t.Fatalf("readNDJSONProblems returned error: %v", err)
+	}
+	if !got.Complete {
+		t.Fatal("readNDJSONProblems marked uppercase failure status incomplete")
+	}
+	if len(got.Problems) != 1 {
+		t.Fatalf("readNDJSONProblems problems = %d, want 1", len(got.Problems))
 	}
 }

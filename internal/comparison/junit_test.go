@@ -83,8 +83,11 @@ curl -X POST 'https://baseline.example.test/widgets' \
 			},
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("readJUnitProblems = %#v, want %#v", got, want)
+	if !got.Complete {
+		t.Fatal("readJUnitProblems marked complete JUnit evidence incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readJUnitProblems problems = %#v, want %#v", got.Problems, want)
 	}
 }
 
@@ -108,7 +111,7 @@ func TestReadJUnitProblemsIgnoresUnstructuredFailure(t *testing.T) {
 		Error    string
 		Problems []baselineProblem
 	}{
-		Problems: problems,
+		Problems: problems.Problems,
 	}
 	if err != nil {
 		got.Error = err.Error()
@@ -194,7 +197,10 @@ curl https://baseline.example.test/two
 			},
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("readJUnitProblems = %#v, want %#v", got, want)
+	if !got.Complete {
+		t.Fatal("readJUnitProblems marked complete JUnit evidence incomplete")
+	}
+	if !reflect.DeepEqual(got.Problems, want) {
+		t.Fatalf("readJUnitProblems problems = %#v, want %#v", got.Problems, want)
 	}
 }

@@ -9,9 +9,16 @@ import (
 	"strings"
 )
 
-func readJUnitProblems(path string) ([]baselineProblem, error) {
-	problems, _, err := readJUnitProblemEvidence(path)
-	return problems, err
+func readJUnitProblems(path string) (parsedProblemEvidence, error) {
+	problems, complete, err := readJUnitProblemEvidence(path)
+	if err != nil {
+		return parsedProblemEvidence{}, err
+	}
+
+	return parsedProblemEvidence{
+		Problems: problems,
+		Complete: complete,
+	}, nil
 }
 
 func readJUnitProblemEvidence(path string) ([]baselineProblem, bool, error) {
