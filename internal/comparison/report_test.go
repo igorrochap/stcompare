@@ -84,8 +84,8 @@ func TestNewReportKeepsJUnitProblemCountAndAddsStructuredExtractedCount(t *testi
 		BaselineProblemCount:       &legacyCount,
 		BaselineProblemCountSource: &legacySource,
 		BaselineProblemEvidence: baselineProblemEvidence{
-			Available: true,
-			Source:    "campaign.vcr.yaml",
+			Available:  true,
+			SourcePath: "campaign.vcr.yaml",
 			Problems: []baselineProblem{
 				{EvidenceSource: "vcr", CaseID: "case-1"},
 				{EvidenceSource: "vcr", CaseID: "case-2"},

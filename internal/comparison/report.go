@@ -88,9 +88,9 @@ type reportInput struct {
 }
 
 type baselineProblemEvidence struct {
-	Available bool
-	Source    string
-	Problems  []baselineProblem
+	Available  bool
+	SourcePath string
+	Problems   []baselineProblem
 }
 
 type baselineProblemReportState struct {
@@ -151,8 +151,8 @@ func (e baselineProblemEvidence) reportState() baselineProblemReportState {
 	state.note = ""
 	count := len(problems)
 	state.extractedProblemCount = &count
-	if e.Source != "" {
-		source := e.Source
+	if e.SourcePath != "" {
+		source := e.SourcePath
 		state.extractedProblemCountSource = &source
 	}
 

@@ -86,8 +86,8 @@ http_interactions:
 
 	interaction := 1
 	want := baselineProblemEvidence{
-		Available: true,
-		Source:    vcrPath,
+		Available:  true,
+		SourcePath: vcrPath,
 		Problems: []baselineProblem{
 			{
 				CheckName:         "status_code_conformance",
@@ -323,9 +323,9 @@ curl https://baseline.example.test/probe
 		}
 		if test.want.Available {
 			if test.ndjson != "" {
-				test.want.Source = ndjsonPath
+				test.want.SourcePath = ndjsonPath
 			} else {
-				test.want.Source = junitPath
+				test.want.SourcePath = junitPath
 			}
 		}
 
@@ -418,8 +418,8 @@ http_interactions:
 
 	interaction := 1
 	want := baselineProblemEvidence{
-		Available: true,
-		Source:    ndjsonPath,
+		Available:  true,
+		SourcePath: ndjsonPath,
 		Problems: []baselineProblem{
 			{
 				CheckName:         "not_a_server_error",
@@ -560,8 +560,8 @@ curl https://baseline.example.test/two
 			interactionOne := 1
 			interactionTwo := 2
 			expected = baselineProblemEvidence{
-				Available: true,
-				Source:    junitPath,
+				Available:  true,
+				SourcePath: junitPath,
 				Problems: []baselineProblem{
 					{
 						CheckName:         "First failed check",

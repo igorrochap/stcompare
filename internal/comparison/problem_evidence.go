@@ -77,9 +77,9 @@ func readOptionalProblemEvidence(
 	}
 
 	return baselineProblemEvidence{
-		Available: true,
-		Source:    path,
-		Problems:  parsed.Problems,
+		Available:  true,
+		SourcePath: path,
+		Problems:   parsed.Problems,
 	}, nil
 }
 
