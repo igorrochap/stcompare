@@ -16,6 +16,15 @@ type PreconditionPolicy struct {
 	Heuristics              []PreconditionHeuristic `json:"precondition_heuristics"`
 }
 
+func (p PreconditionPolicy) clone() PreconditionPolicy {
+	clone := PreconditionPolicy{
+		MissingResourceStatuses: append([]int(nil), p.MissingResourceStatuses...),
+		Heuristics:              append([]PreconditionHeuristic(nil), p.Heuristics...),
+	}
+
+	return clone
+}
+
 // PreconditionHeuristic matches one request category in configured order.
 type PreconditionHeuristic struct {
 	Name        string `json:"name"`

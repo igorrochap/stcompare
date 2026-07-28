@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"slices"
 	"strings"
 )
 
@@ -18,7 +19,7 @@ type report struct {
 	SchemaVersion             string                      `json:"schema_version"`
 	Baseline                  reportCampaign              `json:"baseline"`
 	Candidate                 reportCandidate             `json:"candidate"`
-	Comparison                PreconditionPolicy          `json:"comparison"`
+	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
 	Summary                   reportSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
@@ -136,6 +137,12 @@ type classifiedReport struct {
 	traffic          trafficSummary
 }
 
+type problemClassification struct {
+	outcome                      problemOutcome
+	outcomeReason                problemOutcomeReason
+	matchedPreconditionHeuristic string
+}
+
 type interactionClassification string
 
 const (
@@ -147,18 +154,7 @@ const (
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
 	problemState := input.BaselineProblemEvidence.reportState()
-	policy := PreconditionPolicy{
-		MissingResourceStatuses: make(
-			[]int,
-			len(input.PreconditionPolicy.MissingResourceStatuses),
-		),
-		Heuristics: make(
-			[]PreconditionHeuristic,
-			len(input.PreconditionPolicy.Heuristics),
-		),
-	}
-	copy(policy.MissingResourceStatuses, input.PreconditionPolicy.MissingResourceStatuses)
-	copy(policy.Heuristics, input.PreconditionPolicy.Heuristics)
+	policy := input.PreconditionPolicy.clone()
 	classification := classifyReport(
 		problemState.problems,
 		interactions,
@@ -180,7 +176,7 @@ func newReport(input reportInput) report {
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
-		Comparison:                policy,
+		ComparisonPolicy:          policy,
 		Summary:                   newReportSummary(input.Interactions, interactions, classification),
 		BaselineProblemsAvailable: problemState.available,
 		BaselineProblemsNote:      problemState.note,
@@ -284,38 +280,19 @@ func classifyReport(
 		}
 
 		interaction := classified.interactions[*problem.Interaction-1]
-		// Problem outcome precedence:
-		// 1. candidate 5xx + server-error check => still_failing
-		// 2. matching precondition heuristic => generated_resource_precondition_loss
-		// 3. non-heuristic server-error check => inconclusive
-		// 4. everything else => no issue-08 outcome
-		//
-		// Rank 1 cannot overlap rank 2 in valid configuration: precondition
-		// heuristics only apply to configured missing-resource statuses, and config
-		// validation excludes 5xx from that set.
-		if isServerErrorStatus(interaction.CandidateResponse.Status) {
-			if isServerErrorCheck(problem.CheckName) {
-				classified.baselineProblems.Evaluable++
-				problem.Outcome = problemOutcomeStillFailing
-				classified.baselineProblems.StillFailing++
-			}
+		classification := classifyProblem(*problem, interaction, policy)
+		problem.Outcome = classification.outcome
+		problem.OutcomeReason = classification.outcomeReason
+		problem.MatchedPreconditionHeuristic =
+			classification.matchedPreconditionHeuristic
+		if classification.outcome == "" {
 			continue
 		}
-
-		heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
-		if matched {
-			classified.baselineProblems.Evaluable++
-			problem.Outcome = problemOutcomeInconclusive
-			problem.OutcomeReason =
-				problemOutcomeReasonGeneratedResourcePreconditionLoss
-			problem.MatchedPreconditionHeuristic = heuristic.Name
-			classified.baselineProblems.Inconclusive++
-			continue
-		}
-
-		if isServerErrorCheck(problem.CheckName) {
-			classified.baselineProblems.Evaluable++
-			problem.Outcome = problemOutcomeInconclusive
+		classified.baselineProblems.Evaluable++
+		switch classification.outcome {
+		case problemOutcomeStillFailing:
+			classified.baselineProblems.StillFailing++
+		case problemOutcomeInconclusive:
 			classified.baselineProblems.Inconclusive++
 		}
 	}
@@ -328,14 +305,51 @@ func classifyReport(
 	return classified
 }
 
+func classifyProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	// Problem outcome precedence:
+	// 1. candidate 5xx + server-error check => still_failing
+	// 2. matching precondition heuristic => generated_resource_precondition_loss
+	// 3. non-heuristic server-error check => inconclusive
+	// 4. everything else => no issue-08 outcome
+	//
+	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
+	// heuristics only apply to configured missing-resource statuses, and config
+	// validation excludes 5xx from that set.
+	if isServerErrorStatus(interaction.CandidateResponse.Status) {
+		if isServerErrorCheck(problem.CheckName) {
+			return problemClassification{outcome: problemOutcomeStillFailing}
+		}
+
+		return problemClassification{}
+	}
+
+	heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
+	if matched {
+		return problemClassification{
+			outcome:                      problemOutcomeInconclusive,
+			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+			matchedPreconditionHeuristic: heuristic.Name,
+		}
+	}
+
+	if isServerErrorCheck(problem.CheckName) {
+		return problemClassification{outcome: problemOutcomeInconclusive}
+	}
+
+	return problemClassification{}
+}
+
 func matchingPreconditionHeuristic(
 	policy PreconditionPolicy,
 	interaction reportInteractionEvidence,
 ) (PreconditionHeuristic, bool) {
 	if interaction.BaselineResponse == nil ||
-		interaction.BaselineResponse.Status < 200 ||
-		interaction.BaselineResponse.Status > 299 ||
-		!containsStatus(policy.MissingResourceStatuses, interaction.CandidateResponse.Status) {
+		!isSuccessStatus(interaction.BaselineResponse.Status) ||
+		!slices.Contains(policy.MissingResourceStatuses, interaction.CandidateResponse.Status) {
 		return PreconditionHeuristic{}, false
 	}
 
@@ -355,16 +369,6 @@ func matchingPreconditionHeuristic(
 	return PreconditionHeuristic{}, false
 }
 
-func containsStatus(statuses []int, candidate int) bool {
-	for _, status := range statuses {
-		if candidate == status {
-			return true
-		}
-	}
-
-	return false
-}
-
 func isServerErrorCheck(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "not_a_server_error", "server error":
@@ -376,6 +380,10 @@ func isServerErrorCheck(name string) bool {
 
 func isServerErrorStatus(status int) bool {
 	return status >= 500 && status <= 599
+}
+
+func isSuccessStatus(status int) bool {
+	return status >= 200 && status <= 299
 }
 
 func isCandidateServerErrorRegression(

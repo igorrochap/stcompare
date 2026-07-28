@@ -100,7 +100,7 @@ curl https://baseline.example.test/widgets
 
 func TestRenderMarkdownShowsPreconditionPolicyAndProblemEvidence(t *testing.T) {
 	document := report{
-		Comparison: PreconditionPolicy{
+		ComparisonPolicy: PreconditionPolicy{
 			MissingResourceStatuses: []int{403, 404},
 			Heuristics: []PreconditionHeuristic{
 				NewPreconditionHeuristic(

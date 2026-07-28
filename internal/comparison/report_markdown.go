@@ -10,7 +10,7 @@ func renderMarkdown(document report) string {
 	var output strings.Builder
 	output.WriteString("# Campaign comparison\n\n")
 	writeMarkdownSummary(&output, document)
-	writeMarkdownComparisonPolicy(&output, document.Comparison)
+	writeMarkdownComparisonPolicy(&output, document.ComparisonPolicy)
 	if len(document.Problems) != 0 {
 		writeMarkdownProblems(&output, document.Problems)
 	}
