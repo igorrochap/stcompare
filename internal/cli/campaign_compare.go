@@ -130,11 +130,11 @@ func campaignPreconditionPolicy(source config.ComparisonConfig) comparison.Preco
 	}
 	copy(policy.MissingResourceStatuses, source.MissingResourceStatuses)
 	for index, heuristic := range source.PreconditionHeuristics {
-		policy.Heuristics[index] = comparison.PreconditionHeuristic{
-			Name:        strings.TrimSpace(heuristic.Name),
-			Method:      strings.TrimSpace(heuristic.Method),
-			PathPattern: heuristic.PathPattern,
-		}
+		policy.Heuristics[index] = comparison.NewPreconditionHeuristic(
+			strings.TrimSpace(heuristic.Name),
+			strings.TrimSpace(heuristic.Method),
+			heuristic.PathPattern,
+		)
 	}
 
 	return policy

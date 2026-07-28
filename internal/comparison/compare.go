@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -20,6 +21,16 @@ type PreconditionHeuristic struct {
 	Name        string `json:"name"`
 	Method      string `json:"method"`
 	PathPattern string `json:"path_pattern"`
+	pathPattern *regexp.Regexp
+}
+
+func NewPreconditionHeuristic(name, method, pathPattern string) PreconditionHeuristic {
+	return PreconditionHeuristic{
+		Name:        name,
+		Method:      method,
+		PathPattern: pathPattern,
+		pathPattern: regexp.MustCompile(pathPattern),
+	}
 }
 
 // Input identifies the baseline evidence, candidate target, and output location

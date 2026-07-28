@@ -103,11 +103,11 @@ func TestRenderMarkdownShowsPreconditionPolicyAndProblemEvidence(t *testing.T) {
 		Comparison: PreconditionPolicy{
 			MissingResourceStatuses: []int{403, 404},
 			Heuristics: []PreconditionHeuristic{
-				{
-					Name:        "generated-widget",
-					Method:      "GET",
-					PathPattern: `^/widgets/[0-9a-f]+$`,
-				},
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
 			},
 		},
 		Problems: []baselineProblem{

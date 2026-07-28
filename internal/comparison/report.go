@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -348,11 +347,7 @@ func matchingPreconditionHeuristic(
 		if !strings.EqualFold(interaction.Request.Method, heuristic.Method) {
 			continue
 		}
-		matched, err := regexp.MatchString(heuristic.PathPattern, requestURL.Path)
-		if err != nil {
-			continue
-		}
-		if matched {
+		if heuristic.pathPattern.MatchString(requestURL.Path) {
 			return heuristic, true
 		}
 	}

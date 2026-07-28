@@ -23,11 +23,11 @@ func TestCampaignPreconditionPolicyTrimsHeuristicNameAndMethod(t *testing.T) {
 	want := comparison.PreconditionPolicy{
 		MissingResourceStatuses: []int{404},
 		Heuristics: []comparison.PreconditionHeuristic{
-			{
-				Name:        "generated-widget",
-				Method:      "GET",
-				PathPattern: `^/widgets/[0-9a-f]+$`,
-			},
+			comparison.NewPreconditionHeuristic(
+				"generated-widget",
+				"GET",
+				`^/widgets/[0-9a-f]+$`,
+			),
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

@@ -149,16 +149,16 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		PreconditionPolicy: PreconditionPolicy{
 			MissingResourceStatuses: []int{403, 404},
 			Heuristics: []PreconditionHeuristic{
-				{
-					Name:        "generated-widget",
-					Method:      "GET",
-					PathPattern: `^/widgets/[0-9a-f]+$`,
-				},
-				{
-					Name:        "deleted-account",
-					Method:      "DELETE",
-					PathPattern: `^/accounts/[0-9]+$`,
-				},
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
+				NewPreconditionHeuristic(
+					"deleted-account",
+					"DELETE",
+					`^/accounts/[0-9]+$`,
+				),
 			},
 		},
 	})
@@ -418,11 +418,11 @@ func TestNewReportClassifiesMatchingPreconditionLossInconclusive(t *testing.T) {
 		PreconditionPolicy: PreconditionPolicy{
 			MissingResourceStatuses: []int{404, 410},
 			Heuristics: []PreconditionHeuristic{
-				{
-					Name:        "generated-widget",
-					Method:      "GET",
-					PathPattern: `^/widgets/[0-9a-f]+$`,
-				},
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
 			},
 		},
 		BaselineProblemEvidence: baselineProblemEvidence{
@@ -491,11 +491,11 @@ func TestNewReportClassifiesEveryProblemForMatchingPreconditionLoss(t *testing.T
 		PreconditionPolicy: PreconditionPolicy{
 			MissingResourceStatuses: []int{404, 410},
 			Heuristics: []PreconditionHeuristic{
-				{
-					Name:        "generated-widget",
-					Method:      "GET",
-					PathPattern: `^/widgets/[0-9a-f]+$`,
-				},
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
 			},
 		},
 		BaselineProblemEvidence: baselineProblemEvidence{
@@ -603,11 +603,11 @@ func TestNewReportClassifiesEveryProblemForMatchingPreconditionLoss(t *testing.T
 }
 
 func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
-	generatedWidget := PreconditionHeuristic{
-		Name:        "generated-widget",
-		Method:      "GET",
-		PathPattern: `^/widgets/[0-9a-f]+$`,
-	}
+	generatedWidget := NewPreconditionHeuristic(
+		"generated-widget",
+		"GET",
+		`^/widgets/[0-9a-f]+$`,
+	)
 	policy := func(statuses ...int) PreconditionPolicy {
 		return PreconditionPolicy{
 			MissingResourceStatuses: statuses,
@@ -677,11 +677,11 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			policy: PreconditionPolicy{
 				MissingResourceStatuses: []int{404},
 				Heuristics: []PreconditionHeuristic{
-					{
-						Name:        "generated-widget",
-						Method:      "get",
-						PathPattern: `^/widgets/[0-9a-f]+$`,
-					},
+					NewPreconditionHeuristic(
+						"generated-widget",
+						"get",
+						`^/widgets/[0-9a-f]+$`,
+					),
 				},
 			},
 			checkName:       "response_schema_conformance",
@@ -701,16 +701,16 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			policy: PreconditionPolicy{
 				MissingResourceStatuses: []int{404},
 				Heuristics: []PreconditionHeuristic{
-					{
-						Name:        "first-widget",
-						Method:      "GET",
-						PathPattern: `^/widgets/.*$`,
-					},
-					{
-						Name:        "second-widget",
-						Method:      "GET",
-						PathPattern: `^/widgets/[0-9a-f]+$`,
-					},
+					NewPreconditionHeuristic(
+						"first-widget",
+						"GET",
+						`^/widgets/.*$`,
+					),
+					NewPreconditionHeuristic(
+						"second-widget",
+						"GET",
+						`^/widgets/[0-9a-f]+$`,
+					),
 				},
 			},
 			checkName:       "response_schema_conformance",
