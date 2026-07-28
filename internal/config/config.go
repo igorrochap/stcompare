@@ -73,19 +73,20 @@ func (c Config) Validate() error {
 	}
 	heuristicNames := make(map[string]struct{}, len(c.Comparison.PreconditionHeuristics))
 	for index, heuristic := range c.Comparison.PreconditionHeuristics {
-		if strings.TrimSpace(heuristic.Name) == "" {
+		name := strings.TrimSpace(heuristic.Name)
+		if name == "" {
 			return fmt.Errorf(
 				"comparison.precondition_heuristics[%d].name is required",
 				index,
 			)
 		}
-		if _, exists := heuristicNames[heuristic.Name]; exists {
+		if _, exists := heuristicNames[name]; exists {
 			return fmt.Errorf(
 				"comparison.precondition_heuristics[%d].name must be unique",
 				index,
 			)
 		}
-		heuristicNames[heuristic.Name] = struct{}{}
+		heuristicNames[name] = struct{}{}
 		if strings.TrimSpace(heuristic.Method) == "" {
 			return fmt.Errorf(
 				"comparison.precondition_heuristics[%d].method is required",

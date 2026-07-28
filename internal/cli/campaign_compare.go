@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -130,8 +131,8 @@ func campaignPreconditionPolicy(source config.ComparisonConfig) comparison.Preco
 	copy(policy.MissingResourceStatuses, source.MissingResourceStatuses)
 	for index, heuristic := range source.PreconditionHeuristics {
 		policy.Heuristics[index] = comparison.PreconditionHeuristic{
-			Name:        heuristic.Name,
-			Method:      heuristic.Method,
+			Name:        strings.TrimSpace(heuristic.Name),
+			Method:      strings.TrimSpace(heuristic.Method),
 			PathPattern: heuristic.PathPattern,
 		}
 	}
