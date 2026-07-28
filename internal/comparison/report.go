@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"sort"
 	"slices"
+	"sort"
 	"strings"
 )
 
