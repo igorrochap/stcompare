@@ -726,7 +726,7 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name:            "universal candidate-500 guard",
+			name:            "server-error checks still fail on candidate 5xx",
 			policy:          policy(500),
 			checkName:       "not_a_server_error",
 			requestURL:      "https://baseline.example.test/widgets/a8f31",
@@ -737,6 +737,14 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 				Evaluable:    1,
 				StillFailing: 1,
 			},
+		},
+		{
+			name:            "non-server-error checks do not match heuristics on candidate 5xx",
+			policy:          policy(500),
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(200),
+			candidateStatus: 500,
 		},
 	}
 

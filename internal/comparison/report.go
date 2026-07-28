@@ -285,6 +285,15 @@ func classifyReport(
 		}
 
 		interaction := classified.interactions[*problem.Interaction-1]
+		// Problem outcome precedence:
+		// 1. candidate 5xx + server-error check => still_failing
+		// 2. matching precondition heuristic => generated_resource_precondition_loss
+		// 3. non-heuristic server-error check => inconclusive
+		// 4. everything else => no issue-08 outcome
+		//
+		// Rank 1 cannot overlap rank 2 in valid configuration: precondition
+		// heuristics only apply to configured missing-resource statuses, and config
+		// validation excludes 5xx from that set.
 		if isServerErrorStatus(interaction.CandidateResponse.Status) {
 			if isServerErrorCheck(problem.CheckName) {
 				classified.baselineProblems.Evaluable++
