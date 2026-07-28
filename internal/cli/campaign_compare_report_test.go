@@ -133,6 +133,89 @@ func TestCampaignCompareKeepsJSONAndMarkdownInSyncWhenBaselineProblemsAreAvailab
 	}
 }
 
+func TestCampaignCompareAppliesConfiguredPreconditionPolicyToJSONReport(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	configSection(t, defaultConfig, "comparison")["precondition_heuristics"] = []any{
+		map[string]any{
+			"name":         "generated-widget",
+			"method":       "GET",
+			"path_pattern": `^/widgets/[0-9a-f]+$`,
+		},
+	}
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	writeBaselineHAR(t, filepath.Join("reports", "baseline", "campaign.har.json"), []harRequestFixture{
+		{
+			Method: "GET",
+			URL:    "http://baseline.invalid/widgets/a8f31?expand=owner",
+			Headers: []harHeaderFixture{
+				{Name: "X-Schemathesis-TestCaseId", Value: "case-42"},
+			},
+			ResponseStatus: http.StatusOK,
+		},
+	})
+	writeBaselinePreconditionVCR(
+		t,
+		filepath.Join("reports", "baseline", "campaign.vcr.yaml"),
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	clockValues := []time.Time{
+		time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+		time.Date(2026, time.January, 2, 3, 4, 5, int(4*time.Millisecond), time.UTC),
+	}
+	clockIndex := 0
+	root := cli.NewRootCommandWithDependencies(cli.Dependencies{
+		Now: func() time.Time {
+			value := clockValues[clockIndex]
+			clockIndex++
+			return value
+		},
+	})
+	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", server.URL})
+
+	got := preconditionPolicyOutcome{}
+	if err := root.Execute(); err != nil {
+		got.Error = err.Error()
+	} else {
+		contents, err := os.ReadFile(filepath.Join("reports", "gpt5.6", "comparison.json"))
+		if err != nil {
+			got.Error = err.Error()
+		} else {
+			var document preconditionPolicyJSON
+			if err := json.Unmarshal(contents, &document); err != nil {
+				got.Error = err.Error()
+			} else {
+				got.ProblemCount = len(document.Problems)
+				got.Evaluable = document.Summary.BaselineProblems.Evaluable
+				got.Inconclusive = document.Summary.BaselineProblems.Inconclusive
+				if len(document.Problems) == 1 {
+					got.Outcome = document.Problems[0].Outcome
+					got.OutcomeReason = document.Problems[0].OutcomeReason
+					got.MatchedPreconditionHeuristic =
+						document.Problems[0].MatchedPreconditionHeuristic
+				}
+			}
+		}
+	}
+	want := preconditionPolicyOutcome{
+		ProblemCount:                 1,
+		Outcome:                      "inconclusive",
+		OutcomeReason:                "generated_resource_precondition_loss",
+		MatchedPreconditionHeuristic: "generated-widget",
+		Evaluable:                    1,
+		Inconclusive:                 1,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("campaign compare precondition policy outcome = %#v, want %#v", got, want)
+	}
+}
+
 func TestCampaignCompareReportsUnknownBaselineProblemsWithoutJUnit(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
 	t.Chdir(t.TempDir())
@@ -478,9 +561,31 @@ func newComparisonReportWithProblemsFixture(t *testing.T) comparisonReportFixtur
 	}
 }
 
+func writeBaselinePreconditionVCR(t *testing.T, path string) {
+	t.Helper()
+
+	const document = `
+http_interactions:
+  - id: case-42
+    checks:
+      - name: response_schema_conformance
+        status: FAILURE
+        message: "Response violates schema"
+    request:
+      uri: "http://baseline.invalid/widgets/a8f31?expand=owner"
+      method: GET
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create baseline VCR directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
+		t.Fatalf("write baseline VCR: %v", err)
+	}
+}
+
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "3",
+		SchemaVersion: "4",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,
@@ -650,6 +755,30 @@ type availableBaselineProblemsJSON struct {
 	Problems []struct {
 		CaseID      string `json:"case_id"`
 		Interaction *int   `json:"interaction"`
+	} `json:"problems"`
+}
+
+type preconditionPolicyOutcome struct {
+	Error                        string
+	ProblemCount                 int
+	Outcome                      string
+	OutcomeReason                string
+	MatchedPreconditionHeuristic string
+	Evaluable                    int
+	Inconclusive                 int
+}
+
+type preconditionPolicyJSON struct {
+	Summary struct {
+		BaselineProblems struct {
+			Evaluable    int `json:"evaluable"`
+			Inconclusive int `json:"inconclusive"`
+		} `json:"baseline_problems"`
+	} `json:"summary"`
+	Problems []struct {
+		Outcome                      string `json:"outcome"`
+		OutcomeReason                string `json:"outcome_reason"`
+		MatchedPreconditionHeuristic string `json:"matched_precondition_heuristic"`
 	} `json:"problems"`
 }
 

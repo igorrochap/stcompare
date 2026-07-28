@@ -18,6 +18,7 @@ type Config struct {
 	BaseURL      string              `yaml:"base_url"`
 	ReportsDir   string              `yaml:"reports_dir"`
 	Schemathesis SchemathesisConfig  `yaml:"schemathesis"`
+	Comparison   ComparisonConfig    `yaml:"comparison,omitempty"`
 	Campaigns    map[string]Campaign `yaml:"campaigns"`
 }
 
@@ -30,6 +31,17 @@ type SchemathesisConfig struct {
 	OutputSanitize          bool     `yaml:"output_sanitize"`
 	OutputTruncate          bool     `yaml:"output_truncate"`
 	ExtraArgs               []string `yaml:"extra_args"`
+}
+
+type ComparisonConfig struct {
+	MissingResourceStatuses []int                   `yaml:"missing_resource_statuses"`
+	PreconditionHeuristics  []PreconditionHeuristic `yaml:"precondition_heuristics"`
+}
+
+type PreconditionHeuristic struct {
+	Name        string `yaml:"name"`
+	Method      string `yaml:"method"`
+	PathPattern string `yaml:"path_pattern"`
 }
 
 type Campaign struct {
@@ -51,6 +63,48 @@ func (c Config) Validate() error {
 	if c.Schemathesis.Workers < 1 {
 		return errors.New("schemathesis.workers must be at least 1")
 	}
+	for index, status := range c.Comparison.MissingResourceStatuses {
+		if !isAllowedMissingResourceStatus(status) {
+			return fmt.Errorf(
+				"comparison.missing_resource_statuses[%d] must be one of 401, 403, 404, or 410",
+				index,
+			)
+		}
+	}
+	heuristicNames := make(map[string]struct{}, len(c.Comparison.PreconditionHeuristics))
+	for index, heuristic := range c.Comparison.PreconditionHeuristics {
+		if strings.TrimSpace(heuristic.Name) == "" {
+			return fmt.Errorf(
+				"comparison.precondition_heuristics[%d].name is required",
+				index,
+			)
+		}
+		if _, exists := heuristicNames[heuristic.Name]; exists {
+			return fmt.Errorf(
+				"comparison.precondition_heuristics[%d].name must be unique",
+				index,
+			)
+		}
+		heuristicNames[heuristic.Name] = struct{}{}
+		if strings.TrimSpace(heuristic.Method) == "" {
+			return fmt.Errorf(
+				"comparison.precondition_heuristics[%d].method is required",
+				index,
+			)
+		}
+		if strings.TrimSpace(heuristic.PathPattern) == "" {
+			return fmt.Errorf(
+				"comparison.precondition_heuristics[%d].path_pattern is required",
+				index,
+			)
+		}
+		if _, err := regexp.Compile(heuristic.PathPattern); err != nil {
+			return fmt.Errorf(
+				"comparison.precondition_heuristics[%d].path_pattern must be a valid regular expression",
+				index,
+			)
+		}
+	}
 	if len(c.Campaigns) == 0 {
 		return errors.New("at least one campaign is required")
 	}
@@ -66,6 +120,15 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func isAllowedMissingResourceStatus(status int) bool {
+	switch status {
+	case 401, 403, 404, 410:
+		return true
+	}
+
+	return false
 }
 
 var campaignNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -90,6 +153,10 @@ func Default() Config {
 			GenerationDatabase:      "none",
 			Reports:                 []string{"junit", "vcr", "har", "ndjson"},
 			ExtraArgs:               []string{},
+		},
+		Comparison: ComparisonConfig{
+			MissingResourceStatuses: []int{404, 410},
+			PreconditionHeuristics:  []PreconditionHeuristic{},
 		},
 		Campaigns: map[string]Campaign{
 			"baseline": {Kind: "baseline"},
@@ -151,7 +218,11 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
 
-	loaded := Config{Schemathesis: Default().Schemathesis}
+	defaults := Default()
+	loaded := Config{
+		Schemathesis: defaults.Schemathesis,
+		Comparison:   defaults.Comparison,
+	}
 	if err := yaml.Unmarshal(contents, &loaded); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
 	}

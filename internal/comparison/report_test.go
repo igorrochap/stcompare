@@ -1,6 +1,7 @@
 package comparison
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -138,8 +139,74 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "3" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "3")
+	if document.SchemaVersion != "4" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "4")
+	}
+}
+
+func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
+	document := newReport(reportInput{
+		PreconditionPolicy: PreconditionPolicy{
+			MissingResourceStatuses: []int{403, 404},
+			Heuristics: []PreconditionHeuristic{
+				{
+					Name:        "generated-widget",
+					Method:      "GET",
+					PathPattern: `^/widgets/[0-9a-f]+$`,
+				},
+				{
+					Name:        "deleted-account",
+					Method:      "DELETE",
+					PathPattern: `^/accounts/[0-9]+$`,
+				},
+			},
+		},
+	})
+
+	contents, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("encode report: %v", err)
+	}
+	type heuristicProjection struct {
+		Name        string `json:"name"`
+		Method      string `json:"method"`
+		PathPattern string `json:"path_pattern"`
+	}
+	type reportProjection struct {
+		SchemaVersion string `json:"schema_version"`
+		Comparison    struct {
+			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
+			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
+		} `json:"comparison"`
+	}
+	var got reportProjection
+	if err := json.Unmarshal(contents, &got); err != nil {
+		t.Fatalf("decode report projection: %v", err)
+	}
+	want := reportProjection{
+		SchemaVersion: "4",
+		Comparison: struct {
+			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
+			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
+		}{
+			MissingResourceStatuses: []int{403, 404},
+			PreconditionHeuristics: []heuristicProjection{
+				{
+					Name:        "generated-widget",
+					Method:      "GET",
+					PathPattern: `^/widgets/[0-9a-f]+$`,
+				},
+				{
+					Name:        "deleted-account",
+					Method:      "DELETE",
+					PathPattern: `^/accounts/[0-9]+$`,
+				},
+			},
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport comparison provenance = %#v, want %#v", got, want)
 	}
 }
 
@@ -342,6 +409,388 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemInconclusive(
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport inconclusive classification = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesMatchingPreconditionLossInconclusive(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		PreconditionPolicy: PreconditionPolicy{
+			MissingResourceStatuses: []int{404, 410},
+			Heuristics: []PreconditionHeuristic{
+				{
+					Name:        "generated-widget",
+					Method:      "GET",
+					PathPattern: `^/widgets/[0-9a-f]+$`,
+				},
+			},
+		},
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "response_schema_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL: "https://baseline.example.test/widgets/a8f31" +
+							"?expand=owner",
+					},
+					Response: &harResponse{Status: 200},
+				},
+				Replay: replayResult{
+					Entry: harEntry{Response: &harResponse{Status: 404}},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                string
+		MatchedPreconditionHeuristic string
+		Evaluable                    int
+		Inconclusive                 int
+	}{
+		Outcome:                      document.Problems[0].Outcome,
+		OutcomeReason:                string(document.Problems[0].OutcomeReason),
+		MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+		Evaluable:                    document.Summary.BaselineProblems.Evaluable,
+		Inconclusive:                 document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                string
+		MatchedPreconditionHeuristic string
+		Evaluable                    int
+		Inconclusive                 int
+	}{
+		Outcome:                      problemOutcomeInconclusive,
+		OutcomeReason:                "generated_resource_precondition_loss",
+		MatchedPreconditionHeuristic: "generated-widget",
+		Evaluable:                    1,
+		Inconclusive:                 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport precondition loss classification = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesEveryProblemForMatchingPreconditionLoss(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		PreconditionPolicy: PreconditionPolicy{
+			MissingResourceStatuses: []int{404, 410},
+			Heuristics: []PreconditionHeuristic{
+				{
+					Name:        "generated-widget",
+					Method:      "GET",
+					PathPattern: `^/widgets/[0-9a-f]+$`,
+				},
+			},
+		},
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "response_schema_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-schema",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-server-error",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{Status: 200},
+				},
+				Replay: replayResult{
+					Entry: harEntry{Response: &harResponse{Status: 404}},
+				},
+			},
+		},
+	})
+
+	type problemClassification struct {
+		CheckName                    string
+		Outcome                      problemOutcome
+		OutcomeReason                string
+		MatchedPreconditionHeuristic string
+	}
+	got := struct {
+		Problems     []problemClassification
+		Evaluable    int
+		Inconclusive int
+		Fixed        int
+		StillFailing int
+		OutcomeTotal int
+	}{
+		Problems: []problemClassification{
+			{
+				CheckName:                    document.Problems[0].CheckName,
+				Outcome:                      document.Problems[0].Outcome,
+				OutcomeReason:                string(document.Problems[0].OutcomeReason),
+				MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+			},
+			{
+				CheckName:                    document.Problems[1].CheckName,
+				Outcome:                      document.Problems[1].Outcome,
+				OutcomeReason:                string(document.Problems[1].OutcomeReason),
+				MatchedPreconditionHeuristic: document.Problems[1].MatchedPreconditionHeuristic,
+			},
+		},
+		Evaluable:    document.Summary.BaselineProblems.Evaluable,
+		Inconclusive: document.Summary.BaselineProblems.Inconclusive,
+		Fixed:        document.Summary.BaselineProblems.Fixed,
+		StillFailing: document.Summary.BaselineProblems.StillFailing,
+		OutcomeTotal: document.Summary.BaselineProblems.Fixed +
+			document.Summary.BaselineProblems.StillFailing +
+			document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Problems     []problemClassification
+		Evaluable    int
+		Inconclusive int
+		Fixed        int
+		StillFailing int
+		OutcomeTotal int
+	}{
+		Problems: []problemClassification{
+			{
+				CheckName:                    "response_schema_conformance",
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                "generated_resource_precondition_loss",
+				MatchedPreconditionHeuristic: "generated-widget",
+			},
+			{
+				CheckName:                    "not_a_server_error",
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                "generated_resource_precondition_loss",
+				MatchedPreconditionHeuristic: "generated-widget",
+			},
+		},
+		Evaluable:    2,
+		Inconclusive: 2,
+		Fixed:        0,
+		StillFailing: 0,
+		OutcomeTotal: 2,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport shared precondition loss classifications = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
+	generatedWidget := PreconditionHeuristic{
+		Name:        "generated-widget",
+		Method:      "GET",
+		PathPattern: `^/widgets/[0-9a-f]+$`,
+	}
+	policy := func(statuses ...int) PreconditionPolicy {
+		return PreconditionPolicy{
+			MissingResourceStatuses: statuses,
+			Heuristics:              []PreconditionHeuristic{generatedWidget},
+		}
+	}
+	status := func(value int) *int {
+		return &value
+	}
+	type classificationOutcome struct {
+		Outcome                      problemOutcome
+		OutcomeReason                string
+		MatchedPreconditionHeuristic string
+		Evaluable                    int
+		StillFailing                 int
+		Inconclusive                 int
+	}
+	tests := []struct {
+		name            string
+		policy          PreconditionPolicy
+		checkName       string
+		requestURL      string
+		baselineStatus  *int
+		candidateStatus int
+		want            classificationOutcome
+	}{
+		{
+			name:            "unmatched path",
+			policy:          policy(404),
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/accounts/7",
+			baselineStatus:  status(200),
+			candidateStatus: 404,
+		},
+		{
+			name:            "absent baseline response",
+			policy:          policy(404),
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			candidateStatus: 404,
+		},
+		{
+			name:            "baseline non-2xx",
+			policy:          policy(404),
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(302),
+			candidateStatus: 404,
+		},
+		{
+			name:            "configured 403",
+			policy:          policy(403),
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(200),
+			candidateStatus: 403,
+			want: classificationOutcome{
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                "generated_resource_precondition_loss",
+				MatchedPreconditionHeuristic: "generated-widget",
+				Evaluable:                    1,
+				Inconclusive:                 1,
+			},
+		},
+		{
+			name: "lowercase configured method",
+			policy: PreconditionPolicy{
+				MissingResourceStatuses: []int{404},
+				Heuristics: []PreconditionHeuristic{
+					{
+						Name:        "generated-widget",
+						Method:      "get",
+						PathPattern: `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(200),
+			candidateStatus: 404,
+			want: classificationOutcome{
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                "generated_resource_precondition_loss",
+				MatchedPreconditionHeuristic: "generated-widget",
+				Evaluable:                    1,
+				Inconclusive:                 1,
+			},
+		},
+		{
+			name: "first matching heuristic wins",
+			policy: PreconditionPolicy{
+				MissingResourceStatuses: []int{404},
+				Heuristics: []PreconditionHeuristic{
+					{
+						Name:        "first-widget",
+						Method:      "GET",
+						PathPattern: `^/widgets/.*$`,
+					},
+					{
+						Name:        "second-widget",
+						Method:      "GET",
+						PathPattern: `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+			checkName:       "response_schema_conformance",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(200),
+			candidateStatus: 404,
+			want: classificationOutcome{
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                "generated_resource_precondition_loss",
+				MatchedPreconditionHeuristic: "first-widget",
+				Evaluable:                    1,
+				Inconclusive:                 1,
+			},
+		},
+		{
+			name:            "universal candidate-500 guard",
+			policy:          policy(500),
+			checkName:       "not_a_server_error",
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			baselineStatus:  status(200),
+			candidateStatus: 500,
+			want: classificationOutcome{
+				Outcome:      problemOutcomeStillFailing,
+				Evaluable:    1,
+				StillFailing: 1,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			interaction := 1
+			var baselineResponse *harResponse
+			if test.baselineStatus != nil {
+				baselineResponse = &harResponse{Status: *test.baselineStatus}
+			}
+			document := newReport(reportInput{
+				PreconditionPolicy: test.policy,
+				BaselineProblemEvidence: baselineProblemEvidence{
+					Available: true,
+					Problems: []baselineProblem{
+						{
+							CheckName:         test.checkName,
+							EvidenceSource:    evidenceSourceVCR,
+							CaseID:            "case-42",
+							CorrelationStatus: correlationStatusCorrelated,
+							Interaction:       &interaction,
+						},
+					},
+				},
+				Interactions: []reportInteraction{
+					{
+						Baseline: harEntry{
+							Request: harRequest{
+								Method: "GET",
+								URL:    test.requestURL,
+							},
+							Response: baselineResponse,
+						},
+						Replay: replayResult{
+							Entry: harEntry{
+								Response: &harResponse{Status: test.candidateStatus},
+							},
+						},
+					},
+				},
+			})
+
+			got := classificationOutcome{
+				Outcome:                      document.Problems[0].Outcome,
+				OutcomeReason:                string(document.Problems[0].OutcomeReason),
+				MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+				Evaluable:                    document.Summary.BaselineProblems.Evaluable,
+				StillFailing:                 document.Summary.BaselineProblems.StillFailing,
+				Inconclusive:                 document.Summary.BaselineProblems.Inconclusive,
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("newReport precondition boundary = %#v, want %#v", got, test.want)
+			}
+		})
 	}
 }
 

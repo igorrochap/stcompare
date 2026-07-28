@@ -76,6 +76,11 @@ schemathesis:
   output_sanitize: false
   output_truncate: false
   extra_args: []
+comparison:
+  missing_resource_statuses:
+    - 404
+    - 410
+  precondition_heuristics: []
 campaigns:
   baseline:
     kind: baseline
@@ -116,14 +121,21 @@ stcompare config show \
   --workers 1
 ```
 
-Omitted Schemathesis settings inherit the defaults shown above. Required values
-are validated after command-line overrides are applied. The effective
-configuration must have:
+Omitted Schemathesis and comparison settings inherit the defaults shown above.
+Required values are validated after command-line overrides are applied. The
+effective configuration must have:
 
 - A non-empty schema location.
 - An absolute HTTP or HTTPS base URL.
 - A non-empty reports directory.
 - At least one Schemathesis worker.
+- Only `401`, `403`, `404`, or `410` entries in
+  `comparison.missing_resource_statuses`. An explicit empty list is valid and
+  disables generated-resource precondition-loss classification.
+- A unique, non-empty `name`, a non-empty `method`, and a non-empty valid
+  regular expression in `path_pattern` for every precondition heuristic.
+  Methods are accepted in any case because compare-time matching is
+  case-insensitive.
 - At least one campaign.
 - A `baseline` or `candidate` kind for every campaign.
 
@@ -250,6 +262,44 @@ recomputed. Plain HAR `postData.text` request bodies are sent as recorded.
 Unsupported `postData.encoding` values fail during baseline setup before any
 candidate request is sent or response-log path is created.
 
+### Generated-resource precondition loss
+
+Comparison heuristics identify replays that may not have reached the baseline
+behavior because candidate-side state created during the original campaign is
+missing. They affect only `campaign compare` classification and reporting; they
+do not change Schemathesis command generation, campaign execution, or replayed
+requests.
+
+For example, a candidate may return `404` when replaying a request for a widget
+whose ID was generated during the baseline campaign:
+
+```yaml
+comparison:
+  missing_resource_statuses:
+    - 403
+    - 404
+    - 410
+  precondition_heuristics:
+    - name: generated-widget
+      method: GET
+      path_pattern: ^/widgets/[0-9a-f]+$
+```
+
+The default missing-resource statuses are `404` and `410`. Add `401` or `403`
+when an API uses those statuses to represent missing generated state. A supplied
+list replaces the defaults, and `[]` disables this classification.
+
+A heuristic matches only when the recorded baseline response is `2xx`, the
+candidate returns a configured missing-resource status, and the method and path
+match. Method matching is case-insensitive. `path_pattern` is evaluated against
+the decoded URL path only, excluding the host and query. Heuristics are
+evaluated in configuration order, and the first match is recorded.
+
+Stronger reproduction evidence takes precedence over precondition heuristics. A
+candidate `5xx` response is handled first for every problem category and is
+never classified as precondition loss. For a correlated Schemathesis
+server-error problem, candidate `5xx` remains `still_failing`.
+
 Candidate responses and comparison reports are written under the candidate
 campaign directory:
 
@@ -260,14 +310,22 @@ reports/gpt5.6/comparison.md
 ```
 
 `comparison.json` uses a versioned, stable schema for automation, while
-`comparison.md` presents the same evidence for review. Schema version 3 keeps
-Schemathesis problem outcomes separate from replay traffic classifications. The
-reports include:
+`comparison.md` presents the same evidence for review. Schema version 4 adds
+comparison-policy provenance and per-problem precondition-loss evidence while
+keeping Schemathesis problem outcomes separate from replay traffic
+classifications. The reports include:
 
 - Total replayed interactions.
+- The effective ordered comparison policy. JSON records it in the top-level
+  `comparison` object, and Markdown renders the same statuses and heuristics in
+  a `Comparison policy` section.
 - Individual baseline Schemathesis problems with their check name, message,
   evidence source, recorded case ID, reproduction context, and correlated
   interaction number when available.
+- Problems classified through a precondition heuristic are `inconclusive` with
+  `outcome_reason: "generated_resource_precondition_loss"` and
+  `matched_precondition_heuristic: "<name>"`. Markdown shows the same reason and
+  matched heuristic.
 - A baseline problem aggregate count from JUnit `failure`/`error` elements
   when that artifact is present, plus a separate extracted structured-problem
   count when structured evidence is available. Structured VCR and NDJSON
@@ -278,15 +336,16 @@ reports include:
 - Problem outcome totals for extracted baseline Schemathesis problems:
   `fixed`, `still_failing`, and `inconclusive`, plus separate total, evaluable,
   and uncorrelated counts. A problem is `evaluable` when it is correlated to a
-  replay interaction and its check is one the comparison can evaluate, which
-  currently means the Schemathesis server-error check; the three outcome totals
+  replay interaction and the comparison has evidence for an outcome. Existing
+  check-specific evaluation covers the Schemathesis server-error check.
+  Generated-resource precondition-loss evidence can make a correlated problem
+  of any check category evaluable and inconclusive. The three outcome totals
   always sum to the evaluable count. A correlated `not_a_server_error` problem
-  remains
-  `still_failing` when replay also returns a 5xx response. A replayed non-5xx
-  response is `inconclusive` until stronger evidence proves the relevant
-  Schemathesis behavior was exercised and fixed. The `fixed` outcome is reserved
-  for that stronger evidence; the current replay-only comparison does not infer
-  it from status changes.
+  remains `still_failing` when replay also returns a 5xx response. A replayed
+  non-5xx response is `inconclusive` until stronger evidence proves the relevant
+  Schemathesis behavior was exercised and fixed. The `fixed` outcome is
+  reserved for that stronger evidence; the current replay-only comparison does
+  not infer it from status changes.
 - Traffic classification totals for replay interactions: `success_unchanged`,
   `changed`, and `regressed`. A candidate 5xx response is a `regressed` finding
   when the baseline response was not already a server error and no corresponding
