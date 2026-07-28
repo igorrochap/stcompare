@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	configpkg "stcompare/internal/config"
 )
 
 type RecordedResponse struct {
@@ -28,6 +30,28 @@ type BodyFieldNormalizationRule struct {
 type HeaderNormalizationRule struct {
 	Name       string
 	HeaderName string
+}
+
+func NormalizationConfigFrom(source configpkg.NormalizationConfig) ResponseNormalizationConfig {
+	config := ResponseNormalizationConfig{
+		Defaults:   source.DefaultRules,
+		BodyFields: make([]BodyFieldNormalizationRule, 0, len(source.BodyFields)),
+		Headers:    make([]HeaderNormalizationRule, 0, len(source.Headers)),
+	}
+	for _, rule := range source.BodyFields {
+		config.BodyFields = append(config.BodyFields, BodyFieldNormalizationRule{
+			Name:      rule.Name,
+			FieldName: rule.FieldName,
+		})
+	}
+	for _, rule := range source.Headers {
+		config.Headers = append(config.Headers, HeaderNormalizationRule{
+			Name:       rule.Name,
+			HeaderName: rule.HeaderName,
+		})
+	}
+
+	return config
 }
 
 type NormalizedResponse struct {
@@ -76,72 +100,97 @@ func NormalizeResponse(
 	response RecordedResponse,
 	config ResponseNormalizationConfig,
 ) (NormalizedResponse, error) {
-	rules := responseNormalizationRules(config)
+	run := newNormalizationRun(responseNormalizationRules(config))
 	normalized := NormalizedResponse{
 		Status:  response.Status,
 		Headers: append([]harHeader(nil), response.Headers...),
-		Disclosure: NormalizationDisclosure{
-			Rules: make([]NormalizationRuleDisclosure, 0, len(rules)),
-		},
 	}
 	if response.Body != nil {
 		body := *response.Body
 		normalized.Body = &body
 	}
 
-	matchesByRule := make([][]string, len(rules))
-	if normalized.Body == nil {
-		normalized.Disclosure.Body.State = BodyNormalizationStateAbsent
-	} else if *normalized.Body == "" {
-		normalized.Disclosure.Body.State = BodyNormalizationStateEmpty
-	} else {
-		var body any
-		if err := json.Unmarshal([]byte(*normalized.Body), &body); err != nil {
-			normalized.Disclosure.Body.State = BodyNormalizationStateUnparseable
-		} else {
-			normalized.Disclosure.Body.State = BodyNormalizationStateJSON
-			for index, rule := range rules {
-				if rule.target != "body" {
-					continue
-				}
-				matchesByRule[index] = normalizeJSONField(
-					body,
-					rule.match,
-					rule.replacement,
-					"$",
-				)
-			}
-			var contents bytes.Buffer
-			encoder := json.NewEncoder(&contents)
-			encoder.SetEscapeHTML(false)
-			if err := encoder.Encode(body); err != nil {
-				return NormalizedResponse{}, fmt.Errorf("encode normalized response body: %w", err)
-			}
-			bodyText := strings.TrimSuffix(contents.String(), "\n")
-			normalized.Body = &bodyText
-		}
+	body, state, err := run.normalizeBody(normalized.Body)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
+	normalized.Body = body
+	normalized.Disclosure.Body.State = state
+
+	run.normalizeHeaders(normalized.Headers)
+	normalized.Disclosure.Rules = run.disclosures()
+
+	return normalized, nil
+}
+
+type normalizationRun struct {
+	rules   []compiledNormalizationRule
+	matches [][]string
+}
+
+func newNormalizationRun(rules []compiledNormalizationRule) *normalizationRun {
+	return &normalizationRun{
+		rules:   rules,
+		matches: make([][]string, len(rules)),
+	}
+}
+
+func (r *normalizationRun) normalizeBody(bodyText *string) (*string, BodyNormalizationState, error) {
+	if bodyText == nil {
+		return nil, BodyNormalizationStateAbsent, nil
+	}
+	if *bodyText == "" {
+		return bodyText, BodyNormalizationStateEmpty, nil
 	}
 
-	for index, rule := range rules {
+	var body any
+	if err := json.Unmarshal([]byte(*bodyText), &body); err != nil {
+		return bodyText, BodyNormalizationStateUnparseable, nil
+	}
+	for index, rule := range r.rules {
+		if rule.target != "body" {
+			continue
+		}
+		r.matches[index] = normalizeJSONField(
+			body,
+			rule.match,
+			rule.replacement,
+			"$",
+		)
+	}
+
+	var contents bytes.Buffer
+	encoder := json.NewEncoder(&contents)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(body); err != nil {
+		return nil, "", fmt.Errorf("encode normalized response body: %w", err)
+	}
+	normalizedBody := strings.TrimSuffix(contents.String(), "\n")
+
+	return &normalizedBody, BodyNormalizationStateJSON, nil
+}
+
+func (r *normalizationRun) normalizeHeaders(headers []harHeader) {
+	for index, rule := range r.rules {
 		if rule.target != "header" {
 			continue
 		}
-		for headerIndex := range normalized.Headers {
-			if !strings.EqualFold(normalized.Headers[headerIndex].Name, rule.match) {
+		for headerIndex := range headers {
+			if !strings.EqualFold(headers[headerIndex].Name, rule.match) {
 				continue
 			}
-			normalized.Headers[headerIndex].Value = rule.replacement
-			matchesByRule[index] = append(
-				matchesByRule[index],
-				normalized.Headers[headerIndex].Name,
-			)
+			headers[headerIndex].Value = rule.replacement
+			r.matches[index] = append(r.matches[index], headers[headerIndex].Name)
 		}
-		sort.Strings(matchesByRule[index])
+		sort.Strings(r.matches[index])
 	}
+}
 
-	for index, rule := range rules {
-		matches := matchesByRule[index]
-		normalized.Disclosure.Rules = append(normalized.Disclosure.Rules, NormalizationRuleDisclosure{
+func (r *normalizationRun) disclosures() []NormalizationRuleDisclosure {
+	disclosures := make([]NormalizationRuleDisclosure, 0, len(r.rules))
+	for index, rule := range r.rules {
+		matches := r.matches[index]
+		disclosures = append(disclosures, NormalizationRuleDisclosure{
 			Name:        rule.name,
 			Target:      rule.target,
 			Selector:    rule.selector,
@@ -151,7 +200,7 @@ func NormalizeResponse(
 		})
 	}
 
-	return normalized, nil
+	return disclosures
 }
 
 func responseNormalizationRules(config ResponseNormalizationConfig) []compiledNormalizationRule {

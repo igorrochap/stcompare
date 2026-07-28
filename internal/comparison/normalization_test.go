@@ -1,9 +1,13 @@
 package comparison
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	configpkg "stcompare/internal/config"
 )
 
 func TestNormalizeResponseMasksConfiguredJSONFieldsAndHeaders(t *testing.T) {
@@ -177,5 +181,95 @@ func TestNormalizeResponseDisclosesUnaddressedBodyFormatsAndRulePresence(t *test
 	}
 	if gotAbsent.Disclosure.Body.State != BodyNormalizationStateAbsent {
 		t.Fatalf("absent body state = %q, want absent", gotAbsent.Disclosure.Body.State)
+	}
+}
+
+func TestNormalizationConfigFromLoadedConfigDrivesResponseNormalization(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "stcompare.yaml")
+	contents := []byte(`
+schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  seed: 12345
+  workers: 1
+  generation_deterministic: true
+  generation_database: none
+  reports:
+    - junit
+    - vcr
+    - har
+    - ndjson
+  output_sanitize: false
+  output_truncate: false
+  extra_args: []
+comparison:
+  missing_resource_statuses:
+    - 404
+    - 410
+  precondition_heuristics: []
+  normalization:
+    default_rules: false
+    body_fields:
+      - name: request-id
+        field_name: request_id
+    headers:
+      - name: server-version
+        header_name: server
+campaigns:
+  baseline:
+    kind: baseline
+`)
+	if err := os.WriteFile(configPath, contents, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	loaded, err := configpkg.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+
+	body := `{"id":"not-normalized","request_id":"abc"}`
+	got, err := NormalizeResponse(
+		RecordedResponse{
+			Headers: []harHeader{
+				{Name: "Server", Value: "candidate-server"},
+			},
+			Body: &body,
+		},
+		NormalizationConfigFrom(loaded.Comparison.Normalization),
+	)
+	if err != nil {
+		t.Fatalf("NormalizeResponse returned error: %v", err)
+	}
+
+	if !strings.Contains(*got.Body, `"id":"not-normalized"`) {
+		t.Fatalf("normalized body = %s, want default id field untouched", *got.Body)
+	}
+	if !strings.Contains(*got.Body, `"request_id":"<normalized:request-id>"`) {
+		t.Fatalf("normalized body = %s, want configured request_id mask", *got.Body)
+	}
+	wantRules := []NormalizationRuleDisclosure{
+		{
+			Name:        "request-id",
+			Target:      "body",
+			Selector:    "field:request_id",
+			Replacement: "<normalized:request-id>",
+			Matched:     true,
+			Matches:     []string{"$.request_id"},
+		},
+		{
+			Name:        "server-version",
+			Target:      "header",
+			Selector:    "header:server",
+			Replacement: "<normalized:server-version>",
+			Matched:     true,
+			Matches:     []string{"Server"},
+		},
+	}
+	if !reflect.DeepEqual(got.Disclosure.Rules, wantRules) {
+		t.Fatalf("normalization rules = %#v, want %#v", got.Disclosure.Rules, wantRules)
 	}
 }
