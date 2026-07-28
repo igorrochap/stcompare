@@ -342,7 +342,8 @@ classifications. The reports include:
   of any check category evaluable and inconclusive. The three outcome totals
   always sum to the evaluable count. A correlated `not_a_server_error` problem
   remains `still_failing` when replay also returns a 5xx response. A replayed
-  non-5xx response is `inconclusive` until stronger evidence proves the relevant
+  non-server-error problem on a replayed 5xx response remains outside the
+  evaluable denominator. A replayed non-5xx response is `inconclusive` until stronger evidence proves the relevant
   Schemathesis behavior was exercised and fixed. The `fixed` outcome is
   reserved for that stronger evidence; the current replay-only comparison does
   not infer it from status changes.

@@ -745,6 +745,9 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			requestURL:      "https://baseline.example.test/widgets/a8f31",
 			baselineStatus:  status(200),
 			candidateStatus: 500,
+			want: classificationOutcome{
+				Evaluable: 0,
+			},
 		},
 	}
 
