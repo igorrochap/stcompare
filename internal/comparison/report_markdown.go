@@ -70,17 +70,58 @@ func writeMarkdownComparisonPolicy(
 
 	if len(policy.Heuristics) == 0 {
 		output.WriteString("- Precondition heuristics: none\n")
+	} else {
+		output.WriteString("- Precondition heuristics:\n")
+		for _, heuristic := range policy.Heuristics {
+			fmt.Fprintf(
+				output,
+				"  - `%s`: method `%s`, path pattern `%s`\n",
+				heuristic.Name,
+				heuristic.Method,
+				heuristic.PathPattern,
+			)
+		}
+	}
+	writeMarkdownNormalizationPolicy(output, policy.Normalization)
+}
+
+func writeMarkdownNormalizationPolicy(
+	output *strings.Builder,
+	normalization ResponseNormalizationConfig,
+) {
+	if !normalization.Defaults &&
+		len(normalization.BodyFields) == 0 &&
+		len(normalization.Headers) == 0 {
+		output.WriteString("- Normalization: none\n")
 		return
 	}
-	output.WriteString("- Precondition heuristics:\n")
-	for _, heuristic := range policy.Heuristics {
-		fmt.Fprintf(
-			output,
-			"  - `%s`: method `%s`, path pattern `%s`\n",
-			heuristic.Name,
-			heuristic.Method,
-			heuristic.PathPattern,
-		)
+
+	if normalization.Defaults {
+		output.WriteString("- Normalization defaults: enabled\n")
+	} else {
+		output.WriteString("- Normalization defaults: disabled\n")
+	}
+	if len(normalization.BodyFields) != 0 {
+		output.WriteString("- Normalized body fields:\n")
+		for _, rule := range normalization.BodyFields {
+			fmt.Fprintf(
+				output,
+				"  - `%s`: field `%s`\n",
+				rule.Name,
+				rule.FieldName,
+			)
+		}
+	}
+	if len(normalization.Headers) != 0 {
+		output.WriteString("- Normalized headers:\n")
+		for _, rule := range normalization.Headers {
+			fmt.Fprintf(
+				output,
+				"  - `%s`: header `%s`\n",
+				rule.Name,
+				rule.HeaderName,
+			)
+		}
 	}
 }
 
@@ -105,6 +146,16 @@ func writeMarkdownProblem(
 	}
 	if problem.OutcomeReason != "" {
 		fmt.Fprintf(output, "- Outcome reason: `%s`\n", problem.OutcomeReason)
+	}
+	if len(problem.ExerciseEvidence) != 0 {
+		output.WriteString("- Exercise evidence: ")
+		for index, evidence := range problem.ExerciseEvidence {
+			if index != 0 {
+				output.WriteString(", ")
+			}
+			fmt.Fprintf(output, "`%s`", evidence)
+		}
+		output.WriteString("\n")
 	}
 	if problem.MatchedPreconditionHeuristic != "" {
 		fmt.Fprintf(

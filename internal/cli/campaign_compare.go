@@ -117,6 +117,9 @@ func campaignComparisonInput(
 		CandidateBaseURL:   effective.BaseURL,
 		OutputDir:          candidateReportDir,
 		PreconditionPolicy: campaignPreconditionPolicy(effective.Comparison),
+		ResponseNormalization: comparison.NormalizationConfigFrom(
+			effective.Comparison.Normalization,
+		),
 	}
 }
 

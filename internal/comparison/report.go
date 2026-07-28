@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "4"
+	reportSchemaVersion         = "5"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -109,6 +109,7 @@ type reportInput struct {
 	CandidateBaseURL           string
 	Interactions               []reportInteraction
 	PreconditionPolicy         PreconditionPolicy
+	ResponseNormalization      ResponseNormalizationConfig
 }
 
 type baselineProblemEvidence struct {
@@ -140,6 +141,7 @@ type classifiedReport struct {
 type problemClassification struct {
 	outcome                      problemOutcome
 	outcomeReason                problemOutcomeReason
+	exerciseEvidence             []string
 	matchedPreconditionHeuristic string
 }
 
@@ -155,10 +157,12 @@ func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
 	problemState := input.BaselineProblemEvidence.reportState()
 	policy := input.PreconditionPolicy.clone()
+	policy.Normalization = input.ResponseNormalization
 	classification := classifyReport(
 		problemState.problems,
 		interactions,
 		policy,
+		input.ResponseNormalization,
 	)
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
@@ -223,6 +227,7 @@ func classifyReport(
 	problems []baselineProblem,
 	interactions []reportInteractionEvidence,
 	policy PreconditionPolicy,
+	normalization ResponseNormalizationConfig,
 ) classifiedReport {
 	classified := classifiedReport{}
 	if problems != nil {
@@ -280,9 +285,15 @@ func classifyReport(
 		}
 
 		interaction := classified.interactions[*problem.Interaction-1]
-		classification := classifyProblem(*problem, interaction, policy)
+		classification := classifyProblem(
+			*problem,
+			interaction,
+			policy,
+			normalization,
+		)
 		problem.Outcome = classification.outcome
 		problem.OutcomeReason = classification.outcomeReason
+		problem.ExerciseEvidence = classification.exerciseEvidence
 		problem.MatchedPreconditionHeuristic =
 			classification.matchedPreconditionHeuristic
 		if classification.outcome == "" {
@@ -294,6 +305,8 @@ func classifyReport(
 			classified.baselineProblems.StillFailing++
 		case problemOutcomeInconclusive:
 			classified.baselineProblems.Inconclusive++
+		case problemOutcomeFixed:
+			classified.baselineProblems.Fixed++
 		}
 	}
 
@@ -309,6 +322,7 @@ func classifyProblem(
 	problem baselineProblem,
 	interaction reportInteractionEvidence,
 	policy PreconditionPolicy,
+	normalization ResponseNormalizationConfig,
 ) problemClassification {
 	// Problem outcome precedence:
 	// 1. candidate 5xx + server-error check => still_failing
@@ -332,15 +346,132 @@ func classifyProblem(
 		return problemClassification{
 			outcome:                      problemOutcomeInconclusive,
 			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+			exerciseEvidence:             exerciseEvidence(problem, interaction, normalization, false),
 			matchedPreconditionHeuristic: heuristic.Name,
 		}
 	}
 
 	if isServerErrorCheck(problem.CheckName) {
-		return problemClassification{outcome: problemOutcomeInconclusive}
+		evidence := exerciseEvidence(problem, interaction, normalization, true)
+		if hasExerciseEvidence(evidence) {
+			return problemClassification{
+				outcome:          problemOutcomeFixed,
+				exerciseEvidence: evidence,
+			}
+		}
+
+		return problemClassification{
+			outcome:          problemOutcomeInconclusive,
+			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
+			exerciseEvidence: evidence,
+		}
 	}
 
 	return problemClassification{}
+}
+
+func exerciseEvidence(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	normalization ResponseNormalizationConfig,
+	noPreconditionLoss bool,
+) []string {
+	var evidence []string
+	if sameProblemOperationAndPath(problem, interaction) {
+		evidence = append(evidence, "operation_and_path_match")
+	}
+	if normalizedResponseBodiesMatch(interaction, normalization) {
+		evidence = append(evidence, "normalized_response_body_match")
+	}
+	if noPreconditionLoss {
+		evidence = append(evidence, "no_precondition_loss_detected")
+	}
+
+	return evidence
+}
+
+func hasExerciseEvidence(evidence []string) bool {
+	return slices.Contains(evidence, "operation_and_path_match") &&
+		slices.Contains(evidence, "normalized_response_body_match") &&
+		slices.Contains(evidence, "no_precondition_loss_detected")
+}
+
+func sameProblemOperationAndPath(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+) bool {
+	if problem.Reproduction.Method == "" && problem.Reproduction.URL == "" {
+		return interaction.Request.Method != "" && requestPathAvailable(interaction.Request.URL)
+	}
+	if problem.Reproduction.Method != "" &&
+		!strings.EqualFold(problem.Reproduction.Method, interaction.Request.Method) {
+		return false
+	}
+	if problem.Reproduction.URL == "" {
+		return true
+	}
+
+	reproductionURL, err := url.Parse(problem.Reproduction.URL)
+	if err != nil {
+		return false
+	}
+	requestURL, err := url.Parse(interaction.Request.URL)
+	if err != nil {
+		return false
+	}
+
+	return reproductionURL.Path == requestURL.Path
+}
+
+func requestPathAvailable(rawURL string) bool {
+	requestURL, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	return requestURL.Path != ""
+}
+
+func normalizedResponseBodiesMatch(
+	interaction reportInteractionEvidence,
+	normalization ResponseNormalizationConfig,
+) bool {
+	if interaction.BaselineResponse == nil {
+		return false
+	}
+
+	baselineBody := interaction.BaselineResponse.Body
+	candidateBody := interaction.CandidateResponse.Body
+	if baselineBody == "" || candidateBody == "" {
+		return false
+	}
+	normalizedBaseline, err := NormalizeResponse(
+		RecordedResponse{
+			Status:  interaction.BaselineResponse.Status,
+			Headers: interaction.BaselineResponse.Headers,
+			Body:    &baselineBody,
+		},
+		normalization,
+	)
+	if err != nil {
+		return false
+	}
+	normalizedCandidate, err := NormalizeResponse(
+		RecordedResponse{
+			Status:  interaction.CandidateResponse.Status,
+			Headers: interaction.CandidateResponse.Headers,
+			Body:    &candidateBody,
+		},
+		normalization,
+	)
+	if err != nil {
+		return false
+	}
+	if normalizedBaseline.Body == nil || normalizedCandidate.Body == nil {
+		return false
+	}
+
+	return *normalizedBaseline.Body == *normalizedCandidate.Body
 }
 
 func matchingPreconditionHeuristic(

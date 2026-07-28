@@ -109,12 +109,21 @@ func TestRenderMarkdownShowsPreconditionPolicyAndProblemEvidence(t *testing.T) {
 					`^/widgets/[0-9a-f]+$`,
 				),
 			},
+			Normalization: ResponseNormalizationConfig{
+				BodyFields: []BodyFieldNormalizationRule{
+					{Name: "generated-id", FieldName: "id"},
+				},
+			},
 		},
 		Problems: []baselineProblem{
 			{
-				CheckName:                    "response_schema_conformance",
-				Outcome:                      problemOutcomeInconclusive,
-				OutcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+				CheckName:     "response_schema_conformance",
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: problemOutcomeReasonGeneratedResourcePreconditionLoss,
+				ExerciseEvidence: []string{
+					"operation_and_path_match",
+					"normalized_response_body_match",
+				},
 				MatchedPreconditionHeuristic: "generated-widget",
 			},
 		},
@@ -126,9 +135,14 @@ func TestRenderMarkdownShowsPreconditionPolicyAndProblemEvidence(t *testing.T) {
 - Missing resource statuses: ` + "`403`, `404`" + `
 - Precondition heuristics:
   - ` + "`generated-widget`" + `: method ` + "`GET`" + `, path pattern ` +
-		"`^/widgets/[0-9a-f]+$`"
+		"`^/widgets/[0-9a-f]+$`" + `
+- Normalization defaults: disabled
+- Normalized body fields:
+  - ` + "`generated-id`" + `: field ` + "`id`"
 	problemBlock := `- Outcome: ` + "`inconclusive`" + `
 - Outcome reason: ` + "`generated_resource_precondition_loss`" + `
+- Exercise evidence: ` + "`operation_and_path_match`" + `, ` +
+		"`normalized_response_body_match`" + `
 - Matched precondition heuristic: ` + "`generated-widget`"
 	got := struct {
 		PolicyBlock  bool

@@ -311,11 +311,10 @@ server-error problem, candidate `5xx` remains `still_failing`.
 
 ### Dynamic response normalization
 
-Response normalization is available as a standalone comparison capability for
-future response-body and response-header comparison. It produces a derived
-response plus deterministic disclosure of every rule considered and which paths
-or headers it matched; it does not mutate HAR, replay logs, or reproduction
-evidence.
+Response normalization is used when replay compares baseline and candidate
+response bodies for exercise evidence. It produces derived responses plus
+deterministic disclosure of configured rules; it does not mutate HAR, replay
+logs, or reproduction evidence.
 
 Default rules are enabled by `comparison.normalization.default_rules: true`.
 They mask JSON body fields named `id`, `uuid`, `created_at`, `updated_at`, and
@@ -351,15 +350,17 @@ reports/gpt5.6/comparison.md
 ```
 
 `comparison.json` uses a versioned, stable schema for automation, while
-`comparison.md` presents the same evidence for review. Schema version 4 adds
-comparison-policy provenance and per-problem precondition-loss evidence while
-keeping Schemathesis problem outcomes separate from replay traffic
-classifications. The reports include:
+`comparison.md` presents the same evidence for review. Schema version 5 adds
+exercise-evidence-backed fixed outcomes for server-error problems and records
+normalization policy in the comparison provenance while keeping Schemathesis
+problem outcomes separate from replay traffic classifications. The reports
+include:
 
 - Total replayed interactions.
 - The effective ordered comparison policy. JSON records it in the top-level
-  `comparison` object, and Markdown renders the same statuses and heuristics in
-  a `Comparison policy` section.
+  `comparison` object, including response normalization settings, and Markdown
+  renders the same statuses, heuristics, and normalization rules in a
+  `Comparison policy` section.
 - Individual baseline Schemathesis problems with their check name, message,
   evidence source, recorded case ID, reproduction context, and correlated
   interaction number when available.
@@ -367,6 +368,13 @@ classifications. The reports include:
   `outcome_reason: "generated_resource_precondition_loss"` and
   `matched_precondition_heuristic: "<name>"`. Markdown shows the same reason and
   matched heuristic.
+- Correlated server-error problems are `fixed` only when replay records explicit
+  exercise evidence: operation/path identity, semantic response-body agreement
+  after configured normalization, and no matched precondition-loss heuristic.
+  When candidate or baseline response bodies are unavailable, or semantic
+  agreement is missing, the problem remains `inconclusive` with
+  `outcome_reason: "exercise_evidence_missing"`. Markdown and JSON record the
+  available `exercise_evidence` signals next to the outcome.
 - A baseline problem aggregate count from JUnit `failure`/`error` elements
   when that artifact is present, plus a separate extracted structured-problem
   count when structured evidence is available. Structured VCR and NDJSON
@@ -384,10 +392,9 @@ classifications. The reports include:
   always sum to the evaluable count. A correlated `not_a_server_error` problem
   remains `still_failing` when replay also returns a 5xx response. A replayed
   non-server-error problem on a replayed 5xx response remains outside the
-  evaluable denominator. A replayed non-5xx response is `inconclusive` until stronger evidence proves the relevant
-  Schemathesis behavior was exercised and fixed. The `fixed` outcome is
-  reserved for that stronger evidence; the current replay-only comparison does
-  not infer it from status changes.
+  evaluable denominator. A replayed non-5xx response is `fixed` only when the
+  recorded exercise evidence shows replay reached the relevant behavior; absence
+  of contrary evidence remains `inconclusive`.
 - Traffic classification totals for replay interactions: `success_unchanged`,
   `changed`, and `regressed`. A candidate 5xx response is a `regressed` finding
   when the baseline response was not already a server error and no corresponding
@@ -437,7 +444,10 @@ unknown and is not included in exact status-transition counts.
 These reports preserve correlated problem evidence and raw status transitions
 without treating status transitions as problem outcomes. Equal HTTP status codes
 do not hide correlated baseline problems, and a status change alone never proves
-that a baseline Schemathesis problem was fixed.
+that a baseline Schemathesis problem was fixed. A `fixed` outcome means replay
+exercised the recorded semantic response path and the server-error check no
+longer failed; it does not prove every campaign path or all related stateful
+preconditions were exhaustively retested.
 
 Schemathesis exits with status `1` when it finds API failures; `stcompare`
 treats that as a completed campaign and keeps the generated reports plus
