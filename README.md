@@ -81,6 +81,10 @@ comparison:
     - 404
     - 410
   precondition_heuristics: []
+  normalization:
+    default_rules: true
+    body_fields: []
+    headers: []
 campaigns:
   baseline:
     kind: baseline
@@ -136,6 +140,11 @@ effective configuration must have:
   regular expression in `path_pattern` for every precondition heuristic.
   Methods are accepted in any case because compare-time matching is
   case-insensitive.
+- A non-empty `name` and `field_name` for every
+  `comparison.normalization.body_fields` rule.
+- A non-empty `name` and `header_name` for every
+  `comparison.normalization.headers` rule. Header names match
+  case-insensitively.
 - At least one campaign.
 - A `baseline` or `candidate` kind for every campaign.
 
@@ -299,6 +308,38 @@ Stronger reproduction evidence takes precedence over precondition heuristics. A
 candidate `5xx` response is handled first for every problem category and is
 never classified as precondition loss. For a correlated Schemathesis
 server-error problem, candidate `5xx` remains `still_failing`.
+
+### Dynamic response normalization
+
+Response normalization is available as a standalone comparison capability for
+future response-body and response-header comparison. It produces a derived
+response plus deterministic disclosure of every rule considered and which paths
+or headers it matched; it does not mutate HAR, replay logs, or reproduction
+evidence.
+
+Default rules are enabled by `comparison.normalization.default_rules: true`.
+They mask JSON body fields named `id`, `uuid`, `created_at`, `updated_at`, and
+`timestamp`, and the response `Date` header, using stable placeholders such as
+`<normalized:generated-id>` and `<normalized:timestamp>`.
+
+Add body-field or header rules for API-specific dynamic values:
+
+```yaml
+comparison:
+  normalization:
+    default_rules: true
+    body_fields:
+      - name: request-id
+        field_name: request_id
+    headers:
+      - name: server-version
+        header_name: server
+```
+
+JSON bodies are normalized field-wise, including matching fields nested in
+objects or arrays. Empty bodies and absent bodies remain distinct. Bodies that
+do not parse as JSON are left unchanged and disclosed as unparseable rather
+than treated as equivalent opaque text.
 
 Candidate responses and comparison reports are written under the candidate
 campaign directory:

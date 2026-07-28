@@ -19,6 +19,10 @@ comparison:
     - 404
     - 410
   precondition_heuristics: []
+  normalization:
+    default_rules: true
+    body_fields: []
+    headers: []
 campaigns:
   baseline:
     kind: baseline

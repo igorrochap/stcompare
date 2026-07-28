@@ -318,6 +318,11 @@ func TestConfigShowAppliesOmittedComparisonDefaults(t *testing.T) {
 	want["comparison"] = map[string]any{
 		"missing_resource_statuses": []any{404, 410},
 		"precondition_heuristics":   []any{},
+		"normalization": map[string]any{
+			"default_rules": true,
+			"body_fields":   []any{},
+			"headers":       []any{},
+		},
 	}
 
 	t.Chdir(t.TempDir())
@@ -445,6 +450,36 @@ func TestConfigShowRejectsSemanticallyInvalidComparisonBeforeOutput(t *testing.T
 			},
 			wantError: "comparison.precondition_heuristics[0].path_pattern is required",
 		},
+		{
+			name: "blank normalization body rule field",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics":   []any{},
+				"normalization": map[string]any{
+					"default_rules": true,
+					"body_fields": []any{
+						map[string]any{"name": "volatile-id", "field_name": " "},
+					},
+					"headers": []any{},
+				},
+			},
+			wantError: "comparison.normalization.body_fields[0].field_name is required",
+		},
+		{
+			name: "blank normalization header rule name",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics":   []any{},
+				"normalization": map[string]any{
+					"default_rules": true,
+					"body_fields":   []any{},
+					"headers": []any{
+						map[string]any{"name": " ", "header_name": "date"},
+					},
+				},
+			},
+			wantError: "comparison.normalization.headers[0].name is required",
+		},
 	}
 
 	for _, test := range tests {
@@ -465,6 +500,11 @@ func TestConfigShowAcceptsComparisonValidationBoundaries(t *testing.T) {
 			name: "empty missing resource statuses",
 			comparison: configDocument{
 				"missing_resource_statuses": []any{},
+				"normalization": map[string]any{
+					"default_rules": true,
+					"body_fields":   []any{},
+					"headers":       []any{},
+				},
 				"precondition_heuristics": []any{
 					map[string]any{
 						"name":         "generated-widget",
@@ -478,6 +518,11 @@ func TestConfigShowAcceptsComparisonValidationBoundaries(t *testing.T) {
 			name: "lowercase heuristic method",
 			comparison: configDocument{
 				"missing_resource_statuses": []any{404, 410},
+				"normalization": map[string]any{
+					"default_rules": true,
+					"body_fields":   []any{},
+					"headers":       []any{},
+				},
 				"precondition_heuristics": []any{
 					map[string]any{
 						"name":         "generated-widget",

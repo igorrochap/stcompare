@@ -36,12 +36,29 @@ type SchemathesisConfig struct {
 type ComparisonConfig struct {
 	MissingResourceStatuses []int                   `yaml:"missing_resource_statuses"`
 	PreconditionHeuristics  []PreconditionHeuristic `yaml:"precondition_heuristics"`
+	Normalization           NormalizationConfig     `yaml:"normalization"`
 }
 
 type PreconditionHeuristic struct {
 	Name        string `yaml:"name"`
 	Method      string `yaml:"method"`
 	PathPattern string `yaml:"path_pattern"`
+}
+
+type NormalizationConfig struct {
+	DefaultRules bool                         `yaml:"default_rules"`
+	BodyFields   []BodyFieldNormalizationRule `yaml:"body_fields"`
+	Headers      []HeaderNormalizationRule    `yaml:"headers"`
+}
+
+type BodyFieldNormalizationRule struct {
+	Name      string `yaml:"name"`
+	FieldName string `yaml:"field_name"`
+}
+
+type HeaderNormalizationRule struct {
+	Name       string `yaml:"name"`
+	HeaderName string `yaml:"header_name"`
 }
 
 type Campaign struct {
@@ -106,6 +123,34 @@ func (c Config) Validate() error {
 			)
 		}
 	}
+	for index, rule := range c.Comparison.Normalization.BodyFields {
+		if strings.TrimSpace(rule.Name) == "" {
+			return fmt.Errorf(
+				"comparison.normalization.body_fields[%d].name is required",
+				index,
+			)
+		}
+		if strings.TrimSpace(rule.FieldName) == "" {
+			return fmt.Errorf(
+				"comparison.normalization.body_fields[%d].field_name is required",
+				index,
+			)
+		}
+	}
+	for index, rule := range c.Comparison.Normalization.Headers {
+		if strings.TrimSpace(rule.Name) == "" {
+			return fmt.Errorf(
+				"comparison.normalization.headers[%d].name is required",
+				index,
+			)
+		}
+		if strings.TrimSpace(rule.HeaderName) == "" {
+			return fmt.Errorf(
+				"comparison.normalization.headers[%d].header_name is required",
+				index,
+			)
+		}
+	}
 	if len(c.Campaigns) == 0 {
 		return errors.New("at least one campaign is required")
 	}
@@ -158,6 +203,11 @@ func Default() Config {
 		Comparison: ComparisonConfig{
 			MissingResourceStatuses: []int{404, 410},
 			PreconditionHeuristics:  []PreconditionHeuristic{},
+			Normalization: NormalizationConfig{
+				DefaultRules: true,
+				BodyFields:   []BodyFieldNormalizationRule{},
+				Headers:      []HeaderNormalizationRule{},
+			},
 		},
 		Campaigns: map[string]Campaign{
 			"baseline": {Kind: "baseline"},
