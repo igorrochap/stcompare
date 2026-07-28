@@ -98,6 +98,58 @@ curl https://baseline.example.test/widgets
 	}
 }
 
+func TestRenderMarkdownShowsPreconditionPolicyAndProblemEvidence(t *testing.T) {
+	document := report{
+		ComparisonPolicy: PreconditionPolicy{
+			MissingResourceStatuses: []int{403, 404},
+			Heuristics: []PreconditionHeuristic{
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
+			},
+		},
+		Problems: []baselineProblem{
+			{
+				CheckName:                    "response_schema_conformance",
+				Outcome:                      problemOutcomeInconclusive,
+				OutcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+				MatchedPreconditionHeuristic: "generated-widget",
+			},
+		},
+	}
+
+	markdown := renderMarkdown(document)
+	policyBlock := `## Comparison policy
+
+- Missing resource statuses: ` + "`403`, `404`" + `
+- Precondition heuristics:
+  - ` + "`generated-widget`" + `: method ` + "`GET`" + `, path pattern ` +
+		"`^/widgets/[0-9a-f]+$`"
+	problemBlock := `- Outcome: ` + "`inconclusive`" + `
+- Outcome reason: ` + "`generated_resource_precondition_loss`" + `
+- Matched precondition heuristic: ` + "`generated-widget`"
+	got := struct {
+		PolicyBlock  bool
+		ProblemBlock bool
+	}{
+		PolicyBlock:  strings.Contains(markdown, policyBlock),
+		ProblemBlock: strings.Contains(markdown, problemBlock),
+	}
+	want := struct {
+		PolicyBlock  bool
+		ProblemBlock bool
+	}{
+		PolicyBlock:  true,
+		ProblemBlock: true,
+	}
+
+	if got != want {
+		t.Fatalf("renderMarkdown precondition evidence = %#v, want %#v:\n%s", got, want, markdown)
+	}
+}
+
 func TestRenderMarkdownMarksAmbiguousBaselineProblemsExplicitly(t *testing.T) {
 	document := report{
 		BaselineProblemsAvailable: true,

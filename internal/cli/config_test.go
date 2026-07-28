@@ -311,6 +311,32 @@ func TestConfigShowAppliesOmittedSchemathesisDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigShowAppliesOmittedComparisonDefaults(t *testing.T) {
+	input := loadDefaultConfig(t)
+	delete(input, "comparison")
+	want := cloneConfig(t, input)
+	want["comparison"] = map[string]any{
+		"missing_resource_statuses": []any{404, 410},
+		"precondition_heuristics":   []any{},
+	}
+
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", input)
+
+	var output bytes.Buffer
+	root := cli.NewRootCommand()
+	root.SetOut(&output)
+	root.SetArgs([]string{"config", "show"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute config show: %v", err)
+	}
+	got := decodeConfig(t, output.Bytes())
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("partial config output = %#v, want %#v", got, want)
+	}
+}
+
 func TestConfigShowRejectsNonAbsoluteBaseURLBeforeOutput(t *testing.T) {
 	assertConfigShowRejected(t, func(document configDocument) {
 		document["base_url"] = "localhost:8080"
@@ -327,6 +353,163 @@ func TestConfigShowRejectsWorkersBelowOneBeforeOutput(t *testing.T) {
 	assertConfigShowRejected(t, func(document configDocument) {
 		configSection(t, document, "schemathesis")["workers"] = 0
 	}, "schemathesis.workers must be at least 1")
+}
+
+func TestConfigShowRejectsInvalidPreconditionHeuristicPathPatternBeforeOutput(t *testing.T) {
+	assertConfigShowRejected(t, func(document configDocument) {
+		document["comparison"] = map[string]any{
+			"missing_resource_statuses": []any{404, 410},
+			"precondition_heuristics": []any{
+				map[string]any{
+					"name":         "generated-widget",
+					"method":       "GET",
+					"path_pattern": "[",
+				},
+			},
+		}
+	}, "comparison.precondition_heuristics[0].path_pattern must be a valid regular expression")
+}
+
+func TestConfigShowRejectsSemanticallyInvalidComparisonBeforeOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		comparison configDocument
+		wantError  string
+	}{
+		{
+			name: "unsupported missing status",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{500},
+				"precondition_heuristics":   []any{},
+			},
+			wantError: "comparison.missing_resource_statuses[0] must be one of 401, 403, 404, or 410",
+		},
+		{
+			name: "blank heuristic name",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "   ",
+						"method":       "GET",
+						"path_pattern": `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+			wantError: "comparison.precondition_heuristics[0].name is required",
+		},
+		{
+			name: "duplicate heuristic name",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "GET",
+						"path_pattern": `^/widgets/[0-9a-f]+$`,
+					},
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "POST",
+						"path_pattern": `^/widgets$`,
+					},
+				},
+			},
+			wantError: "comparison.precondition_heuristics[1].name must be unique",
+		},
+		{
+			name: "blank heuristic method",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "   ",
+						"path_pattern": `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+			wantError: "comparison.precondition_heuristics[0].method is required",
+		},
+		{
+			name: "empty path pattern",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "GET",
+						"path_pattern": "",
+					},
+				},
+			},
+			wantError: "comparison.precondition_heuristics[0].path_pattern is required",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertConfigShowRejected(t, func(document configDocument) {
+				document["comparison"] = test.comparison
+			}, test.wantError)
+		})
+	}
+}
+
+func TestConfigShowAcceptsComparisonValidationBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		comparison configDocument
+	}{
+		{
+			name: "empty missing resource statuses",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "GET",
+						"path_pattern": `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+		},
+		{
+			name: "lowercase heuristic method",
+			comparison: configDocument{
+				"missing_resource_statuses": []any{404, 410},
+				"precondition_heuristics": []any{
+					map[string]any{
+						"name":         "generated-widget",
+						"method":       "get",
+						"path_pattern": `^/widgets/[0-9a-f]+$`,
+					},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := loadDefaultConfig(t)
+			want["comparison"] = test.comparison
+			t.Chdir(t.TempDir())
+			writeConfig(t, "stcompare.yaml", want)
+
+			var output bytes.Buffer
+			root := cli.NewRootCommand()
+			root.SetOut(&output)
+			root.SetArgs([]string{"config", "show"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("execute config show: %v", err)
+			}
+			got := decodeConfig(t, output.Bytes())
+
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("effective config = %#v, want %#v", got, want)
+			}
+		})
+	}
 }
 
 func TestConfigShowRejectsMissingCampaignsBeforeOutput(t *testing.T) {

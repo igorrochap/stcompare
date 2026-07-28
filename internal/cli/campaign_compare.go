@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -115,5 +116,26 @@ func campaignComparisonInput(
 		CandidateCampaign:  candidateName,
 		CandidateBaseURL:   effective.BaseURL,
 		OutputDir:          candidateReportDir,
+		PreconditionPolicy: campaignPreconditionPolicy(effective.Comparison),
 	}
+}
+
+func campaignPreconditionPolicy(source config.ComparisonConfig) comparison.PreconditionPolicy {
+	policy := comparison.PreconditionPolicy{
+		MissingResourceStatuses: make([]int, len(source.MissingResourceStatuses)),
+		Heuristics: make(
+			[]comparison.PreconditionHeuristic,
+			len(source.PreconditionHeuristics),
+		),
+	}
+	copy(policy.MissingResourceStatuses, source.MissingResourceStatuses)
+	for index, heuristic := range source.PreconditionHeuristics {
+		policy.Heuristics[index] = comparison.NewPreconditionHeuristic(
+			strings.TrimSpace(heuristic.Name),
+			strings.TrimSpace(heuristic.Method),
+			heuristic.PathPattern,
+		)
+	}
+
+	return policy
 }

@@ -26,14 +26,16 @@ type parsedProblemEvidence struct {
 }
 
 type baselineProblem struct {
-	CheckName         string              `json:"check_name"`
-	Message           string              `json:"message"`
-	EvidenceSource    evidenceSource      `json:"evidence_source"`
-	CaseID            string              `json:"case_id"`
-	CorrelationStatus correlationStatus   `json:"correlation_status"`
-	Outcome           problemOutcome      `json:"outcome,omitempty"`
-	Reproduction      problemReproduction `json:"reproduction"`
-	Interaction       *int                `json:"interaction"`
+	CheckName                    string               `json:"check_name"`
+	Message                      string               `json:"message"`
+	EvidenceSource               evidenceSource       `json:"evidence_source"`
+	CaseID                       string               `json:"case_id"`
+	CorrelationStatus            correlationStatus    `json:"correlation_status"`
+	Outcome                      problemOutcome       `json:"outcome,omitempty"`
+	OutcomeReason                problemOutcomeReason `json:"outcome_reason,omitempty"`
+	MatchedPreconditionHeuristic string               `json:"matched_precondition_heuristic,omitempty"`
+	Reproduction                 problemReproduction  `json:"reproduction"`
+	Interaction                  *int                 `json:"interaction"`
 }
 
 type problemOutcome string
@@ -42,6 +44,12 @@ const (
 	problemOutcomeFixed        problemOutcome = "fixed"
 	problemOutcomeStillFailing problemOutcome = "still_failing"
 	problemOutcomeInconclusive problemOutcome = "inconclusive"
+)
+
+type problemOutcomeReason string
+
+const (
+	problemOutcomeReasonGeneratedResourcePreconditionLoss problemOutcomeReason = "generated_resource_precondition_loss"
 )
 
 type correlationStatus string

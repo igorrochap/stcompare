@@ -3,13 +3,15 @@ package comparison
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
 
 const (
-	reportSchemaVersion         = "3"
+	reportSchemaVersion         = "4"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -17,6 +19,7 @@ type report struct {
 	SchemaVersion             string                      `json:"schema_version"`
 	Baseline                  reportCampaign              `json:"baseline"`
 	Candidate                 reportCandidate             `json:"candidate"`
+	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
 	Summary                   reportSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
@@ -105,6 +108,7 @@ type reportInput struct {
 	CandidateCampaign          string
 	CandidateBaseURL           string
 	Interactions               []reportInteraction
+	PreconditionPolicy         PreconditionPolicy
 }
 
 type baselineProblemEvidence struct {
@@ -133,6 +137,12 @@ type classifiedReport struct {
 	traffic          trafficSummary
 }
 
+type problemClassification struct {
+	outcome                      problemOutcome
+	outcomeReason                problemOutcomeReason
+	matchedPreconditionHeuristic string
+}
+
 type interactionClassification string
 
 const (
@@ -144,7 +154,12 @@ const (
 func newReport(input reportInput) report {
 	interactions := newInteractionEvidence(input.Interactions)
 	problemState := input.BaselineProblemEvidence.reportState()
-	classification := classifyReport(problemState.problems, interactions)
+	policy := input.PreconditionPolicy.clone()
+	classification := classifyReport(
+		problemState.problems,
+		interactions,
+		policy,
+	)
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
 
@@ -161,6 +176,7 @@ func newReport(input reportInput) report {
 			Campaign: input.CandidateCampaign,
 			BaseURL:  input.CandidateBaseURL,
 		},
+		ComparisonPolicy:          policy,
 		Summary:                   newReportSummary(input.Interactions, interactions, classification),
 		BaselineProblemsAvailable: problemState.available,
 		BaselineProblemsNote:      problemState.note,
@@ -206,6 +222,7 @@ func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
 func classifyReport(
 	problems []baselineProblem,
 	interactions []reportInteractionEvidence,
+	policy PreconditionPolicy,
 ) classifiedReport {
 	classified := classifiedReport{}
 	if problems != nil {
@@ -254,21 +271,28 @@ func classifyReport(
 
 	for index := range classified.problems {
 		problem := &classified.problems[index]
-		if !isCorrelatedServerErrorProblem(*problem) {
+		if problem.CorrelationStatus != correlationStatusCorrelated {
 			continue
 		}
 		if problem.Interaction == nil || *problem.Interaction < 1 ||
 			*problem.Interaction > len(classified.interactions) {
 			continue
 		}
-		classified.baselineProblems.Evaluable++
 
 		interaction := classified.interactions[*problem.Interaction-1]
-		if isServerErrorStatus(interaction.CandidateResponse.Status) {
-			problem.Outcome = problemOutcomeStillFailing
+		classification := classifyProblem(*problem, interaction, policy)
+		problem.Outcome = classification.outcome
+		problem.OutcomeReason = classification.outcomeReason
+		problem.MatchedPreconditionHeuristic =
+			classification.matchedPreconditionHeuristic
+		if classification.outcome == "" {
+			continue
+		}
+		classified.baselineProblems.Evaluable++
+		switch classification.outcome {
+		case problemOutcomeStillFailing:
 			classified.baselineProblems.StillFailing++
-		} else {
-			problem.Outcome = problemOutcomeInconclusive
+		case problemOutcomeInconclusive:
 			classified.baselineProblems.Inconclusive++
 		}
 	}
@@ -281,9 +305,68 @@ func classifyReport(
 	return classified
 }
 
-func isCorrelatedServerErrorProblem(problem baselineProblem) bool {
-	return problem.CorrelationStatus == correlationStatusCorrelated &&
-		isServerErrorCheck(problem.CheckName)
+func classifyProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	// Problem outcome precedence:
+	// 1. candidate 5xx + server-error check => still_failing
+	// 2. matching precondition heuristic => generated_resource_precondition_loss
+	// 3. non-heuristic server-error check => inconclusive
+	// 4. everything else => no issue-08 outcome
+	//
+	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
+	// heuristics only apply to configured missing-resource statuses, and config
+	// validation excludes 5xx from that set.
+	if isServerErrorStatus(interaction.CandidateResponse.Status) {
+		if isServerErrorCheck(problem.CheckName) {
+			return problemClassification{outcome: problemOutcomeStillFailing}
+		}
+
+		return problemClassification{}
+	}
+
+	heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
+	if matched {
+		return problemClassification{
+			outcome:                      problemOutcomeInconclusive,
+			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+			matchedPreconditionHeuristic: heuristic.Name,
+		}
+	}
+
+	if isServerErrorCheck(problem.CheckName) {
+		return problemClassification{outcome: problemOutcomeInconclusive}
+	}
+
+	return problemClassification{}
+}
+
+func matchingPreconditionHeuristic(
+	policy PreconditionPolicy,
+	interaction reportInteractionEvidence,
+) (PreconditionHeuristic, bool) {
+	if interaction.BaselineResponse == nil ||
+		!isSuccessStatus(interaction.BaselineResponse.Status) ||
+		!slices.Contains(policy.MissingResourceStatuses, interaction.CandidateResponse.Status) {
+		return PreconditionHeuristic{}, false
+	}
+
+	requestURL, err := url.Parse(interaction.Request.URL)
+	if err != nil {
+		return PreconditionHeuristic{}, false
+	}
+	for _, heuristic := range policy.Heuristics {
+		if !strings.EqualFold(interaction.Request.Method, heuristic.Method) {
+			continue
+		}
+		if heuristic.pathPattern.MatchString(requestURL.Path) {
+			return heuristic, true
+		}
+	}
+
+	return PreconditionHeuristic{}, false
 }
 
 func isServerErrorCheck(name string) bool {
@@ -297,6 +380,10 @@ func isServerErrorCheck(name string) bool {
 
 func isServerErrorStatus(status int) bool {
 	return status >= 500 && status <= 599
+}
+
+func isSuccessStatus(status int) bool {
+	return status >= 200 && status <= 299
 }
 
 func isCandidateServerErrorRegression(

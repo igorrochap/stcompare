@@ -10,6 +10,7 @@ func renderMarkdown(document report) string {
 	var output strings.Builder
 	output.WriteString("# Campaign comparison\n\n")
 	writeMarkdownSummary(&output, document)
+	writeMarkdownComparisonPolicy(&output, document.ComparisonPolicy)
 	if len(document.Problems) != 0 {
 		writeMarkdownProblems(&output, document.Problems)
 	}
@@ -49,6 +50,40 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	}
 }
 
+func writeMarkdownComparisonPolicy(
+	output *strings.Builder,
+	policy PreconditionPolicy,
+) {
+	output.WriteString("\n## Comparison policy\n\n")
+	if len(policy.MissingResourceStatuses) == 0 {
+		output.WriteString("- Missing resource statuses: none\n")
+	} else {
+		output.WriteString("- Missing resource statuses: ")
+		for index, status := range policy.MissingResourceStatuses {
+			if index != 0 {
+				output.WriteString(", ")
+			}
+			fmt.Fprintf(output, "`%d`", status)
+		}
+		output.WriteString("\n")
+	}
+
+	if len(policy.Heuristics) == 0 {
+		output.WriteString("- Precondition heuristics: none\n")
+		return
+	}
+	output.WriteString("- Precondition heuristics:\n")
+	for _, heuristic := range policy.Heuristics {
+		fmt.Fprintf(
+			output,
+			"  - `%s`: method `%s`, path pattern `%s`\n",
+			heuristic.Name,
+			heuristic.Method,
+			heuristic.PathPattern,
+		)
+	}
+}
+
 func writeMarkdownProblems(output *strings.Builder, problems []baselineProblem) {
 	output.WriteString("\n## Baseline problems\n")
 	for index, problem := range problems {
@@ -67,6 +102,16 @@ func writeMarkdownProblem(
 	fmt.Fprintf(output, "- Case ID: `%s`\n", problem.CaseID)
 	if problem.Outcome != "" {
 		fmt.Fprintf(output, "- Outcome: `%s`\n", problem.Outcome)
+	}
+	if problem.OutcomeReason != "" {
+		fmt.Fprintf(output, "- Outcome reason: `%s`\n", problem.OutcomeReason)
+	}
+	if problem.MatchedPreconditionHeuristic != "" {
+		fmt.Fprintf(
+			output,
+			"- Matched precondition heuristic: `%s`\n",
+			problem.MatchedPreconditionHeuristic,
+		)
 	}
 	switch problem.CorrelationStatus {
 	case correlationStatusCorrelated:

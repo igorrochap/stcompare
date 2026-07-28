@@ -5,8 +5,42 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
+
+// PreconditionPolicy identifies replay responses that may reflect missing
+// candidate-side resources rather than fixed baseline problems.
+type PreconditionPolicy struct {
+	MissingResourceStatuses []int                   `json:"missing_resource_statuses"`
+	Heuristics              []PreconditionHeuristic `json:"precondition_heuristics"`
+}
+
+func (p PreconditionPolicy) clone() PreconditionPolicy {
+	clone := PreconditionPolicy{
+		MissingResourceStatuses: append([]int(nil), p.MissingResourceStatuses...),
+		Heuristics:              append([]PreconditionHeuristic(nil), p.Heuristics...),
+	}
+
+	return clone
+}
+
+// PreconditionHeuristic matches one request category in configured order.
+type PreconditionHeuristic struct {
+	Name        string `json:"name"`
+	Method      string `json:"method"`
+	PathPattern string `json:"path_pattern"`
+	pathPattern *regexp.Regexp
+}
+
+func NewPreconditionHeuristic(name, method, pathPattern string) PreconditionHeuristic {
+	return PreconditionHeuristic{
+		Name:        name,
+		Method:      method,
+		PathPattern: pathPattern,
+		pathPattern: regexp.MustCompile(pathPattern),
+	}
+}
 
 // Input identifies the baseline evidence, candidate target, and output location
 // for one comparison.
@@ -19,6 +53,7 @@ type Input struct {
 	CandidateCampaign  string
 	CandidateBaseURL   string
 	OutputDir          string
+	PreconditionPolicy PreconditionPolicy
 }
 
 // Dependencies contains replaceable runtime dependencies used by a comparison.
@@ -146,6 +181,7 @@ func persistComparisonArtifacts(
 		CandidateCampaign:          input.CandidateCampaign,
 		CandidateBaseURL:           input.CandidateBaseURL,
 		Interactions:               interactions,
+		PreconditionPolicy:         input.PreconditionPolicy,
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {

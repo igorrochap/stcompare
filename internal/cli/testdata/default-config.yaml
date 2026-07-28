@@ -14,6 +14,11 @@ schemathesis:
   output_sanitize: false
   output_truncate: false
   extra_args: []
+comparison:
+  missing_resource_statuses:
+    - 404
+    - 410
+  precondition_heuristics: []
 campaigns:
   baseline:
     kind: baseline

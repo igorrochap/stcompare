@@ -16,6 +16,11 @@
 
 > Baseline Schemathesis problems are unavailable: Baseline Schemathesis problems could not be extracted from structured evidence.
 
+## Comparison policy
+
+- Missing resource statuses: `404`, `410`
+- Precondition heuristics: none
+
 ## Findings
 
 ### Finding 1: `POST http://baseline.invalid/widgets?dryRun=true`
