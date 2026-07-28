@@ -117,9 +117,6 @@ func campaignComparisonInput(
 		CandidateBaseURL:   effective.BaseURL,
 		OutputDir:          candidateReportDir,
 		PreconditionPolicy: campaignPreconditionPolicy(effective.Comparison),
-		ResponseNormalization: comparison.NormalizationConfigFrom(
-			effective.Comparison.Normalization,
-		),
 	}
 }
 
@@ -130,6 +127,7 @@ func campaignPreconditionPolicy(source config.ComparisonConfig) comparison.Preco
 			[]comparison.PreconditionHeuristic,
 			len(source.PreconditionHeuristics),
 		),
+		Normalization: comparison.NormalizationConfigFrom(source.Normalization),
 	}
 	copy(policy.MissingResourceStatuses, source.MissingResourceStatuses)
 	for index, heuristic := range source.PreconditionHeuristics {

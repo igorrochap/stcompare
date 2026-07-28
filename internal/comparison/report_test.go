@@ -160,10 +160,10 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 					`^/accounts/[0-9]+$`,
 				),
 			},
-		},
-		ResponseNormalization: ResponseNormalizationConfig{
-			BodyFields: []BodyFieldNormalizationRule{
-				{Name: "generated-id", FieldName: "id"},
+			Normalization: ResponseNormalizationConfig{
+				BodyFields: []BodyFieldNormalizationRule{
+					{Name: "generated-id", FieldName: "id"},
+				},
 			},
 		},
 	})
@@ -253,6 +253,10 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemStillFailing(t *testing.
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -305,6 +309,10 @@ func TestNewReportKeepsCorrelatedProblemVisibleWhenStatusIsUnchanged(t *testing.
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -406,6 +414,10 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemInconclusive(
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -457,6 +469,10 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemFixedWithExerciseEvidenc
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -540,6 +556,10 @@ func TestNewReportKeepsCorrelatedServerErrorProblemInconclusiveWithoutExerciseEv
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -604,6 +624,81 @@ func TestNewReportKeepsCorrelatedServerErrorProblemInconclusiveWithoutExerciseEv
 	}
 }
 
+func TestNewReportDoesNotUseAbsentReproductionDataAsOperationEvidence(
+	t *testing.T,
+) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					Message:           "Server error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"error":"boom"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  200,
+							Content: harContent{Text: `{"error":"boom"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		OutcomeReason:    document.Problems[0].OutcomeReason,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+		Inconclusive:     document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:       problemOutcomeInconclusive,
+		OutcomeReason: problemOutcomeReasonExerciseEvidenceMissing,
+		ExerciseEvidence: []string{
+			"normalized_response_body_match",
+			"no_precondition_loss_detected",
+		},
+		Inconclusive: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport absent reproduction evidence = %#v, want %#v", got, want)
+	}
+}
+
 func TestNewReportKeepsServerErrorProblemInconclusiveWhenResponseBodyUnavailable(
 	t *testing.T,
 ) {
@@ -648,6 +743,10 @@ func TestNewReportKeepsServerErrorProblemInconclusiveWhenResponseBodyUnavailable
 							CaseID:            "case-42",
 							CorrelationStatus: correlationStatusCorrelated,
 							Interaction:       &interaction,
+							Reproduction: problemReproduction{
+								Method: "GET",
+								URL:    "https://baseline.example.test/widgets/a8f31",
+							},
 						},
 					},
 				},
@@ -724,6 +823,10 @@ func TestNewReportKeepsPreconditionLossInconclusiveDespiteExerciseEvidence(
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -791,9 +894,11 @@ func TestNewReportKeepsPreconditionLossInconclusiveDespiteExerciseEvidence(
 func TestNewReportUsesNormalizationForServerErrorExerciseEvidence(t *testing.T) {
 	interaction := 1
 	document := newReport(reportInput{
-		ResponseNormalization: ResponseNormalizationConfig{
-			BodyFields: []BodyFieldNormalizationRule{
-				{Name: "generated-id", FieldName: "id"},
+		PreconditionPolicy: PreconditionPolicy{
+			Normalization: ResponseNormalizationConfig{
+				BodyFields: []BodyFieldNormalizationRule{
+					{Name: "generated-id", FieldName: "id"},
+				},
 			},
 		},
 		BaselineProblemEvidence: baselineProblemEvidence{
@@ -805,6 +910,10 @@ func TestNewReportUsesNormalizationForServerErrorExerciseEvidence(t *testing.T) 
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},

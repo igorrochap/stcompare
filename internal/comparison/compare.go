@@ -57,16 +57,15 @@ func NewPreconditionHeuristic(name, method, pathPattern string) PreconditionHeur
 // Input identifies the baseline evidence, candidate target, and output location
 // for one comparison.
 type Input struct {
-	BaselineCampaign      string
-	BaselineHARPath       string
-	BaselineVCRPath       string
-	BaselineNDJSONPath    string
-	BaselineJUnitPath     string
-	CandidateCampaign     string
-	CandidateBaseURL      string
-	OutputDir             string
-	PreconditionPolicy    PreconditionPolicy
-	ResponseNormalization ResponseNormalizationConfig
+	BaselineCampaign   string
+	BaselineHARPath    string
+	BaselineVCRPath    string
+	BaselineNDJSONPath string
+	BaselineJUnitPath  string
+	CandidateCampaign  string
+	CandidateBaseURL   string
+	OutputDir          string
+	PreconditionPolicy PreconditionPolicy
 }
 
 // Dependencies contains replaceable runtime dependencies used by a comparison.
@@ -195,7 +194,6 @@ func persistComparisonArtifacts(
 		CandidateBaseURL:           input.CandidateBaseURL,
 		Interactions:               interactions,
 		PreconditionPolicy:         input.PreconditionPolicy,
-		ResponseNormalization:      input.ResponseNormalization,
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {

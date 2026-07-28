@@ -371,6 +371,8 @@ include:
 - Correlated server-error problems are `fixed` only when replay records explicit
   exercise evidence: operation/path identity, semantic response-body agreement
   after configured normalization, and no matched precondition-loss heuristic.
+  No single signal is sufficient on its own; all three signals are jointly
+  necessary and sufficient for replay to classify the problem as fixed.
   When candidate or baseline response bodies are unavailable, or semantic
   agreement is missing, the problem remains `inconclusive` with
   `outcome_reason: "exercise_evidence_missing"`. Markdown and JSON record the
