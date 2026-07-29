@@ -239,7 +239,14 @@ func TestPersistComparisonArtifactsWritesCorrelatedProblemEvidence(t *testing.T)
 
 	want := problemReportState{
 		Available: true,
-		Problems:  []baselineProblem{problem},
+		Problems: []baselineProblem{
+			func() baselineProblem {
+				problem.CheckCategory = checkCategoryUncategorized
+				problem.Outcome = problemOutcomeInconclusive
+				problem.OutcomeReason = problemOutcomeReasonNoCategorizerForCheck
+				return problem
+			}(),
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("comparison JSON problem state = %#v, want %#v", got, want)

@@ -25,6 +25,7 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 		Problems: []baselineProblem{
 			{
 				CheckName:         "status_code_conformance",
+				CheckCategory:     checkCategoryUncategorized,
 				Message:           "Received an undocumented status code: 418",
 				EvidenceSource:    "vcr",
 				CaseID:            "case-42",
@@ -41,6 +42,7 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 			},
 			{
 				CheckName:         "API accepted schema-violating request",
+				CheckCategory:     checkCategoryUncategorized,
 				Message:           "Server accepted invalid input.",
 				EvidenceSource:    "junit",
 				CaseID:            "case-junit",
@@ -58,6 +60,7 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 
 ### Problem 1: ` + "`status_code_conformance`" + `
 
+- Check category: ` + "`uncategorized`" + `
 - Message: Received an undocumented status code: 418
 - Evidence source: ` + "`vcr`" + `
 - Case ID: ` + "`case-42`" + `
@@ -82,6 +85,7 @@ Body:
 
 ### Problem 2: ` + "`API accepted schema-violating request`" + `
 
+- Check category: ` + "`uncategorized`" + `
 - Message: Server accepted invalid input.
 - Evidence source: ` + "`junit`" + `
 - Case ID: ` + "`case-junit`" + `

@@ -138,6 +138,7 @@ func writeMarkdownProblem(
 	problem baselineProblem,
 ) {
 	fmt.Fprintf(output, "\n### Problem %d: `%s`\n\n", number, problem.CheckName)
+	fmt.Fprintf(output, "- Check category: `%s`\n", problem.CheckCategory)
 	fmt.Fprintf(output, "- Message: %s\n", problem.Message)
 	fmt.Fprintf(output, "- Evidence source: `%s`\n", problem.EvidenceSource)
 	fmt.Fprintf(output, "- Case ID: `%s`\n", problem.CaseID)

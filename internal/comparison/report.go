@@ -3,15 +3,12 @@ package comparison
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"slices"
 	"sort"
-	"strings"
 )
 
 const (
-	reportSchemaVersion         = "5"
+	reportSchemaVersion         = "6"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -223,7 +220,12 @@ func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
 		return nil
 	}
 
-	return append([]baselineProblem(nil), problems...)
+	normalized := append([]baselineProblem(nil), problems...)
+	for index := range normalized {
+		normalized[index].CheckCategory = categorizeCheckName(normalized[index].CheckName)
+	}
+
+	return normalized
 }
 
 func classifyReport(
@@ -317,218 +319,6 @@ func classifyReport(
 	)
 
 	return classified
-}
-
-func classifyProblem(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) problemClassification {
-	// Problem outcome precedence:
-	// 1. candidate 5xx + server-error check => still_failing
-	// 2. matching precondition heuristic => generated_resource_precondition_loss
-	// 3. non-heuristic server-error check => fixed with sufficient exercise
-	//    evidence, otherwise inconclusive
-	// 4. everything else => no exercise-evidence outcome
-	//
-	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
-	// heuristics only apply to configured missing-resource statuses, and config
-	// validation excludes 5xx from that set.
-	if isServerErrorStatus(interaction.CandidateResponse.Status) {
-		if isServerErrorCheck(problem.CheckName) {
-			return problemClassification{outcome: problemOutcomeStillFailing}
-		}
-
-		return problemClassification{}
-	}
-
-	heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
-	if matched {
-		return problemClassification{
-			outcome:                      problemOutcomeInconclusive,
-			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
-			exerciseEvidence:             exerciseEvidenceWithPreconditionLoss(problem, interaction, policy),
-			matchedPreconditionHeuristic: heuristic.Name,
-		}
-	}
-
-	if isServerErrorCheck(problem.CheckName) {
-		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
-		if hasExerciseEvidence(evidence) {
-			return problemClassification{
-				outcome:          problemOutcomeFixed,
-				exerciseEvidence: evidence,
-			}
-		}
-
-		return problemClassification{
-			outcome:          problemOutcomeInconclusive,
-			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
-			exerciseEvidence: evidence,
-		}
-	}
-
-	return problemClassification{}
-}
-
-func exerciseEvidenceWithPreconditionLoss(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) []string {
-	return exerciseEvidence(problem, interaction, policy.Normalization)
-}
-
-func exerciseEvidenceWithNoPreconditionLoss(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) []string {
-	evidence := exerciseEvidence(problem, interaction, policy.Normalization)
-	evidence = append(evidence, exerciseEvidenceNoPreconditionLoss)
-
-	return evidence
-}
-
-func exerciseEvidence(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	normalization ResponseNormalizationConfig,
-) []string {
-	var evidence []string
-	if sameProblemOperationAndPath(problem, interaction) {
-		evidence = append(evidence, exerciseEvidenceOperationAndPathMatch)
-	}
-	if normalizedResponseBodiesMatch(interaction, normalization) {
-		evidence = append(evidence, exerciseEvidenceNormalizedResponseMatch)
-	}
-
-	return evidence
-}
-
-func hasExerciseEvidence(evidence []string) bool {
-	return slices.Contains(evidence, exerciseEvidenceOperationAndPathMatch) &&
-		slices.Contains(evidence, exerciseEvidenceNormalizedResponseMatch) &&
-		slices.Contains(evidence, exerciseEvidenceNoPreconditionLoss)
-}
-
-func sameProblemOperationAndPath(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-) bool {
-	if problem.Reproduction.Method == "" && problem.Reproduction.URL == "" {
-		return false
-	}
-	if problem.Reproduction.Method != "" &&
-		!strings.EqualFold(problem.Reproduction.Method, interaction.Request.Method) {
-		return false
-	}
-	if problem.Reproduction.URL == "" {
-		return true
-	}
-
-	reproductionURL, err := url.Parse(problem.Reproduction.URL)
-	if err != nil {
-		return false
-	}
-	requestURL, err := url.Parse(interaction.Request.URL)
-	if err != nil {
-		return false
-	}
-
-	return reproductionURL.Path == requestURL.Path
-}
-
-func normalizedResponseBodiesMatch(
-	interaction reportInteractionEvidence,
-	normalization ResponseNormalizationConfig,
-) bool {
-	if interaction.BaselineResponse == nil {
-		return false
-	}
-
-	normalizedBaseline, ok := normalizedResponseBody(
-		*interaction.BaselineResponse,
-		normalization,
-	)
-	if !ok {
-		return false
-	}
-	normalizedCandidate, ok := normalizedResponseBody(
-		interaction.CandidateResponse,
-		normalization,
-	)
-	if !ok {
-		return false
-	}
-
-	return normalizedBaseline == normalizedCandidate
-}
-
-func normalizedResponseBody(
-	response reportResponse,
-	normalization ResponseNormalizationConfig,
-) (string, bool) {
-	body := response.Body
-	if body == "" {
-		return "", false
-	}
-	normalized, err := NormalizeResponse(
-		RecordedResponse{
-			Status:  response.Status,
-			Headers: response.Headers,
-			Body:    &body,
-		},
-		normalization,
-	)
-	if err != nil || normalized.Body == nil {
-		return "", false
-	}
-
-	return *normalized.Body, true
-}
-
-func matchingPreconditionHeuristic(
-	policy PreconditionPolicy,
-	interaction reportInteractionEvidence,
-) (PreconditionHeuristic, bool) {
-	if interaction.BaselineResponse == nil ||
-		!isSuccessStatus(interaction.BaselineResponse.Status) ||
-		!slices.Contains(policy.MissingResourceStatuses, interaction.CandidateResponse.Status) {
-		return PreconditionHeuristic{}, false
-	}
-
-	requestURL, err := url.Parse(interaction.Request.URL)
-	if err != nil {
-		return PreconditionHeuristic{}, false
-	}
-	for _, heuristic := range policy.Heuristics {
-		if !strings.EqualFold(interaction.Request.Method, heuristic.Method) {
-			continue
-		}
-		if heuristic.pathPattern.MatchString(requestURL.Path) {
-			return heuristic, true
-		}
-	}
-
-	return PreconditionHeuristic{}, false
-}
-
-func isServerErrorCheck(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "not_a_server_error", "server error":
-		return true
-	}
-
-	return false
-}
-
-func isServerErrorStatus(status int) bool {
-	return status >= 500 && status <= 599
-}
-
-func isSuccessStatus(status int) bool {
-	return status >= 200 && status <= 299
 }
 
 func isCandidateServerErrorRegression(
