@@ -17,6 +17,7 @@ type recordingCampaignRunner struct {
 	schemathesisVersion  string
 	schemathesisVersionE error
 	runErr               error
+	runFunc              func([]string) error
 }
 
 func (runner *recordingCampaignRunner) SchemathesisVersion() (string, error) {
@@ -25,6 +26,10 @@ func (runner *recordingCampaignRunner) SchemathesisVersion() (string, error) {
 
 func (runner *recordingCampaignRunner) Run(argv []string) error {
 	runner.argv = append([]string(nil), argv...)
+	if runner.runFunc != nil {
+		return runner.runFunc(argv)
+	}
+
 	return runner.runErr
 }
 
@@ -330,6 +335,55 @@ func TestCampaignRunRemovesNewReportDirectoryWhenRunnerFails(t *testing.T) {
 	}
 }
 
+func TestCampaignRunKeepFailedPreservesNewPartialArtifactsWithoutMetadata(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+
+	runner := &recordingCampaignRunner{
+		schemathesisVersion: "Schemathesis 4.0.0",
+		runFunc: func([]string) error {
+			partialPath := filepath.Join("reports", "baseline", "campaign.ndjson")
+			if err := os.WriteFile(partialPath, []byte("partial\n"), 0o644); err != nil {
+				t.Fatalf("write partial artifact: %v", err)
+			}
+
+			return errors.New("st failed")
+		},
+	}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline", "--keep-failed")
+
+	partialContents, readErr := os.ReadFile(filepath.Join("reports", "baseline", "campaign.ndjson"))
+	if readErr != nil {
+		t.Fatalf("read partial artifact: %v", readErr)
+	}
+	_, metadataErr := os.Stat(filepath.Join("reports", "baseline", "metadata.yaml"))
+	got := struct {
+		Error        string
+		Partial      string
+		MetadataGone bool
+	}{
+		Partial:      string(partialContents),
+		MetadataGone: errors.Is(metadataErr, os.ErrNotExist),
+	}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error        string
+		Partial      string
+		MetadataGone bool
+	}{
+		Error:        "st failed; preserved partial debug artifacts in reports/baseline, but this is not a completed campaign",
+		Partial:      "partial\n",
+		MetadataGone: true,
+	}
+
+	if got != want {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
 func TestCampaignRunForceKeepsExistingReportDirectoryWhenRunnerFails(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
 	t.Chdir(t.TempDir())
@@ -349,6 +403,50 @@ func TestCampaignRunForceKeepsExistingReportDirectoryWhenRunnerFails(t *testing.
 		runErr:              errors.New("st failed"),
 	}
 	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline", "--force")
+
+	metadataContents, readErr := os.ReadFile(metadataPath)
+	if readErr != nil {
+		t.Fatalf("read sentinel metadata: %v", readErr)
+	}
+	got := struct {
+		Error    string
+		Metadata string
+	}{Metadata: string(metadataContents)}
+	if err != nil {
+		got.Error = err.Error()
+	}
+	want := struct {
+		Error    string
+		Metadata string
+	}{
+		Error:    "st failed",
+		Metadata: sentinel,
+	}
+
+	if got != want {
+		t.Fatalf("campaign run outcome = %#v, want %#v", got, want)
+	}
+}
+
+func TestCampaignRunForceKeepFailedReturnsPlainErrorForExistingReportDirectory(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	reportDir := filepath.Join("reports", "baseline")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create existing report dir: %v", err)
+	}
+	metadataPath := filepath.Join(reportDir, "metadata.yaml")
+	const sentinel = "sentinel: keep\n"
+	if err := os.WriteFile(metadataPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write sentinel metadata: %v", err)
+	}
+
+	runner := &recordingCampaignRunner{
+		schemathesisVersion: "Schemathesis 4.0.0",
+		runErr:              errors.New("st failed"),
+	}
+	err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline", "--force", "--keep-failed")
 
 	metadataContents, readErr := os.ReadFile(metadataPath)
 	if readErr != nil {
