@@ -145,8 +145,8 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "7" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "7")
+	if document.SchemaVersion != "8" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "8")
 	}
 }
 
@@ -235,7 +235,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "7",
+		SchemaVersion: "8",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
@@ -578,6 +578,216 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemFixedWithExerciseEvidenc
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport fixed exercise evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportBaselineProblemSummaryAccountsForEveryBucket(t *testing.T) {
+	interactions := []int{1, 2, 3, 4}
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-fixed",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interactions[0],
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/fixed",
+					},
+				},
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-still-failing",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interactions[1],
+				},
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-inconclusive",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interactions[2],
+				},
+				{
+					CheckName:         "status_code_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-uncorrelated",
+					CorrelationStatus: correlationStatusUncorrelated,
+				},
+				{
+					CheckName:         "status_code_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-ambiguous",
+					CorrelationStatus: correlationStatusAmbiguous,
+				},
+				{
+					CheckName:         "unsupported_method",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-unevaluable",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interactions[3],
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request:  harRequest{Method: "GET", URL: "https://baseline.example.test/fixed"},
+					Response: &harResponse{Status: 500, Content: harContent{Text: `{"error":"boom"}`}},
+				},
+				Replay: replayResult{
+					Entry: harEntry{Response: &harResponse{Status: 200, Content: harContent{Text: `{"error":"boom"}`}}},
+				},
+			},
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 500}},
+				Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 500}}},
+			},
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 500}},
+				Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 200}}},
+			},
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 501}},
+				Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 405}}},
+			},
+		},
+	})
+
+	summary := document.Summary.BaselineProblems
+	bucketTotal := summary.Evaluable + summary.Unevaluable +
+		summary.Uncorrelated + summary.Ambiguous
+	if bucketTotal != summary.Total {
+		t.Fatalf("baseline problem bucket total = %d, want total %d", bucketTotal, summary.Total)
+	}
+
+	outcomeTotal := summary.Fixed + summary.StillFailing + summary.Inconclusive
+	got := struct {
+		Summary      baselineProblemSummary
+		BucketTotal  int
+		Outcome      problemOutcome
+		OutcomeTotal int
+	}{
+		Summary:      summary,
+		BucketTotal:  bucketTotal,
+		Outcome:      document.Problems[5].Outcome,
+		OutcomeTotal: outcomeTotal,
+	}
+	percentage := 100.0 / 3.0
+	want := struct {
+		Summary      baselineProblemSummary
+		BucketTotal  int
+		Outcome      problemOutcome
+		OutcomeTotal int
+	}{
+		Summary: baselineProblemSummary{
+			Total:        6,
+			Evaluable:    3,
+			Unevaluable:  1,
+			Uncorrelated: 1,
+			Ambiguous:    1,
+			Fixed:        1,
+			StillFailing: 1,
+			Inconclusive: 1,
+			FixRate: baselineProblemFixRate{
+				Available:        true,
+				Fixed:            1,
+				Denominator:      3,
+				DenominatorBasis: fixRateDenominatorBasis,
+				Percentage:       &percentage,
+				Meaning:          fixRateMeaning,
+			},
+		},
+		BucketTotal:  6,
+		OutcomeTotal: 3,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport baseline problem bucket summary = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportBaselineProblemFixRateDistinguishesZeroDenominator(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "status_code_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-ambiguous",
+					CorrelationStatus: correlationStatusAmbiguous,
+				},
+				{
+					CheckName:         "unsupported_method",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-unevaluable",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 501}},
+				Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 405}}},
+			},
+		},
+	})
+
+	got := document.Summary.BaselineProblems.FixRate
+	want := baselineProblemFixRate{
+		Available:        false,
+		Fixed:            0,
+		Denominator:      0,
+		DenominatorBasis: fixRateDenominatorBasis,
+		Meaning:          fixRateMeaning,
+		Note:             fixRateZeroDenominatorNote,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport zero-denominator fix rate = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportBaselineProblemFixRateReportsGenuineZeroPercent(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-still-failing",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 500}},
+				Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 500}}},
+			},
+		},
+	})
+
+	percentage := 0.0
+	got := document.Summary.BaselineProblems.FixRate
+	want := baselineProblemFixRate{
+		Available:        true,
+		Fixed:            0,
+		Denominator:      1,
+		DenominatorBasis: fixRateDenominatorBasis,
+		Percentage:       &percentage,
+		Meaning:          fixRateMeaning,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport zero-percent fix rate = %#v, want %#v", got, want)
 	}
 }
 
@@ -1670,7 +1880,7 @@ func TestNewReportClassifiesUnknownBaselineResponseTraffic(t *testing.T) {
 	}
 }
 
-func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
+func TestNewReportKeepsUncategorizedProblemUnevaluable(t *testing.T) {
 	interaction := 1
 	document := newReport(reportInput{
 		BaselineProblemEvidence: baselineProblemEvidence{
@@ -1701,6 +1911,7 @@ func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
 		Outcome       problemOutcome
 		OutcomeReason problemOutcomeReason
 		Evaluable     int
+		Unevaluable   int
 		Inconclusive  int
 		Fixed         int
 		StillFailing  int
@@ -1711,6 +1922,7 @@ func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
 		Outcome:       document.Problems[0].Outcome,
 		OutcomeReason: document.Problems[0].OutcomeReason,
 		Evaluable:     document.Summary.BaselineProblems.Evaluable,
+		Unevaluable:   document.Summary.BaselineProblems.Unevaluable,
 		Inconclusive:  document.Summary.BaselineProblems.Inconclusive,
 		Fixed:         document.Summary.BaselineProblems.Fixed,
 		StillFailing:  document.Summary.BaselineProblems.StillFailing,
@@ -1724,6 +1936,7 @@ func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
 		Outcome       problemOutcome
 		OutcomeReason problemOutcomeReason
 		Evaluable     int
+		Unevaluable   int
 		Inconclusive  int
 		Fixed         int
 		StillFailing  int
@@ -1731,11 +1944,7 @@ func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
 	}{
 		CheckName:     "unsupported_method",
 		CheckCategory: checkCategoryUncategorized,
-		Outcome:       problemOutcomeInconclusive,
-		OutcomeReason: problemOutcomeReasonNoCategorizerForCheck,
-		Evaluable:     1,
-		Inconclusive:  1,
-		OutcomeTotal:  1,
+		Unevaluable:   1,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport uncategorized problem = %#v, want %#v", got, want)
@@ -2207,8 +2416,12 @@ func TestNewReportMaintainsEvaluableInvariantAcrossCheckCategories(t *testing.T)
 	if outcomeTotal != summary.Evaluable {
 		t.Fatalf("outcome total = %d, want evaluable %d", outcomeTotal, summary.Evaluable)
 	}
-	if summary.Evaluable != len(document.Problems) {
-		t.Fatalf("evaluable problems = %d, want %d", summary.Evaluable, len(document.Problems))
+	if summary.Evaluable+summary.Unevaluable != len(document.Problems) {
+		t.Fatalf(
+			"accounted correlated problems = %d, want %d",
+			summary.Evaluable+summary.Unevaluable,
+			len(document.Problems),
+		)
 	}
 }
 

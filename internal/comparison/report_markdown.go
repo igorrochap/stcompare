@@ -300,16 +300,49 @@ func writeMarkdownBaselineProblemSummary(
 	output *strings.Builder,
 	summary baselineProblemSummary,
 ) {
+	const summaryFormat = "- Baseline problem outcomes: total %d, evaluable %d, fixed %d, " +
+		"still failing %d, inconclusive %d, unevaluable %d, " +
+		"uncorrelated %d, ambiguous %d\n"
+
 	fmt.Fprintf(
 		output,
-		"- Baseline problem outcomes: total %d, evaluable %d, fixed %d, "+
-			"still failing %d, inconclusive %d, uncorrelated %d\n",
+		summaryFormat,
 		summary.Total,
 		summary.Evaluable,
 		summary.Fixed,
 		summary.StillFailing,
 		summary.Inconclusive,
+		summary.Unevaluable,
 		summary.Uncorrelated,
+		summary.Ambiguous,
+	)
+	writeMarkdownBaselineProblemFixRate(output, summary.FixRate)
+}
+
+func writeMarkdownBaselineProblemFixRate(
+	output *strings.Builder,
+	rate baselineProblemFixRate,
+) {
+	const unavailableRateFormat = "- Fix rate: unavailable (%d evaluable baseline problems). %s\n"
+	const availableRateFormat = "- Fix rate: %d/%d evaluable baseline problems fixed (%.1f%%). %s\n"
+
+	if !rate.Available {
+		fmt.Fprintf(
+			output,
+			unavailableRateFormat,
+			rate.Denominator,
+			rate.Meaning,
+		)
+		return
+	}
+
+	fmt.Fprintf(
+		output,
+		availableRateFormat,
+		rate.Fixed,
+		rate.Denominator,
+		*rate.Percentage,
+		rate.Meaning,
 	)
 }
 

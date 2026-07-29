@@ -396,18 +396,31 @@ include:
   non-problem statuses. The two count values remain visible independently so
   extraction discrepancies are auditable.
 - Problem outcome totals for extracted baseline Schemathesis problems:
-  `fixed`, `still_failing`, and `inconclusive`, plus separate total, evaluable,
-  and uncorrelated counts. A problem is `evaluable` when it is correlated to a
-  replay interaction and the comparison has evidence for an outcome. Existing
-  check-specific evaluation covers the Schemathesis server-error check.
-  Generated-resource precondition-loss evidence can make a correlated problem
-  of any check category evaluable and inconclusive. The three outcome totals
-  always sum to the evaluable count. A correlated `not_a_server_error` problem
-  remains `still_failing` when replay also returns a 5xx response. A replayed
-  non-server-error problem on a replayed 5xx response remains outside the
-  evaluable denominator. A replayed non-5xx response is `fixed` only when the
-  recorded exercise evidence shows replay reached the relevant behavior; absence
-  of contrary evidence remains `inconclusive`.
+  `fixed`, `still_failing`, and `inconclusive`, plus separate total,
+  `evaluable`, `unevaluable`, `uncorrelated`, and `ambiguous` counts. Every
+  extracted problem falls into exactly one top-level bucket: evaluable,
+  unevaluable, uncorrelated, or ambiguous. The outcome totals always sum to the
+  evaluable count, and the top-level buckets always sum to total. A problem is
+  `evaluable` when it is correlated to a replay interaction and the comparison
+  has evidence for an outcome. Correlated problems whose check category is not
+  yet supported are `unevaluable`, not inconclusive. Existing check-specific
+  evaluation covers the Schemathesis server-error check. Generated-resource
+  precondition-loss evidence can make a correlated problem of any supported
+  check category evaluable and inconclusive. A correlated `not_a_server_error`
+  problem remains `still_failing` when replay also returns a 5xx response. A
+  replayed non-server-error problem on a replayed 5xx response remains outside
+  the evaluable denominator. A replayed non-5xx response is `fixed` only when
+  the recorded exercise evidence shows replay reached the relevant behavior;
+  absence of contrary evidence remains `inconclusive`.
+- The baseline-problem `fix_rate` is computed as fixed problems divided by
+  evaluable baseline problems. JSON states the denominator count and basis
+  (`evaluable_baseline_problems`) alongside the percentage; Markdown prints the
+  same numerator and denominator next to the rate. When there are zero evaluable
+  problems, the report emits an unavailable rate instead of `0%`, so this is
+  distinct from a genuine `0/N` result. The rate counts Schemathesis problems,
+  not distinct underlying defects; it measures only the evaluable subset, not
+  all baseline problems; and it is comparable across candidates only when they
+  share a baseline campaign and report schema version.
 - Traffic classification totals for replay interactions: `success_unchanged`,
   `changed`, and `regressed`. A candidate 5xx response is a `regressed` finding
   when the baseline response was not already a server error and no corresponding

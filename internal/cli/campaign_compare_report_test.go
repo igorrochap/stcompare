@@ -18,14 +18,16 @@ import (
 )
 
 const (
-	firstRequestBody      = `{"name":"widget"}`
-	firstBaselineBody     = `{"id":"widget","state":"available"}`
-	firstCandidateBody    = `{"error":"widget not found"}`
-	secondBaselineBody    = `{"error":"baseline unavailable"}`
-	secondCandidateBody   = `{"id":"missing","state":"available"}`
-	fixedResponseDate     = "Mon, 02 Jan 2006 15:04:05 GMT"
-	firstCandidateLength  = "28"
-	secondCandidateLength = "36"
+	firstRequestBody           = `{"name":"widget"}`
+	firstBaselineBody          = `{"id":"widget","state":"available"}`
+	firstCandidateBody         = `{"error":"widget not found"}`
+	secondBaselineBody         = `{"error":"baseline unavailable"}`
+	secondCandidateBody        = `{"id":"missing","state":"available"}`
+	fixedResponseDate          = "Mon, 02 Jan 2006 15:04:05 GMT"
+	firstCandidateLength       = "28"
+	secondCandidateLength      = "36"
+	fixRateMeaning             = "Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version."
+	fixRateZeroDenominatorNote = "Fix rate is unavailable because there are zero evaluable baseline problems."
 )
 
 func TestCampaignCompareWritesCompleteJSONReport(t *testing.T) {
@@ -585,7 +587,7 @@ http_interactions:
 
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "7",
+		SchemaVersion: "8",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,
@@ -597,7 +599,13 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 		},
 		Summary: comparisonSummary{
 			InteractionCount: 2,
-			BaselineProblems: comparisonBaselineProblemSummary{},
+			BaselineProblems: comparisonBaselineProblemSummary{
+				FixRate: comparisonBaselineProblemFixRate{
+					DenominatorBasis: "evaluable_baseline_problems",
+					Meaning:          fixRateMeaning,
+					Note:             fixRateZeroDenominatorNote,
+				},
+			},
 			Traffic: comparisonTrafficSummary{
 				Total:   2,
 				Changed: 2,
@@ -868,12 +876,25 @@ type comparisonSummary struct {
 }
 
 type comparisonBaselineProblemSummary struct {
-	Total        int `json:"total"`
-	Evaluable    int `json:"evaluable"`
-	Uncorrelated int `json:"uncorrelated"`
-	Fixed        int `json:"fixed"`
-	StillFailing int `json:"still_failing"`
-	Inconclusive int `json:"inconclusive"`
+	Total        int                              `json:"total"`
+	Evaluable    int                              `json:"evaluable"`
+	Unevaluable  int                              `json:"unevaluable"`
+	Uncorrelated int                              `json:"uncorrelated"`
+	Ambiguous    int                              `json:"ambiguous"`
+	Fixed        int                              `json:"fixed"`
+	StillFailing int                              `json:"still_failing"`
+	Inconclusive int                              `json:"inconclusive"`
+	FixRate      comparisonBaselineProblemFixRate `json:"fix_rate"`
+}
+
+type comparisonBaselineProblemFixRate struct {
+	Available        bool     `json:"available"`
+	Fixed            int      `json:"fixed"`
+	Denominator      int      `json:"denominator"`
+	DenominatorBasis string   `json:"denominator_basis"`
+	Percentage       *float64 `json:"percentage"`
+	Meaning          string   `json:"meaning"`
+	Note             string   `json:"note,omitempty"`
 }
 
 type comparisonTrafficSummary struct {
