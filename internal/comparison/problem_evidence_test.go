@@ -94,3 +94,37 @@ func TestClassifyCheckStatusRecognizesFailingPassingAndUnknownValues(t *testing.
 		}
 	}
 }
+
+func TestNormalizeBaselineProblemsAssignsSharedCheckVocabulary(t *testing.T) {
+	problems := []baselineProblem{
+		{CheckName: " not_a_server_error "},
+		{CheckName: "SERVER ERROR"},
+		{CheckName: "response_schema_conformance"},
+		{CheckName: "Response violates schema"},
+		{CheckName: "negative_data_rejection"},
+		{CheckName: "positive_data_acceptance"},
+		{CheckName: "unsupported_method"},
+	}
+
+	got := normalizedBaselineProblems(problems)
+
+	categories := make([]checkCategory, 0, len(got))
+	for _, problem := range got {
+		categories = append(categories, problem.CheckCategory)
+	}
+	want := []checkCategory{
+		checkCategoryServerError,
+		checkCategoryServerError,
+		checkCategoryResponseSchemaConformance,
+		checkCategoryResponseSchemaConformance,
+		checkCategoryNegativeDataRejection,
+		checkCategoryPositiveDataAcceptance,
+		checkCategoryUncategorized,
+	}
+	if !reflect.DeepEqual(categories, want) {
+		t.Fatalf("normalizedBaselineProblems categories = %#v, want %#v", categories, want)
+	}
+	if problems[0].CheckCategory != "" {
+		t.Fatalf("normalizedBaselineProblems mutated input category to %q", problems[0].CheckCategory)
+	}
+}

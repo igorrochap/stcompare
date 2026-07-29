@@ -27,6 +27,7 @@ type parsedProblemEvidence struct {
 
 type baselineProblem struct {
 	CheckName                    string               `json:"check_name"`
+	CheckCategory                checkCategory        `json:"check_category"`
 	Message                      string               `json:"message"`
 	EvidenceSource               evidenceSource       `json:"evidence_source"`
 	CaseID                       string               `json:"case_id"`
@@ -38,6 +39,16 @@ type baselineProblem struct {
 	Reproduction                 problemReproduction  `json:"reproduction"`
 	Interaction                  *int                 `json:"interaction"`
 }
+
+type checkCategory string
+
+const (
+	checkCategoryServerError               checkCategory = "server_error"
+	checkCategoryNegativeDataRejection     checkCategory = "negative_data_rejection"
+	checkCategoryResponseSchemaConformance checkCategory = "response_schema_conformance"
+	checkCategoryPositiveDataAcceptance    checkCategory = "positive_data_acceptance"
+	checkCategoryUncategorized             checkCategory = "uncategorized"
+)
 
 type problemOutcome string
 
@@ -52,6 +63,15 @@ type problemOutcomeReason string
 const (
 	problemOutcomeReasonGeneratedResourcePreconditionLoss problemOutcomeReason = "generated_resource_precondition_loss"
 	problemOutcomeReasonExerciseEvidenceMissing           problemOutcomeReason = "exercise_evidence_missing"
+	problemOutcomeReasonNoCategorizerForCheck             problemOutcomeReason = "no_categorizer_for_check"
+	problemOutcomeReasonAcceptedInvalidData               problemOutcomeReason = "accepted_invalid_data"
+	problemOutcomeReasonValidationRejection               problemOutcomeReason = "validation_rejection"
+	problemOutcomeReasonAcceptedPositiveData              problemOutcomeReason = "accepted_positive_data"
+	problemOutcomeReasonRepeatedRejection                 problemOutcomeReason = "repeated_rejection"
+	problemOutcomeReasonStateConflict                     problemOutcomeReason = "state_conflict"
+	problemOutcomeReasonChangedOutcome                    problemOutcomeReason = "changed_outcome"
+	problemOutcomeReasonRepeatedSchemaViolation           problemOutcomeReason = "repeated_schema_violation"
+	problemOutcomeReasonSchemaValidationUnavailable       problemOutcomeReason = "schema_validation_unavailable"
 )
 
 type correlationStatus string
@@ -186,4 +206,19 @@ func classifyCheckStatus(status string) checkStatus {
 	}
 
 	return checkStatusUnrecognized
+}
+
+func categorizeCheckName(name string) checkCategory {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "not_a_server_error", "server error":
+		return checkCategoryServerError
+	case "negative_data_rejection":
+		return checkCategoryNegativeDataRejection
+	case "response_schema_conformance", "response violates schema":
+		return checkCategoryResponseSchemaConformance
+	case "positive_data_acceptance":
+		return checkCategoryPositiveDataAcceptance
+	default:
+		return checkCategoryUncategorized
+	}
 }

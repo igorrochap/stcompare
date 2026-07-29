@@ -3,6 +3,7 @@ package comparison
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -11,7 +12,7 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "5"
+	reportSchemaVersion         = "6"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -223,7 +224,12 @@ func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
 		return nil
 	}
 
-	return append([]baselineProblem(nil), problems...)
+	normalized := append([]baselineProblem(nil), problems...)
+	for index := range normalized {
+		normalized[index].CheckCategory = categorizeCheckName(normalized[index].CheckName)
+	}
+
+	return normalized
 }
 
 func classifyReport(
@@ -325,21 +331,33 @@ func classifyProblem(
 	policy PreconditionPolicy,
 ) problemClassification {
 	// Problem outcome precedence:
-	// 1. candidate 5xx + server-error check => still_failing
-	// 2. matching precondition heuristic => generated_resource_precondition_loss
-	// 3. non-heuristic server-error check => fixed with sufficient exercise
-	//    evidence, otherwise inconclusive
-	// 4. everything else => no exercise-evidence outcome
+	// 1. uncategorized check => inconclusive tool limitation
+	// 2. candidate 5xx + server-error check => still_failing
+	// 3. matching precondition heuristic => generated_resource_precondition_loss
+	// 4. category-specific evidence => fixed, still_failing, or inconclusive
 	//
-	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
+	// Rank 2 cannot overlap rank 3 in valid configuration: precondition
 	// heuristics only apply to configured missing-resource statuses, and config
 	// validation excludes 5xx from that set.
+	if problem.CheckCategory == "" {
+		problem.CheckCategory = categorizeCheckName(problem.CheckName)
+	}
+	if problem.CheckCategory == checkCategoryUncategorized {
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: problemOutcomeReasonNoCategorizerForCheck,
+		}
+	}
+
 	if isServerErrorStatus(interaction.CandidateResponse.Status) {
-		if isServerErrorCheck(problem.CheckName) {
+		if problem.CheckCategory == checkCategoryServerError {
 			return problemClassification{outcome: problemOutcomeStillFailing}
 		}
 
-		return problemClassification{}
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: problemOutcomeReasonChangedOutcome,
+		}
 	}
 
 	heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
@@ -352,15 +370,64 @@ func classifyProblem(
 		}
 	}
 
-	if isServerErrorCheck(problem.CheckName) {
+	switch problem.CheckCategory {
+	case checkCategoryServerError:
+		return classifyServerErrorProblem(problem, interaction, policy)
+	case checkCategoryNegativeDataRejection:
+		return classifyNegativeDataRejectionProblem(problem, interaction, policy)
+	case checkCategoryPositiveDataAcceptance:
+		return classifyPositiveDataAcceptanceProblem(problem, interaction, policy)
+	case checkCategoryResponseSchemaConformance:
+		return classifyResponseSchemaProblem(problem, interaction, policy)
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonNoCategorizerForCheck,
+	}
+}
+
+func classifyServerErrorProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+	if hasExerciseEvidence(evidence) {
+		return problemClassification{
+			outcome:          problemOutcomeFixed,
+			exerciseEvidence: evidence,
+		}
+	}
+
+	return problemClassification{
+		outcome:          problemOutcomeInconclusive,
+		outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
+		exerciseEvidence: evidence,
+	}
+}
+
+func classifyNegativeDataRejectionProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	if isSuccessStatus(interaction.CandidateResponse.Status) {
+		return problemClassification{
+			outcome:       problemOutcomeStillFailing,
+			outcomeReason: problemOutcomeReasonAcceptedInvalidData,
+		}
+	}
+
+	if isClientErrorStatus(interaction.CandidateResponse.Status) {
 		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
-		if hasExerciseEvidence(evidence) {
+		if hasRequestExerciseEvidence(evidence) {
 			return problemClassification{
 				outcome:          problemOutcomeFixed,
+				outcomeReason:    problemOutcomeReasonValidationRejection,
 				exerciseEvidence: evidence,
 			}
 		}
-
 		return problemClassification{
 			outcome:          problemOutcomeInconclusive,
 			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
@@ -368,7 +435,77 @@ func classifyProblem(
 		}
 	}
 
-	return problemClassification{}
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonChangedOutcome,
+	}
+}
+
+func classifyPositiveDataAcceptanceProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	if isSuccessStatus(interaction.CandidateResponse.Status) {
+		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+		if hasRequestExerciseEvidence(evidence) {
+			return problemClassification{
+				outcome:          problemOutcomeFixed,
+				outcomeReason:    problemOutcomeReasonAcceptedPositiveData,
+				exerciseEvidence: evidence,
+			}
+		}
+		return problemClassification{
+			outcome:          problemOutcomeInconclusive,
+			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
+			exerciseEvidence: evidence,
+		}
+	}
+
+	if interaction.CandidateResponse.Status == http.StatusConflict {
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: problemOutcomeReasonStateConflict,
+		}
+	}
+
+	if isClientErrorStatus(interaction.CandidateResponse.Status) {
+		return problemClassification{
+			outcome:       problemOutcomeStillFailing,
+			outcomeReason: problemOutcomeReasonRepeatedRejection,
+		}
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonChangedOutcome,
+	}
+}
+
+func classifyResponseSchemaProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) problemClassification {
+	if normalizedResponseBodiesMatch(interaction, policy.Normalization) {
+		return problemClassification{
+			outcome:       problemOutcomeStillFailing,
+			outcomeReason: problemOutcomeReasonRepeatedSchemaViolation,
+		}
+	}
+
+	evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+	reason := problemOutcomeReasonSchemaValidationUnavailable
+	if interaction.StatusTransition.Baseline == nil ||
+		*interaction.StatusTransition.Baseline != interaction.CandidateResponse.Status {
+		reason = problemOutcomeReasonChangedOutcome
+	}
+
+	return problemClassification{
+		outcome:          problemOutcomeInconclusive,
+		outcomeReason:    reason,
+		exerciseEvidence: evidence,
+	}
 }
 
 func exerciseEvidenceWithPreconditionLoss(
@@ -409,6 +546,11 @@ func exerciseEvidence(
 func hasExerciseEvidence(evidence []string) bool {
 	return slices.Contains(evidence, exerciseEvidenceOperationAndPathMatch) &&
 		slices.Contains(evidence, exerciseEvidenceNormalizedResponseMatch) &&
+		slices.Contains(evidence, exerciseEvidenceNoPreconditionLoss)
+}
+
+func hasRequestExerciseEvidence(evidence []string) bool {
+	return slices.Contains(evidence, exerciseEvidenceOperationAndPathMatch) &&
 		slices.Contains(evidence, exerciseEvidenceNoPreconditionLoss)
 }
 
@@ -515,12 +657,7 @@ func matchingPreconditionHeuristic(
 }
 
 func isServerErrorCheck(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "not_a_server_error", "server error":
-		return true
-	}
-
-	return false
+	return categorizeCheckName(name) == checkCategoryServerError
 }
 
 func isServerErrorStatus(status int) bool {
@@ -529,6 +666,10 @@ func isServerErrorStatus(status int) bool {
 
 func isSuccessStatus(status int) bool {
 	return status >= 200 && status <= 299
+}
+
+func isClientErrorStatus(status int) bool {
+	return status >= 400 && status <= 499
 }
 
 func isCandidateServerErrorRegression(

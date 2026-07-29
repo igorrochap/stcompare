@@ -2,6 +2,7 @@ package comparison
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -45,7 +46,12 @@ func TestNewReportPreservesUncorrelatedProblemWhenEvidenceAvailable(t *testing.T
 		Problems  []baselineProblem
 	}{
 		Available: true,
-		Problems:  []baselineProblem{problem},
+		Problems: []baselineProblem{
+			func() baselineProblem {
+				problem.CheckCategory = checkCategoryUncategorized
+				return problem
+			}(),
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport problem state = %#v, want %#v", got, want)
@@ -139,8 +145,42 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "5" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "5")
+	if document.SchemaVersion != "6" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "6")
+	}
+}
+
+func TestNewReportCategorizesRealSchemathesisFixtureProblems(t *testing.T) {
+	parsed, err := readVCRProblems(filepath.Join("testdata", "schemathesis-real.vcr.yaml"))
+	if err != nil {
+		t.Fatalf("readVCRProblems returned error: %v", err)
+	}
+
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems:  parsed.Problems,
+		},
+	})
+
+	type categorizedCheck struct {
+		Name     string
+		Category checkCategory
+	}
+	got := make([]categorizedCheck, 0, len(document.Problems))
+	for _, problem := range document.Problems {
+		got = append(got, categorizedCheck{
+			Name:     problem.CheckName,
+			Category: problem.CheckCategory,
+		})
+	}
+	want := []categorizedCheck{
+		{Name: "not_a_server_error", Category: checkCategoryServerError},
+		{Name: "unsupported_method", Category: checkCategoryUncategorized},
+		{Name: "response_schema_conformance", Category: checkCategoryResponseSchemaConformance},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport real fixture categories = %#v, want %#v", got, want)
 	}
 }
 
@@ -195,7 +235,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "5",
+		SchemaVersion: "6",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
@@ -1197,6 +1237,12 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			requestURL:      "https://baseline.example.test/accounts/7",
 			baselineStatus:  status(200),
 			candidateStatus: 404,
+			want: classificationOutcome{
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: "changed_outcome",
+				Evaluable:     1,
+				Inconclusive:  1,
+			},
 		},
 		{
 			name:            "absent baseline response",
@@ -1204,6 +1250,12 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			checkName:       "response_schema_conformance",
 			requestURL:      "https://baseline.example.test/widgets/a8f31",
 			candidateStatus: 404,
+			want: classificationOutcome{
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: "changed_outcome",
+				Evaluable:     1,
+				Inconclusive:  1,
+			},
 		},
 		{
 			name:            "baseline non-2xx",
@@ -1212,6 +1264,12 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			requestURL:      "https://baseline.example.test/widgets/a8f31",
 			baselineStatus:  status(302),
 			candidateStatus: 404,
+			want: classificationOutcome{
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: "changed_outcome",
+				Evaluable:     1,
+				Inconclusive:  1,
+			},
 		},
 		{
 			name:            "configured 403",
@@ -1302,7 +1360,10 @@ func TestNewReportClassifiesPreconditionPolicyBoundaries(t *testing.T) {
 			baselineStatus:  status(200),
 			candidateStatus: 500,
 			want: classificationOutcome{
-				Evaluable: 0,
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: "changed_outcome",
+				Evaluable:     1,
+				Inconclusive:  1,
 			},
 		},
 	}
@@ -1504,9 +1565,9 @@ func TestNewReportSeparatesBaselineProblemAndTrafficTotals(t *testing.T) {
 		ChangedTraffic    int
 	}{
 		ProblemTotal:      3,
-		EvaluableProblems: 1,
+		EvaluableProblems: 2,
 		Uncorrelated:      1,
-		OutcomeTotal:      1,
+		OutcomeTotal:      2,
 		TrafficTotal:      2,
 		ChangedTraffic:    2,
 	}
@@ -1607,4 +1668,426 @@ func TestNewReportClassifiesUnknownBaselineResponseTraffic(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport unknown baseline traffic = %#v, want %#v", got, want)
 	}
+}
+
+func TestNewReportKeepsUncategorizedProblemInconclusive(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "unsupported_method",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-unsupported",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{Response: &harResponse{Status: 501}},
+				Replay: replayResult{
+					Entry: harEntry{Response: &harResponse{Status: 405}},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		CheckName     string
+		CheckCategory checkCategory
+		Outcome       problemOutcome
+		OutcomeReason problemOutcomeReason
+		Evaluable     int
+		Inconclusive  int
+		Fixed         int
+		StillFailing  int
+		OutcomeTotal  int
+	}{
+		CheckName:     document.Problems[0].CheckName,
+		CheckCategory: document.Problems[0].CheckCategory,
+		Outcome:       document.Problems[0].Outcome,
+		OutcomeReason: document.Problems[0].OutcomeReason,
+		Evaluable:     document.Summary.BaselineProblems.Evaluable,
+		Inconclusive:  document.Summary.BaselineProblems.Inconclusive,
+		Fixed:         document.Summary.BaselineProblems.Fixed,
+		StillFailing:  document.Summary.BaselineProblems.StillFailing,
+		OutcomeTotal: document.Summary.BaselineProblems.Fixed +
+			document.Summary.BaselineProblems.StillFailing +
+			document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		CheckName     string
+		CheckCategory checkCategory
+		Outcome       problemOutcome
+		OutcomeReason problemOutcomeReason
+		Evaluable     int
+		Inconclusive  int
+		Fixed         int
+		StillFailing  int
+		OutcomeTotal  int
+	}{
+		CheckName:     "unsupported_method",
+		CheckCategory: checkCategoryUncategorized,
+		Outcome:       problemOutcomeInconclusive,
+		OutcomeReason: problemOutcomeReasonNoCategorizerForCheck,
+		Evaluable:     1,
+		Inconclusive:  1,
+		OutcomeTotal:  1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport uncategorized problem = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesCheckSpecificFailuresIndependently(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-server",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+				{
+					CheckName:         "negative_data_rejection",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-negative",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+				{
+					CheckName:         "positive_data_acceptance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-positive",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"error":"boom"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  400,
+							Content: harContent{Text: `{"error":"boom"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := []problemOutcome{
+		document.Problems[0].Outcome,
+		document.Problems[1].Outcome,
+		document.Problems[2].Outcome,
+	}
+	want := []problemOutcome{
+		problemOutcomeFixed,
+		problemOutcomeFixed,
+		problemOutcomeStillFailing,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport independent check outcomes = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesNegativeDataRejectionOutcomes(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+		wantFixed       int
+		wantStill       int
+		wantInconcl     int
+	}{
+		{
+			name:            "candidate accepts invalid data",
+			candidateStatus: 201,
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonAcceptedInvalidData,
+			wantStill:       1,
+		},
+		{
+			name:            "candidate rejects invalid data",
+			candidateStatus: 400,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonValidationRejection,
+			wantFixed:       1,
+		},
+		{
+			name:            "candidate changes to redirect",
+			candidateStatus: 302,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+			wantInconcl:     1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newSingleProblemReport("negative_data_rejection", test.candidateStatus)
+
+			got := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Fixed     int
+				Still     int
+				Inconcl   int
+				Evaluable int
+			}{
+				Category:  document.Problems[0].CheckCategory,
+				Outcome:   document.Problems[0].Outcome,
+				Reason:    document.Problems[0].OutcomeReason,
+				Fixed:     document.Summary.BaselineProblems.Fixed,
+				Still:     document.Summary.BaselineProblems.StillFailing,
+				Inconcl:   document.Summary.BaselineProblems.Inconclusive,
+				Evaluable: document.Summary.BaselineProblems.Evaluable,
+			}
+			want := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Fixed     int
+				Still     int
+				Inconcl   int
+				Evaluable int
+			}{
+				Category:  checkCategoryNegativeDataRejection,
+				Outcome:   test.wantOutcome,
+				Reason:    test.wantReason,
+				Fixed:     test.wantFixed,
+				Still:     test.wantStill,
+				Inconcl:   test.wantInconcl,
+				Evaluable: 1,
+			}
+			if got != want {
+				t.Fatalf("newReport negative-data outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportClassifiesPositiveDataAcceptanceOutcomes(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+		wantFixed       int
+		wantStill       int
+		wantInconcl     int
+	}{
+		{
+			name:            "candidate accepts valid data",
+			candidateStatus: 201,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonAcceptedPositiveData,
+			wantFixed:       1,
+		},
+		{
+			name:            "candidate rejects valid data",
+			candidateStatus: 400,
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonRepeatedRejection,
+			wantStill:       1,
+		},
+		{
+			name:            "candidate reports state conflict",
+			candidateStatus: 409,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonStateConflict,
+			wantInconcl:     1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newSingleProblemReport("positive_data_acceptance", test.candidateStatus)
+
+			got := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Fixed     int
+				Still     int
+				Inconcl   int
+				Evaluable int
+			}{
+				Category:  document.Problems[0].CheckCategory,
+				Outcome:   document.Problems[0].Outcome,
+				Reason:    document.Problems[0].OutcomeReason,
+				Fixed:     document.Summary.BaselineProblems.Fixed,
+				Still:     document.Summary.BaselineProblems.StillFailing,
+				Inconcl:   document.Summary.BaselineProblems.Inconclusive,
+				Evaluable: document.Summary.BaselineProblems.Evaluable,
+			}
+			want := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Fixed     int
+				Still     int
+				Inconcl   int
+				Evaluable int
+			}{
+				Category:  checkCategoryPositiveDataAcceptance,
+				Outcome:   test.wantOutcome,
+				Reason:    test.wantReason,
+				Fixed:     test.wantFixed,
+				Still:     test.wantStill,
+				Inconcl:   test.wantInconcl,
+				Evaluable: 1,
+			}
+			if got != want {
+				t.Fatalf("newReport positive-data outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportClassifiesResponseSchemaReplayEvidence(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "Response violates schema",
+					EvidenceSource:    evidenceSourceJUnit,
+					CaseID:            "case-schema",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+					Response: &harResponse{
+						Status:  201,
+						Content: harContent{Text: `{"unexpected":true}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  201,
+							Content: harContent{Text: `{"unexpected":true}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Category checkCategory
+		Outcome  problemOutcome
+		Reason   problemOutcomeReason
+		Still    int
+	}{
+		Category: document.Problems[0].CheckCategory,
+		Outcome:  document.Problems[0].Outcome,
+		Reason:   document.Problems[0].OutcomeReason,
+		Still:    document.Summary.BaselineProblems.StillFailing,
+	}
+	want := struct {
+		Category checkCategory
+		Outcome  problemOutcome
+		Reason   problemOutcomeReason
+		Still    int
+	}{
+		Category: checkCategoryResponseSchemaConformance,
+		Outcome:  problemOutcomeStillFailing,
+		Reason:   problemOutcomeReasonRepeatedSchemaViolation,
+		Still:    1,
+	}
+	if got != want {
+		t.Fatalf("newReport response-schema replay evidence = %#v, want %#v", got, want)
+	}
+}
+
+func newSingleProblemReport(checkName string, candidateStatus int) report {
+	interaction := 1
+	return newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         checkName,
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+					Response: &harResponse{
+						Status:  201,
+						Content: harContent{Text: `{"name":"Ada"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  candidateStatus,
+							Content: harContent{Text: `{"name":"Ada"}`},
+						},
+					},
+				},
+			},
+		},
+	})
 }
