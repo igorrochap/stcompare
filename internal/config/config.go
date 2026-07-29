@@ -154,15 +154,25 @@ func (c Config) Validate() error {
 	if len(c.Campaigns) == 0 {
 		return errors.New("at least one campaign is required")
 	}
+	baselineCount := 0
 	for name, campaign := range c.Campaigns {
 		if err := ValidateCampaignName(name); err != nil {
 			return err
 		}
 		switch campaign.Kind {
-		case "baseline", "candidate":
+		case "baseline":
+			baselineCount++
+		case "candidate":
 		default:
 			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
 		}
+	}
+	switch baselineCount {
+	case 0:
+		return errors.New("exactly one baseline campaign is required: found none")
+	case 1:
+	default:
+		return fmt.Errorf("exactly one baseline campaign is required: found %d", baselineCount)
 	}
 
 	return nil

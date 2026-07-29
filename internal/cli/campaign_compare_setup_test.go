@@ -223,10 +223,10 @@ func TestCampaignCompareRequiresExactlyOneBaselineCampaign(t *testing.T) {
 				CandidateRequestCount    int
 				CandidateReportDirExists bool
 			}{
-				Error: fmt.Sprintf(
-					"baseline campaign: expected exactly one baseline campaign, found %d",
-					test.baselineCount,
-				),
+				Error: fmt.Sprintf("exactly one baseline campaign is required: found %d", test.baselineCount),
+			}
+			if test.baselineCount == 0 {
+				want.Error = "exactly one baseline campaign is required: found none"
 			}
 
 			if !reflect.DeepEqual(got, want) {

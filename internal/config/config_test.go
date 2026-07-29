@@ -87,3 +87,59 @@ func TestConfigValidateRejectsMalformedNormalizationRules(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
+	tests := []struct {
+		name      string
+		campaigns map[string]Campaign
+		wantError string
+	}{
+		{
+			name: "zero baseline campaigns",
+			campaigns: map[string]Campaign{
+				"gpt5.6":  {Kind: "candidate"},
+				"sonnet5": {Kind: "candidate"},
+			},
+			wantError: "exactly one baseline campaign is required: found none",
+		},
+		{
+			name: "one baseline campaign",
+			campaigns: map[string]Campaign{
+				"reference": {Kind: "baseline"},
+				"gpt5.6":    {Kind: "candidate"},
+			},
+		},
+		{
+			name: "multiple baseline campaigns",
+			campaigns: map[string]Campaign{
+				"reference": {Kind: "baseline"},
+				"control":   {Kind: "baseline"},
+				"gpt5.6":    {Kind: "candidate"},
+			},
+			wantError: "exactly one baseline campaign is required: found 2",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Default()
+			config.Campaigns = test.campaigns
+
+			err := config.Validate()
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Validate() error = nil, want baseline-count error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
