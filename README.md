@@ -240,6 +240,17 @@ intentional:
 stcompare campaign run baseline --force
 ```
 
+When Schemathesis fails, newly-created campaign report directories are removed
+and `metadata.yaml` is not written. To inspect partial Schemathesis output after
+a failed run, opt in explicitly:
+
+```sh
+stcompare campaign run baseline --keep-failed
+```
+
+Preserved failed-run artifacts are partial debug output, not a completed
+auditable campaign.
+
 ## Compare Campaigns
 
 Replay the baseline HAR transcript against a candidate API:

@@ -11,6 +11,7 @@ import (
 type campaignRunOptions struct {
 	configOverrides configOverrideOptions
 	force           bool
+	keepFailed      bool
 }
 
 func newCampaignRunCommand(rootOpts *rootOptions) *cobra.Command {
@@ -24,6 +25,7 @@ func newCampaignRunCommand(rootOpts *rootOptions) *cobra.Command {
 	}
 	addConfigOverrideFlags(command, &options.configOverrides)
 	command.Flags().BoolVar(&options.force, "force", false, "")
+	command.Flags().BoolVar(&options.keepFailed, "keep-failed", false, "")
 
 	return command
 }
@@ -46,9 +48,18 @@ func runCampaignRun(cmd *cobra.Command, rootOpts *rootOptions, campaignName stri
 		return fmt.Errorf("get Schemathesis version: %w", err)
 	}
 	if err := rootOpts.deps.CampaignRunner.Run(argv); err != nil {
+		if options.keepFailed {
+			if createdReportDir {
+				return fmt.Errorf("%w; preserved partial debug artifacts in %s, but this is not a completed campaign", err, reportDir)
+			}
+
+			return err
+		}
+
 		if createdReportDir {
 			_ = os.RemoveAll(reportDir)
 		}
+
 		return err
 	}
 
