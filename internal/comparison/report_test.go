@@ -145,8 +145,8 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "6" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "6")
+	if document.SchemaVersion != "7" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "7")
 	}
 }
 
@@ -235,7 +235,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "6",
+		SchemaVersion: "7",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`

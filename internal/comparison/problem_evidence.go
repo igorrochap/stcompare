@@ -35,6 +35,7 @@ type baselineProblem struct {
 	Outcome                      problemOutcome       `json:"outcome,omitempty"`
 	OutcomeReason                problemOutcomeReason `json:"outcome_reason,omitempty"`
 	ExerciseEvidence             []string             `json:"exercise_evidence,omitempty"`
+	SchemaValidationErrors       []string             `json:"schema_validation_errors,omitempty"`
 	MatchedPreconditionHeuristic string               `json:"matched_precondition_heuristic,omitempty"`
 	Reproduction                 problemReproduction  `json:"reproduction"`
 	Interaction                  *int                 `json:"interaction"`
@@ -73,6 +74,18 @@ const (
 	problemOutcomeReasonRepeatedSchemaViolation           problemOutcomeReason = "repeated_schema_violation"
 	problemOutcomeReasonSchemaValidationUnavailable       problemOutcomeReason = "schema_validation_unavailable"
 	problemOutcomeReasonSchemaResponseChanged             problemOutcomeReason = "schema_response_changed"
+	problemOutcomeReasonSchemaValidationPassed            problemOutcomeReason = "schema_validation_passed"
+	problemOutcomeReasonSchemaContractUnavailable         problemOutcomeReason = "schema_contract_unavailable"
+	problemOutcomeReasonSchemaContractUnreadable          problemOutcomeReason = "schema_contract_unreadable"
+	problemOutcomeReasonSchemaOpenAPIVersionUnsupported   problemOutcomeReason = "schema_openapi_version_unsupported"
+	problemOutcomeReasonSchemaReferenceUnresolved         problemOutcomeReason = "schema_reference_unresolved"
+	problemOutcomeReasonSchemaOperationNotFound           problemOutcomeReason = "schema_operation_not_found"
+	problemOutcomeReasonSchemaOperationAmbiguous          problemOutcomeReason = "schema_operation_ambiguous"
+	problemOutcomeReasonSchemaResponseSchemaMissing       problemOutcomeReason = "schema_response_schema_missing"
+	problemOutcomeReasonSchemaMediaTypeMissing            problemOutcomeReason = "schema_media_type_missing"
+	problemOutcomeReasonSchemaMediaTypeUnsupported        problemOutcomeReason = "schema_media_type_unsupported"
+	problemOutcomeReasonSchemaResponseBodyUnavailable     problemOutcomeReason = "schema_response_body_unavailable"
+	problemOutcomeReasonSchemaResponseBodyUnparseable     problemOutcomeReason = "schema_response_body_unparseable"
 )
 
 type correlationStatus string

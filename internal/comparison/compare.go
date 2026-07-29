@@ -58,6 +58,7 @@ func NewPreconditionHeuristic(name, method, pathPattern string) PreconditionHeur
 // for one comparison.
 type Input struct {
 	BaselineCampaign   string
+	SchemaPath         string
 	BaselineHARPath    string
 	BaselineVCRPath    string
 	BaselineNDJSONPath string
@@ -86,6 +87,7 @@ type preparedComparison struct {
 	baselineProblemCount       *int
 	baselineProblemCountSource *string
 	baselineProblemEvidence    baselineProblemEvidence
+	schemaValidation           *OpenAPIContract
 	replayRequests             []*http.Request
 }
 
@@ -143,6 +145,7 @@ func prepareComparison(input Input) (preparedComparison, error) {
 			baselineEntries,
 		)
 	}
+	schemaValidation := LoadOpenAPIContract(input.SchemaPath)
 
 	requests := make([]harRequest, 0, len(baselineEntries))
 	for _, entry := range baselineEntries {
@@ -158,6 +161,7 @@ func prepareComparison(input Input) (preparedComparison, error) {
 		baselineProblemCount:       problemCount,
 		baselineProblemCountSource: problemCountSource,
 		baselineProblemEvidence:    problemEvidence,
+		schemaValidation:           schemaValidation,
 		replayRequests:             httpRequests,
 	}, nil
 }
@@ -194,6 +198,7 @@ func persistComparisonArtifacts(
 		CandidateBaseURL:           input.CandidateBaseURL,
 		Interactions:               interactions,
 		PreconditionPolicy:         input.PreconditionPolicy,
+		SchemaValidation:           prepared.schemaValidation,
 	})
 	jsonReportPath := filepath.Join(input.OutputDir, "comparison.json")
 	if err := writeJSONReport(jsonReportPath, report); err != nil {

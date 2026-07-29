@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "6"
+	reportSchemaVersion         = "7"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -17,6 +17,7 @@ type report struct {
 	Baseline                  reportCampaign              `json:"baseline"`
 	Candidate                 reportCandidate             `json:"candidate"`
 	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
+	SchemaValidation          schemaValidationProvenance  `json:"schema_validation"`
 	Summary                   reportSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
@@ -106,6 +107,7 @@ type reportInput struct {
 	CandidateBaseURL           string
 	Interactions               []reportInteraction
 	PreconditionPolicy         PreconditionPolicy
+	SchemaValidation           *OpenAPIContract
 }
 
 type baselineProblemEvidence struct {
@@ -138,6 +140,7 @@ type problemClassification struct {
 	outcome                      problemOutcome
 	outcomeReason                problemOutcomeReason
 	exerciseEvidence             []string
+	schemaValidationErrors       []string
 	matchedPreconditionHeuristic string
 }
 
@@ -163,6 +166,7 @@ func newReport(input reportInput) report {
 		problemState.problems,
 		interactions,
 		policy,
+		input.SchemaValidation,
 	)
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
@@ -181,6 +185,7 @@ func newReport(input reportInput) report {
 			BaseURL:  input.CandidateBaseURL,
 		},
 		ComparisonPolicy:          policy,
+		SchemaValidation:          input.SchemaValidation.Provenance(),
 		Summary:                   newReportSummary(input.Interactions, interactions, classification),
 		BaselineProblemsAvailable: problemState.available,
 		BaselineProblemsNote:      problemState.note,
@@ -232,6 +237,7 @@ func classifyReport(
 	problems []baselineProblem,
 	interactions []reportInteractionEvidence,
 	policy PreconditionPolicy,
+	schemaValidation *OpenAPIContract,
 ) classifiedReport {
 	classified := classifiedReport{}
 	if problems != nil {
@@ -293,10 +299,12 @@ func classifyReport(
 			*problem,
 			interaction,
 			policy,
+			schemaValidation,
 		)
 		problem.Outcome = classification.outcome
 		problem.OutcomeReason = classification.outcomeReason
 		problem.ExerciseEvidence = classification.exerciseEvidence
+		problem.SchemaValidationErrors = classification.schemaValidationErrors
 		problem.MatchedPreconditionHeuristic =
 			classification.matchedPreconditionHeuristic
 		if classification.outcome == "" {
