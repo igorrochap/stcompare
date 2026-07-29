@@ -327,8 +327,9 @@ func classifyProblem(
 	// Problem outcome precedence:
 	// 1. candidate 5xx + server-error check => still_failing
 	// 2. matching precondition heuristic => generated_resource_precondition_loss
-	// 3. non-heuristic server-error check => inconclusive
-	// 4. everything else => no issue-08 outcome
+	// 3. non-heuristic server-error check => fixed with sufficient exercise
+	//    evidence, otherwise inconclusive
+	// 4. everything else => no exercise-evidence outcome
 	//
 	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
 	// heuristics only apply to configured missing-resource statuses, and config
