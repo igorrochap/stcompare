@@ -8,8 +8,11 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "7"
+	reportSchemaVersion         = "8"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
+	fixRateDenominatorBasis     = "evaluable_baseline_problems"
+	fixRateMeaning              = "Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version."
+	fixRateZeroDenominatorNote  = "Fix rate is unavailable because there are zero evaluable baseline problems."
 )
 
 type report struct {
@@ -47,12 +50,25 @@ type reportSummary struct {
 }
 
 type baselineProblemSummary struct {
-	Total        int `json:"total"`
-	Evaluable    int `json:"evaluable"`
-	Uncorrelated int `json:"uncorrelated"`
-	Fixed        int `json:"fixed"`
-	StillFailing int `json:"still_failing"`
-	Inconclusive int `json:"inconclusive"`
+	Total        int                    `json:"total"`
+	Evaluable    int                    `json:"evaluable"`
+	Unevaluable  int                    `json:"unevaluable"`
+	Uncorrelated int                    `json:"uncorrelated"`
+	Ambiguous    int                    `json:"ambiguous"`
+	Fixed        int                    `json:"fixed"`
+	StillFailing int                    `json:"still_failing"`
+	Inconclusive int                    `json:"inconclusive"`
+	FixRate      baselineProblemFixRate `json:"fix_rate"`
+}
+
+type baselineProblemFixRate struct {
+	Available        bool     `json:"available"`
+	Fixed            int      `json:"fixed"`
+	Denominator      int      `json:"denominator"`
+	DenominatorBasis string   `json:"denominator_basis"`
+	Percentage       *float64 `json:"percentage"`
+	Meaning          string   `json:"meaning"`
+	Note             string   `json:"note,omitempty"`
 }
 
 type trafficSummary struct {
@@ -252,8 +268,11 @@ func classifyReport(
 	classified.traffic.Total = len(interactions)
 
 	for _, problem := range classified.problems {
-		if problem.CorrelationStatus == correlationStatusUncorrelated {
+		switch problem.CorrelationStatus {
+		case correlationStatusUncorrelated:
 			classified.baselineProblems.Uncorrelated++
+		case correlationStatusAmbiguous:
+			classified.baselineProblems.Ambiguous++
 		}
 	}
 
@@ -291,6 +310,7 @@ func classifyReport(
 		}
 		if problem.Interaction == nil || *problem.Interaction < 1 ||
 			*problem.Interaction > len(classified.interactions) {
+			classified.baselineProblems.Unevaluable++
 			continue
 		}
 
@@ -308,6 +328,7 @@ func classifyReport(
 		problem.MatchedPreconditionHeuristic =
 			classification.matchedPreconditionHeuristic
 		if classification.outcome == "" {
+			classified.baselineProblems.Unevaluable++
 			continue
 		}
 		classified.baselineProblems.Evaluable++
@@ -320,6 +341,9 @@ func classifyReport(
 			classified.baselineProblems.Fixed++
 		}
 	}
+	classified.baselineProblems.FixRate = newBaselineProblemFixRate(
+		classified.baselineProblems,
+	)
 
 	classified.interactions = reportableInteractionFindings(
 		classified.problems,
@@ -327,6 +351,24 @@ func classifyReport(
 	)
 
 	return classified
+}
+
+func newBaselineProblemFixRate(summary baselineProblemSummary) baselineProblemFixRate {
+	rate := baselineProblemFixRate{
+		Fixed:            summary.Fixed,
+		Denominator:      summary.Evaluable,
+		DenominatorBasis: fixRateDenominatorBasis,
+		Meaning:          fixRateMeaning,
+	}
+	if summary.Evaluable == 0 {
+		rate.Note = fixRateZeroDenominatorNote
+		return rate
+	}
+
+	percentage := float64(summary.Fixed) * 100 / float64(summary.Evaluable)
+	rate.Available = true
+	rate.Percentage = &percentage
+	return rate
 }
 
 func isCandidateServerErrorRegression(

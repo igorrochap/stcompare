@@ -235,6 +235,7 @@ func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T)
 }
 
 func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
+	zeroPercentage := 0.0
 	document := report{
 		Summary: reportSummary{
 			BaselineProblems: baselineProblemSummary{
@@ -242,6 +243,14 @@ func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
 				Evaluable:    1,
 				Uncorrelated: 1,
 				StillFailing: 1,
+				FixRate: baselineProblemFixRate{
+					Available:        true,
+					Fixed:            0,
+					Denominator:      1,
+					DenominatorBasis: fixRateDenominatorBasis,
+					Percentage:       &zeroPercentage,
+					Meaning:          fixRateMeaning,
+				},
 			},
 			Traffic: trafficSummary{
 				Total:            3,
@@ -268,7 +277,9 @@ func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
 
 	wantLines := []string{
 		"- Baseline problem outcomes: total 2, evaluable 1, fixed 0, " +
-			"still failing 1, inconclusive 0, uncorrelated 1",
+			"still failing 1, inconclusive 0, unevaluable 0, " +
+			"uncorrelated 1, ambiguous 0",
+		"- Fix rate: 0/1 evaluable baseline problems fixed (0.0%).",
 		"- Traffic classifications: total 3, success unchanged 1, changed 1, regressed 1",
 		"- Outcome: `still_failing`",
 		"- Classification: `regressed`",

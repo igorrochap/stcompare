@@ -14,7 +14,7 @@ func classifyProblem(
 	schemaValidation *OpenAPIContract,
 ) problemClassification {
 	// Problem outcome precedence:
-	// 1. uncategorized check => inconclusive tool limitation
+	// 1. uncategorized check => unevaluable by summary accounting
 	// 2. candidate 5xx + server-error check => still_failing
 	// 3. matching precondition heuristic => generated_resource_precondition_loss
 	// 4. category-specific evidence => fixed, still_failing, or inconclusive
@@ -26,10 +26,7 @@ func classifyProblem(
 		problem.CheckCategory = categorizeCheckName(problem.CheckName)
 	}
 	if problem.CheckCategory == checkCategoryUncategorized {
-		return problemClassification{
-			outcome:       problemOutcomeInconclusive,
-			outcomeReason: problemOutcomeReasonNoCategorizerForCheck,
-		}
+		return problemClassification{}
 	}
 
 	if isServerErrorStatus(interaction.CandidateResponse.Status) {
@@ -55,10 +52,7 @@ func classifyProblem(
 
 	classifyCategory, ok := problemClassifiersByCategory[problem.CheckCategory]
 	if !ok {
-		return problemClassification{
-			outcome:       problemOutcomeInconclusive,
-			outcomeReason: problemOutcomeReasonNoCategorizerForCheck,
-		}
+		return problemClassification{}
 	}
 
 	return classifyCategory(problemClassificationInput{

@@ -64,7 +64,6 @@ type problemOutcomeReason string
 const (
 	problemOutcomeReasonGeneratedResourcePreconditionLoss problemOutcomeReason = "generated_resource_precondition_loss"
 	problemOutcomeReasonExerciseEvidenceMissing           problemOutcomeReason = "exercise_evidence_missing"
-	problemOutcomeReasonNoCategorizerForCheck             problemOutcomeReason = "no_categorizer_for_check"
 	problemOutcomeReasonAcceptedInvalidData               problemOutcomeReason = "accepted_invalid_data"
 	problemOutcomeReasonValidationRejection               problemOutcomeReason = "validation_rejection"
 	problemOutcomeReasonAcceptedPositiveData              problemOutcomeReason = "accepted_positive_data"
