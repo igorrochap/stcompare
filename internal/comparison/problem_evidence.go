@@ -33,6 +33,7 @@ type baselineProblem struct {
 	CorrelationStatus            correlationStatus    `json:"correlation_status"`
 	Outcome                      problemOutcome       `json:"outcome,omitempty"`
 	OutcomeReason                problemOutcomeReason `json:"outcome_reason,omitempty"`
+	ExerciseEvidence             []string             `json:"exercise_evidence,omitempty"`
 	MatchedPreconditionHeuristic string               `json:"matched_precondition_heuristic,omitempty"`
 	Reproduction                 problemReproduction  `json:"reproduction"`
 	Interaction                  *int                 `json:"interaction"`
@@ -50,6 +51,7 @@ type problemOutcomeReason string
 
 const (
 	problemOutcomeReasonGeneratedResourcePreconditionLoss problemOutcomeReason = "generated_resource_precondition_loss"
+	problemOutcomeReasonExerciseEvidenceMissing           problemOutcomeReason = "exercise_evidence_missing"
 )
 
 type correlationStatus string

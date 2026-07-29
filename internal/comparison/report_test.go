@@ -139,8 +139,8 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "4" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "4")
+	if document.SchemaVersion != "5" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "5")
 	}
 }
 
@@ -160,6 +160,11 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 					`^/accounts/[0-9]+$`,
 				),
 			},
+			Normalization: ResponseNormalizationConfig{
+				BodyFields: []BodyFieldNormalizationRule{
+					{Name: "generated-id", FieldName: "id"},
+				},
+			},
 		},
 	})
 
@@ -177,6 +182,12 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		Comparison    struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
+			Normalization           struct {
+				BodyFields []struct {
+					Name      string `json:"name"`
+					FieldName string `json:"field_name"`
+				} `json:"body_fields"`
+			} `json:"normalization"`
 		} `json:"comparison"`
 	}
 	var got reportProjection
@@ -184,10 +195,16 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "4",
+		SchemaVersion: "5",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
+			Normalization           struct {
+				BodyFields []struct {
+					Name      string `json:"name"`
+					FieldName string `json:"field_name"`
+				} `json:"body_fields"`
+			} `json:"normalization"`
 		}{
 			MissingResourceStatuses: []int{403, 404},
 			PreconditionHeuristics: []heuristicProjection{
@@ -200,6 +217,19 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 					Name:        "deleted-account",
 					Method:      "DELETE",
 					PathPattern: `^/accounts/[0-9]+$`,
+				},
+			},
+			Normalization: struct {
+				BodyFields []struct {
+					Name      string `json:"name"`
+					FieldName string `json:"field_name"`
+				} `json:"body_fields"`
+			}{
+				BodyFields: []struct {
+					Name      string `json:"name"`
+					FieldName string `json:"field_name"`
+				}{
+					{Name: "generated-id", FieldName: "id"},
 				},
 			},
 		},
@@ -223,6 +253,10 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemStillFailing(t *testing.
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -275,6 +309,10 @@ func TestNewReportKeepsCorrelatedProblemVisibleWhenStatusIsUnchanged(t *testing.
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -376,6 +414,10 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemInconclusive(
 					CaseID:            "case-42",
 					CorrelationStatus: correlationStatusCorrelated,
 					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
 				},
 			},
 		},
@@ -409,6 +451,520 @@ func TestNewReportClassifiesCorrelatedServerErrorProblemInconclusive(
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport inconclusive classification = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesCorrelatedServerErrorProblemFixedWithExerciseEvidence(
+	t *testing.T,
+) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					Message:           "Server error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status: 500,
+						Content: harContent{
+							Text: `{"error":"boom","resource":{"name":"Ada"}}`,
+						},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status: 200,
+							Content: harContent{
+								Text: `{"error":"boom","resource":{"name":"Ada"}}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Evaluable        int
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		OutcomeReason:    document.Problems[0].OutcomeReason,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Evaluable:        document.Summary.BaselineProblems.Evaluable,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+		Inconclusive:     document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Evaluable        int
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome: problemOutcomeFixed,
+		ExerciseEvidence: []string{
+			"operation_and_path_match",
+			"normalized_response_body_match",
+			"no_precondition_loss_detected",
+		},
+		Evaluable: 1,
+		Fixed:     1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport fixed exercise evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportKeepsCorrelatedServerErrorProblemInconclusiveWithoutExerciseEvidence(
+	t *testing.T,
+) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					Message:           "Server error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"error":"boom"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  200,
+							Content: harContent{Text: `{"resource":{"name":"Ada"}}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Evaluable        int
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		OutcomeReason:    document.Problems[0].OutcomeReason,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Evaluable:        document.Summary.BaselineProblems.Evaluable,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+		Inconclusive:     document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Evaluable        int
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:       problemOutcomeInconclusive,
+		OutcomeReason: problemOutcomeReasonExerciseEvidenceMissing,
+		ExerciseEvidence: []string{
+			"operation_and_path_match",
+			"no_precondition_loss_detected",
+		},
+		Evaluable:    1,
+		Inconclusive: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport missing exercise evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportDoesNotUseAbsentReproductionDataAsOperationEvidence(
+	t *testing.T,
+) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					Message:           "Server error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"error":"boom"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  200,
+							Content: harContent{Text: `{"error":"boom"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		OutcomeReason:    document.Problems[0].OutcomeReason,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+		Inconclusive:     document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		Inconclusive     int
+	}{
+		Outcome:       problemOutcomeInconclusive,
+		OutcomeReason: problemOutcomeReasonExerciseEvidenceMissing,
+		ExerciseEvidence: []string{
+			"normalized_response_body_match",
+			"no_precondition_loss_detected",
+		},
+		Inconclusive: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport absent reproduction evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportKeepsServerErrorProblemInconclusiveWhenResponseBodyUnavailable(
+	t *testing.T,
+) {
+	tests := []struct {
+		name             string
+		baselineResponse *harResponse
+		candidateBody    string
+	}{
+		{
+			name:             "baseline response unavailable",
+			baselineResponse: nil,
+			candidateBody:    `{"error":"boom"}`,
+		},
+		{
+			name: "baseline response body unavailable",
+			baselineResponse: &harResponse{
+				Status:  500,
+				Content: harContent{},
+			},
+			candidateBody: `{"error":"boom"}`,
+		},
+		{
+			name: "candidate response body unavailable",
+			baselineResponse: &harResponse{
+				Status:  500,
+				Content: harContent{Text: `{"error":"boom"}`},
+			},
+			candidateBody: "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			interaction := 1
+			document := newReport(reportInput{
+				BaselineProblemEvidence: baselineProblemEvidence{
+					Available: true,
+					Problems: []baselineProblem{
+						{
+							CheckName:         "not_a_server_error",
+							EvidenceSource:    evidenceSourceVCR,
+							CaseID:            "case-42",
+							CorrelationStatus: correlationStatusCorrelated,
+							Interaction:       &interaction,
+							Reproduction: problemReproduction{
+								Method: "GET",
+								URL:    "https://baseline.example.test/widgets/a8f31",
+							},
+						},
+					},
+				},
+				Interactions: []reportInteraction{
+					{
+						Baseline: harEntry{
+							Request: harRequest{
+								Method: "GET",
+								URL:    "https://baseline.example.test/widgets/a8f31",
+							},
+							Response: test.baselineResponse,
+						},
+						Replay: replayResult{
+							Entry: harEntry{
+								Response: &harResponse{
+									Status:  200,
+									Content: harContent{Text: test.candidateBody},
+								},
+							},
+						},
+					},
+				},
+			})
+
+			got := struct {
+				Outcome       problemOutcome
+				OutcomeReason problemOutcomeReason
+				Fixed         int
+				Inconclusive  int
+			}{
+				Outcome:       document.Problems[0].Outcome,
+				OutcomeReason: document.Problems[0].OutcomeReason,
+				Fixed:         document.Summary.BaselineProblems.Fixed,
+				Inconclusive:  document.Summary.BaselineProblems.Inconclusive,
+			}
+			want := struct {
+				Outcome       problemOutcome
+				OutcomeReason problemOutcomeReason
+				Fixed         int
+				Inconclusive  int
+			}{
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: problemOutcomeReasonExerciseEvidenceMissing,
+				Inconclusive:  1,
+			}
+			if got != want {
+				t.Fatalf("newReport unavailable body outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportKeepsPreconditionLossInconclusiveDespiteExerciseEvidence(
+	t *testing.T,
+) {
+	interaction := 1
+	document := newReport(reportInput{
+		PreconditionPolicy: PreconditionPolicy{
+			MissingResourceStatuses: []int{404},
+			Heuristics: []PreconditionHeuristic{
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
+			},
+		},
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status:  200,
+						Content: harContent{Text: `{"error":"boom"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  404,
+							Content: harContent{Text: `{"error":"boom"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		ExerciseEvidence             []string
+		MatchedPreconditionHeuristic string
+		Fixed                        int
+		Inconclusive                 int
+	}{
+		Outcome:                      document.Problems[0].Outcome,
+		OutcomeReason:                document.Problems[0].OutcomeReason,
+		ExerciseEvidence:             document.Problems[0].ExerciseEvidence,
+		MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+		Fixed:                        document.Summary.BaselineProblems.Fixed,
+		Inconclusive:                 document.Summary.BaselineProblems.Inconclusive,
+	}
+	want := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		ExerciseEvidence             []string
+		MatchedPreconditionHeuristic string
+		Fixed                        int
+		Inconclusive                 int
+	}{
+		Outcome:       problemOutcomeInconclusive,
+		OutcomeReason: problemOutcomeReasonGeneratedResourcePreconditionLoss,
+		ExerciseEvidence: []string{
+			"operation_and_path_match",
+			"normalized_response_body_match",
+		},
+		MatchedPreconditionHeuristic: "generated-widget",
+		Inconclusive:                 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport precondition precedence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportUsesNormalizationForServerErrorExerciseEvidence(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		PreconditionPolicy: PreconditionPolicy{
+			Normalization: ResponseNormalizationConfig{
+				BodyFields: []BodyFieldNormalizationRule{
+					{Name: "generated-id", FieldName: "id"},
+				},
+			},
+		},
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"id":"baseline-1","name":"Ada"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  200,
+							Content: harContent{Text: `{"id":"candidate-9","name":"Ada"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		ExerciseEvidence []string
+		Fixed            int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		ExerciseEvidence []string
+		Fixed            int
+	}{
+		Outcome: problemOutcomeFixed,
+		ExerciseEvidence: []string{
+			"operation_and_path_match",
+			"normalized_response_body_match",
+			"no_precondition_loss_detected",
+		},
+		Fixed: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport normalization exercise evidence = %#v, want %#v", got, want)
 	}
 }
 

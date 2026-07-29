@@ -17,19 +17,19 @@ type RecordedResponse struct {
 }
 
 type ResponseNormalizationConfig struct {
-	Defaults   bool
-	BodyFields []BodyFieldNormalizationRule
-	Headers    []HeaderNormalizationRule
+	Defaults   bool                         `json:"default_rules"`
+	BodyFields []BodyFieldNormalizationRule `json:"body_fields"`
+	Headers    []HeaderNormalizationRule    `json:"headers"`
 }
 
 type BodyFieldNormalizationRule struct {
-	Name      string
-	FieldName string
+	Name      string `json:"name"`
+	FieldName string `json:"field_name"`
 }
 
 type HeaderNormalizationRule struct {
-	Name       string
-	HeaderName string
+	Name       string `json:"name"`
+	HeaderName string `json:"header_name"`
 }
 
 func NormalizationConfigFrom(source configpkg.NormalizationConfig) ResponseNormalizationConfig {

@@ -20,6 +20,7 @@
 
 - Missing resource statuses: `404`, `410`
 - Precondition heuristics: none
+- Normalization defaults: enabled
 
 ## Findings
 

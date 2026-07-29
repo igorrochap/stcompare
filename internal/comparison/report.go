@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "4"
+	reportSchemaVersion         = "5"
 	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
 )
 
@@ -140,6 +140,7 @@ type classifiedReport struct {
 type problemClassification struct {
 	outcome                      problemOutcome
 	outcomeReason                problemOutcomeReason
+	exerciseEvidence             []string
 	matchedPreconditionHeuristic string
 }
 
@@ -149,6 +150,12 @@ const (
 	interactionClassificationChanged          interactionClassification = "changed"
 	interactionClassificationRegressed        interactionClassification = "regressed"
 	interactionClassificationSuccessUnchanged interactionClassification = "success_unchanged"
+)
+
+const (
+	exerciseEvidenceOperationAndPathMatch   = "operation_and_path_match"
+	exerciseEvidenceNormalizedResponseMatch = "normalized_response_body_match"
+	exerciseEvidenceNoPreconditionLoss      = "no_precondition_loss_detected"
 )
 
 func newReport(input reportInput) report {
@@ -280,9 +287,14 @@ func classifyReport(
 		}
 
 		interaction := classified.interactions[*problem.Interaction-1]
-		classification := classifyProblem(*problem, interaction, policy)
+		classification := classifyProblem(
+			*problem,
+			interaction,
+			policy,
+		)
 		problem.Outcome = classification.outcome
 		problem.OutcomeReason = classification.outcomeReason
+		problem.ExerciseEvidence = classification.exerciseEvidence
 		problem.MatchedPreconditionHeuristic =
 			classification.matchedPreconditionHeuristic
 		if classification.outcome == "" {
@@ -294,6 +306,8 @@ func classifyReport(
 			classified.baselineProblems.StillFailing++
 		case problemOutcomeInconclusive:
 			classified.baselineProblems.Inconclusive++
+		case problemOutcomeFixed:
+			classified.baselineProblems.Fixed++
 		}
 	}
 
@@ -313,8 +327,9 @@ func classifyProblem(
 	// Problem outcome precedence:
 	// 1. candidate 5xx + server-error check => still_failing
 	// 2. matching precondition heuristic => generated_resource_precondition_loss
-	// 3. non-heuristic server-error check => inconclusive
-	// 4. everything else => no issue-08 outcome
+	// 3. non-heuristic server-error check => fixed with sufficient exercise
+	//    evidence, otherwise inconclusive
+	// 4. everything else => no exercise-evidence outcome
 	//
 	// Rank 1 cannot overlap rank 2 in valid configuration: precondition
 	// heuristics only apply to configured missing-resource statuses, and config
@@ -332,15 +347,145 @@ func classifyProblem(
 		return problemClassification{
 			outcome:                      problemOutcomeInconclusive,
 			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+			exerciseEvidence:             exerciseEvidenceWithPreconditionLoss(problem, interaction, policy),
 			matchedPreconditionHeuristic: heuristic.Name,
 		}
 	}
 
 	if isServerErrorCheck(problem.CheckName) {
-		return problemClassification{outcome: problemOutcomeInconclusive}
+		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+		if hasExerciseEvidence(evidence) {
+			return problemClassification{
+				outcome:          problemOutcomeFixed,
+				exerciseEvidence: evidence,
+			}
+		}
+
+		return problemClassification{
+			outcome:          problemOutcomeInconclusive,
+			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
+			exerciseEvidence: evidence,
+		}
 	}
 
 	return problemClassification{}
+}
+
+func exerciseEvidenceWithPreconditionLoss(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) []string {
+	return exerciseEvidence(problem, interaction, policy.Normalization)
+}
+
+func exerciseEvidenceWithNoPreconditionLoss(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+) []string {
+	evidence := exerciseEvidence(problem, interaction, policy.Normalization)
+	evidence = append(evidence, exerciseEvidenceNoPreconditionLoss)
+
+	return evidence
+}
+
+func exerciseEvidence(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	normalization ResponseNormalizationConfig,
+) []string {
+	var evidence []string
+	if sameProblemOperationAndPath(problem, interaction) {
+		evidence = append(evidence, exerciseEvidenceOperationAndPathMatch)
+	}
+	if normalizedResponseBodiesMatch(interaction, normalization) {
+		evidence = append(evidence, exerciseEvidenceNormalizedResponseMatch)
+	}
+
+	return evidence
+}
+
+func hasExerciseEvidence(evidence []string) bool {
+	return slices.Contains(evidence, exerciseEvidenceOperationAndPathMatch) &&
+		slices.Contains(evidence, exerciseEvidenceNormalizedResponseMatch) &&
+		slices.Contains(evidence, exerciseEvidenceNoPreconditionLoss)
+}
+
+func sameProblemOperationAndPath(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+) bool {
+	if problem.Reproduction.Method == "" && problem.Reproduction.URL == "" {
+		return false
+	}
+	if problem.Reproduction.Method != "" &&
+		!strings.EqualFold(problem.Reproduction.Method, interaction.Request.Method) {
+		return false
+	}
+	if problem.Reproduction.URL == "" {
+		return true
+	}
+
+	reproductionURL, err := url.Parse(problem.Reproduction.URL)
+	if err != nil {
+		return false
+	}
+	requestURL, err := url.Parse(interaction.Request.URL)
+	if err != nil {
+		return false
+	}
+
+	return reproductionURL.Path == requestURL.Path
+}
+
+func normalizedResponseBodiesMatch(
+	interaction reportInteractionEvidence,
+	normalization ResponseNormalizationConfig,
+) bool {
+	if interaction.BaselineResponse == nil {
+		return false
+	}
+
+	normalizedBaseline, ok := normalizedResponseBody(
+		*interaction.BaselineResponse,
+		normalization,
+	)
+	if !ok {
+		return false
+	}
+	normalizedCandidate, ok := normalizedResponseBody(
+		interaction.CandidateResponse,
+		normalization,
+	)
+	if !ok {
+		return false
+	}
+
+	return normalizedBaseline == normalizedCandidate
+}
+
+func normalizedResponseBody(
+	response reportResponse,
+	normalization ResponseNormalizationConfig,
+) (string, bool) {
+	body := response.Body
+	if body == "" {
+		return "", false
+	}
+	normalized, err := NormalizeResponse(
+		RecordedResponse{
+			Status:  response.Status,
+			Headers: response.Headers,
+			Body:    &body,
+		},
+		normalization,
+	)
+	if err != nil || normalized.Body == nil {
+		return "", false
+	}
+
+	return *normalized.Body, true
 }
 
 func matchingPreconditionHeuristic(

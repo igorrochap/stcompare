@@ -12,14 +12,26 @@ import (
 // PreconditionPolicy identifies replay responses that may reflect missing
 // candidate-side resources rather than fixed baseline problems.
 type PreconditionPolicy struct {
-	MissingResourceStatuses []int                   `json:"missing_resource_statuses"`
-	Heuristics              []PreconditionHeuristic `json:"precondition_heuristics"`
+	MissingResourceStatuses []int                       `json:"missing_resource_statuses"`
+	Heuristics              []PreconditionHeuristic     `json:"precondition_heuristics"`
+	Normalization           ResponseNormalizationConfig `json:"normalization"`
 }
 
 func (p PreconditionPolicy) clone() PreconditionPolicy {
 	clone := PreconditionPolicy{
 		MissingResourceStatuses: append([]int(nil), p.MissingResourceStatuses...),
 		Heuristics:              append([]PreconditionHeuristic(nil), p.Heuristics...),
+		Normalization: ResponseNormalizationConfig{
+			Defaults: p.Normalization.Defaults,
+			BodyFields: append(
+				[]BodyFieldNormalizationRule(nil),
+				p.Normalization.BodyFields...,
+			),
+			Headers: append(
+				[]HeaderNormalizationRule(nil),
+				p.Normalization.Headers...,
+			),
+		},
 	}
 
 	return clone

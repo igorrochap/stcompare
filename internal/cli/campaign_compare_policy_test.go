@@ -29,6 +29,10 @@ func TestCampaignPreconditionPolicyTrimsHeuristicNameAndMethod(t *testing.T) {
 				`^/widgets/[0-9a-f]+$`,
 			),
 		},
+		Normalization: comparison.ResponseNormalizationConfig{
+			BodyFields: []comparison.BodyFieldNormalizationRule{},
+			Headers:    []comparison.HeaderNormalizationRule{},
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("campaignPreconditionPolicy() = %#v, want %#v", got, want)
