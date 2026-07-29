@@ -288,6 +288,7 @@ func TestConfigShowAppliesOmittedSchemathesisDefaults(t *testing.T) {
 	input := loadDefaultConfig(t)
 	input["schemathesis"] = map[string]any{"seed": 777}
 	input["campaigns"] = map[string]any{
+		"reference":  map[string]any{"kind": "baseline"},
 		"experiment": map[string]any{"kind": "candidate"},
 	}
 	want := loadDefaultConfig(t)

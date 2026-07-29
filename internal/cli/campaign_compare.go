@@ -48,10 +48,7 @@ func runCampaignCompare(
 		return err
 	}
 
-	baselineName, err := baselineCampaignName(effective)
-	if err != nil {
-		return err
-	}
+	baselineName := baselineCampaignName(effective)
 
 	result, err := comparison.Compare(
 		campaignComparisonInput(effective, baselineName, candidateName),
@@ -80,23 +77,14 @@ func requireCandidateCampaign(candidateName string, campaign config.Campaign) er
 	return nil
 }
 
-func baselineCampaignName(effective config.Config) (string, error) {
-	baselineName := ""
-	baselineCount := 0
+func baselineCampaignName(effective config.Config) string {
 	for name, campaign := range effective.Campaigns {
 		if campaign.Kind == "baseline" {
-			baselineName = name
-			baselineCount++
+			return name
 		}
 	}
-	if baselineCount != 1 {
-		return "", fmt.Errorf(
-			"baseline campaign: expected exactly one baseline campaign, found %d",
-			baselineCount,
-		)
-	}
 
-	return baselineName, nil
+	panic("validated config has no baseline campaign")
 }
 
 func campaignComparisonInput(
