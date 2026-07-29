@@ -72,6 +72,7 @@ const (
 	problemOutcomeReasonChangedOutcome                    problemOutcomeReason = "changed_outcome"
 	problemOutcomeReasonRepeatedSchemaViolation           problemOutcomeReason = "repeated_schema_violation"
 	problemOutcomeReasonSchemaValidationUnavailable       problemOutcomeReason = "schema_validation_unavailable"
+	problemOutcomeReasonSchemaResponseChanged             problemOutcomeReason = "schema_response_changed"
 )
 
 type correlationStatus string
@@ -209,16 +210,19 @@ func classifyCheckStatus(status string) checkStatus {
 }
 
 func categorizeCheckName(name string) checkCategory {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "not_a_server_error", "server error":
-		return checkCategoryServerError
-	case "negative_data_rejection":
-		return checkCategoryNegativeDataRejection
-	case "response_schema_conformance", "response violates schema":
-		return checkCategoryResponseSchemaConformance
-	case "positive_data_acceptance":
-		return checkCategoryPositiveDataAcceptance
-	default:
+	category, ok := checkCategoriesByName[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
 		return checkCategoryUncategorized
 	}
+
+	return category
+}
+
+var checkCategoriesByName = map[string]checkCategory{
+	"not_a_server_error":          checkCategoryServerError,
+	"server error":                checkCategoryServerError,
+	"negative_data_rejection":     checkCategoryNegativeDataRejection,
+	"response_schema_conformance": checkCategoryResponseSchemaConformance,
+	"response violates schema":    checkCategoryResponseSchemaConformance,
+	"positive_data_acceptance":    checkCategoryPositiveDataAcceptance,
 }

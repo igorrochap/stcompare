@@ -2048,6 +2048,170 @@ func TestNewReportClassifiesResponseSchemaReplayEvidence(t *testing.T) {
 	}
 }
 
+func TestNewReportClassifiesResponseSchemaProblemFixedWithExerciseEvidence(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "response_schema_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-schema",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+					Response: &harResponse{
+						Status:  201,
+						Content: harContent{Text: `{"unexpected":true}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  201,
+							Content: harContent{Text: `{"name":"Ada"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	got := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		OutcomeTotal     int
+		Evaluable        int
+	}{
+		Outcome:          document.Problems[0].Outcome,
+		OutcomeReason:    document.Problems[0].OutcomeReason,
+		ExerciseEvidence: document.Problems[0].ExerciseEvidence,
+		Fixed:            document.Summary.BaselineProblems.Fixed,
+		OutcomeTotal: document.Summary.BaselineProblems.Fixed +
+			document.Summary.BaselineProblems.StillFailing +
+			document.Summary.BaselineProblems.Inconclusive,
+		Evaluable: document.Summary.BaselineProblems.Evaluable,
+	}
+	want := struct {
+		Outcome          problemOutcome
+		OutcomeReason    problemOutcomeReason
+		ExerciseEvidence []string
+		Fixed            int
+		OutcomeTotal     int
+		Evaluable        int
+	}{
+		Outcome:       problemOutcomeFixed,
+		OutcomeReason: problemOutcomeReasonSchemaResponseChanged,
+		ExerciseEvidence: []string{
+			"operation_and_path_match",
+			"no_precondition_loss_detected",
+		},
+		Fixed:        1,
+		OutcomeTotal: 1,
+		Evaluable:    1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("newReport fixed response-schema evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportMaintainsEvaluableInvariantAcrossCheckCategories(t *testing.T) {
+	interaction := 1
+	document := newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "not_a_server_error",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-server",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+				{
+					CheckName:         "negative_data_rejection",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-negative",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+				},
+				{
+					CheckName:         "positive_data_acceptance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-positive",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+				{
+					CheckName:         "response_schema_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-schema",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+				{
+					CheckName:         "unsupported_method",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-unsupported",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "POST",
+						URL:    "https://baseline.example.test/widgets",
+					},
+					Response: &harResponse{
+						Status:  500,
+						Content: harContent{Text: `{"error":"baseline"}`},
+					},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{
+							Status:  400,
+							Content: harContent{Text: `{"error":"candidate"}`},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	summary := document.Summary.BaselineProblems
+	outcomeTotal := summary.Fixed + summary.StillFailing + summary.Inconclusive
+	if outcomeTotal != summary.Evaluable {
+		t.Fatalf("outcome total = %d, want evaluable %d", outcomeTotal, summary.Evaluable)
+	}
+	if summary.Evaluable != len(document.Problems) {
+		t.Fatalf("evaluable problems = %d, want %d", summary.Evaluable, len(document.Problems))
+	}
+}
+
 func newSingleProblemReport(checkName string, candidateStatus int) report {
 	interaction := 1
 	return newReport(reportInput{
