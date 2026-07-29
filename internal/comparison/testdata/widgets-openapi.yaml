@@ -1,0 +1,23 @@
+openapi: 3.0.3
+info:
+  title: Widgets fixture API
+  version: "1.0"
+paths:
+  /widgets:
+    post:
+      responses:
+        "201":
+          description: response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+components:
+  schemas:
+    Widget:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string

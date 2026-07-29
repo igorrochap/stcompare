@@ -11,6 +11,7 @@ func classifyProblem(
 	problem baselineProblem,
 	interaction reportInteractionEvidence,
 	policy PreconditionPolicy,
+	schemaValidation *OpenAPIContract,
 ) problemClassification {
 	// Problem outcome precedence:
 	// 1. uncategorized check => inconclusive tool limitation
@@ -60,14 +61,22 @@ func classifyProblem(
 		}
 	}
 
-	return classifyCategory(problem, interaction, policy)
+	return classifyCategory(problemClassificationInput{
+		problem:          problem,
+		interaction:      interaction,
+		policy:           policy,
+		schemaValidation: schemaValidation,
+	})
 }
 
-type problemClassifier func(
-	baselineProblem,
-	reportInteractionEvidence,
-	PreconditionPolicy,
-) problemClassification
+type problemClassificationInput struct {
+	problem          baselineProblem
+	interaction      reportInteractionEvidence
+	policy           PreconditionPolicy
+	schemaValidation *OpenAPIContract
+}
+
+type problemClassifier func(problemClassificationInput) problemClassification
 
 var problemClassifiersByCategory = map[checkCategory]problemClassifier{
 	checkCategoryServerError:               classifyServerErrorProblem,
@@ -76,12 +85,12 @@ var problemClassifiersByCategory = map[checkCategory]problemClassifier{
 	checkCategoryResponseSchemaConformance: classifyResponseSchemaProblem,
 }
 
-func classifyServerErrorProblem(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) problemClassification {
-	evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+func classifyServerErrorProblem(input problemClassificationInput) problemClassification {
+	evidence := exerciseEvidenceWithNoPreconditionLoss(
+		input.problem,
+		input.interaction,
+		input.policy,
+	)
 	if hasExerciseEvidence(evidence) {
 		return problemClassification{
 			outcome:          problemOutcomeFixed,
@@ -96,20 +105,20 @@ func classifyServerErrorProblem(
 	}
 }
 
-func classifyNegativeDataRejectionProblem(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) problemClassification {
-	if isSuccessStatus(interaction.CandidateResponse.Status) {
+func classifyNegativeDataRejectionProblem(input problemClassificationInput) problemClassification {
+	if isSuccessStatus(input.interaction.CandidateResponse.Status) {
 		return problemClassification{
 			outcome:       problemOutcomeStillFailing,
 			outcomeReason: problemOutcomeReasonAcceptedInvalidData,
 		}
 	}
 
-	if isClientErrorStatus(interaction.CandidateResponse.Status) {
-		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+	if isClientErrorStatus(input.interaction.CandidateResponse.Status) {
+		evidence := exerciseEvidenceWithNoPreconditionLoss(
+			input.problem,
+			input.interaction,
+			input.policy,
+		)
 		if hasRequestExerciseEvidence(evidence) {
 			return problemClassification{
 				outcome:          problemOutcomeFixed,
@@ -130,13 +139,13 @@ func classifyNegativeDataRejectionProblem(
 	}
 }
 
-func classifyPositiveDataAcceptanceProblem(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) problemClassification {
-	if isSuccessStatus(interaction.CandidateResponse.Status) {
-		evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
+func classifyPositiveDataAcceptanceProblem(input problemClassificationInput) problemClassification {
+	if isSuccessStatus(input.interaction.CandidateResponse.Status) {
+		evidence := exerciseEvidenceWithNoPreconditionLoss(
+			input.problem,
+			input.interaction,
+			input.policy,
+		)
 		if hasRequestExerciseEvidence(evidence) {
 			return problemClassification{
 				outcome:          problemOutcomeFixed,
@@ -151,14 +160,14 @@ func classifyPositiveDataAcceptanceProblem(
 		}
 	}
 
-	if interaction.CandidateResponse.Status == http.StatusConflict {
+	if input.interaction.CandidateResponse.Status == http.StatusConflict {
 		return problemClassification{
 			outcome:       problemOutcomeInconclusive,
 			outcomeReason: problemOutcomeReasonStateConflict,
 		}
 	}
 
-	if isClientErrorStatus(interaction.CandidateResponse.Status) {
+	if isClientErrorStatus(input.interaction.CandidateResponse.Status) {
 		return problemClassification{
 			outcome:       problemOutcomeStillFailing,
 			outcomeReason: problemOutcomeReasonRepeatedRejection,
@@ -171,21 +180,64 @@ func classifyPositiveDataAcceptanceProblem(
 	}
 }
 
-func classifyResponseSchemaProblem(
-	problem baselineProblem,
-	interaction reportInteractionEvidence,
-	policy PreconditionPolicy,
-) problemClassification {
-	if normalizedResponseBodiesMatch(interaction, policy.Normalization) {
+func classifyResponseSchemaProblem(input problemClassificationInput) problemClassification {
+	if !sameStatusTransition(input.interaction) {
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: problemOutcomeReasonChangedOutcome,
+			exerciseEvidence: exerciseEvidenceWithNoPreconditionLoss(
+				input.problem,
+				input.interaction,
+				input.policy,
+			),
+		}
+	}
+
+	if input.schemaValidation != nil {
+		result := input.schemaValidation.Validate(schemaValidationRequest{
+			Method:   input.interaction.Request.Method,
+			URL:      input.interaction.Request.URL,
+			Response: input.interaction.CandidateResponse,
+		})
+		switch result.OutcomeReason {
+		case problemOutcomeReasonSchemaValidationPassed:
+			return problemClassification{
+				outcome:       problemOutcomeFixed,
+				outcomeReason: problemOutcomeReasonSchemaValidationPassed,
+				exerciseEvidence: exerciseEvidenceWithNoPreconditionLoss(
+					input.problem,
+					input.interaction,
+					input.policy,
+				),
+			}
+		case problemOutcomeReasonRepeatedSchemaViolation:
+			return problemClassification{
+				outcome:                problemOutcomeStillFailing,
+				outcomeReason:          problemOutcomeReasonRepeatedSchemaViolation,
+				schemaValidationErrors: result.Errors,
+			}
+		default:
+			return problemClassification{
+				outcome:       problemOutcomeInconclusive,
+				outcomeReason: result.OutcomeReason,
+			}
+		}
+	}
+
+	if normalizedResponseBodiesMatch(input.interaction, input.policy.Normalization) {
 		return problemClassification{
 			outcome:       problemOutcomeStillFailing,
 			outcomeReason: problemOutcomeReasonRepeatedSchemaViolation,
 		}
 	}
 
-	evidence := exerciseEvidenceWithNoPreconditionLoss(problem, interaction, policy)
-	if sameStatusTransition(interaction) &&
-		normalizedResponseBodiesDiffer(interaction, policy.Normalization) &&
+	evidence := exerciseEvidenceWithNoPreconditionLoss(
+		input.problem,
+		input.interaction,
+		input.policy,
+	)
+	if sameStatusTransition(input.interaction) &&
+		normalizedResponseBodiesDiffer(input.interaction, input.policy.Normalization) &&
 		hasRequestExerciseEvidence(evidence) {
 		return problemClassification{
 			outcome:          problemOutcomeFixed,
@@ -195,7 +247,7 @@ func classifyResponseSchemaProblem(
 	}
 
 	reason := problemOutcomeReasonSchemaValidationUnavailable
-	if !sameStatusTransition(interaction) {
+	if !sameStatusTransition(input.interaction) {
 		reason = problemOutcomeReasonChangedOutcome
 	}
 
