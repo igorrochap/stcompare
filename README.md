@@ -467,3 +467,39 @@ go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+### Optional benchmark verification
+
+The default test suite stays fast and dependency-free. It does not require
+Schemathesis, a network, or an external service.
+
+To verify the full benchmark pipeline against a real Schemathesis installation,
+run the opt-in integration target:
+
+```sh
+STCOMPARE_RUN_E2E_BENCHMARK=1 go test ./integration -run TestOptionalEndToEndBenchmarkVerification -count=1
+```
+
+Prerequisites:
+
+- `st` on `PATH`, `uvx` on `PATH`, or
+  `STCOMPARE_SCHEMATHESIS_COMMAND="uvx schemathesis"` or another explicit
+  Schemathesis command.
+- Enough time for two Schemathesis campaigns plus replay and report generation;
+  on a warm local installation this is expected to take seconds to about a
+  minute.
+
+When `STCOMPARE_RUN_E2E_BENCHMARK` is unset, the test reports an explicit skip.
+When no usable Schemathesis command is available, it also reports an explicit
+skip with the missing prerequisite. The target uses temporary directories and
+local HTTP servers, so it leaves no report directories, ports, or processes
+behind after the test exits.
+
+The verification service is defined inside the integration test. The baseline
+service deliberately returns a schema-invalid `201` response for `POST
+/widgets`; the candidate service returns a schema-valid response for the same
+operation. The test runs baseline capture, candidate capture, HAR replay, and
+comparison report generation as one flow, then asserts that the produced JSON
+report extracted baseline problems, correlated at least one to replay traffic,
+and assigned at least one problem outcome. Campaign metadata is also checked for
+the recorded Schemathesis version so version drift is visible.
