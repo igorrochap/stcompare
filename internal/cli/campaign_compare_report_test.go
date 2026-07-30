@@ -83,6 +83,37 @@ func TestCampaignCompareWritesReadableMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestCampaignCompareWritesHTMLScorecard(t *testing.T) {
+	fixture := newComparisonReportFixture(t)
+	root := cli.NewRootCommandWithDependencies(cli.Dependencies{Now: fixture.Now})
+	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", fixture.Server.URL})
+
+	got := comparisonMarkdownOutcome{}
+	if err := root.Execute(); err != nil {
+		got.Error = err.Error()
+	} else {
+		contents, err := os.ReadFile(filepath.Join("reports", "gpt5.6", "comparison.html"))
+		if err != nil {
+			got.Error = err.Error()
+		} else {
+			got.Contents = string(contents)
+		}
+	}
+
+	if got.Error != "" {
+		t.Fatalf("campaign compare HTML scorecard error = %q", got.Error)
+	}
+	for _, fragment := range []string{
+		"<title>Campaign comparison scorecard</title>",
+		"Fix rate",
+		"Candidate base URL</span><strong>" + fixture.Server.URL + "</strong>",
+	} {
+		if !strings.Contains(got.Contents, fragment) {
+			t.Fatalf("campaign compare HTML scorecard missing %q:\n%s", fragment, got.Contents)
+		}
+	}
+}
+
 func TestCampaignCompareKeepsJSONAndMarkdownInSyncWhenBaselineProblemsAreAvailable(t *testing.T) {
 	fixture := newComparisonReportWithProblemsFixture(t)
 	root := cli.NewRootCommandWithDependencies(cli.Dependencies{Now: fixture.Now})

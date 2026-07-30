@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -61,8 +62,22 @@ func runCampaignCompare(
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.ReplayLogPath)
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.JSONReportPath)
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.MarkdownReportPath)
+	htmlReportURI, err := fileURI(result.HTMLReportPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", htmlReportURI)
 
 	return nil
+}
+
+func fileURI(path string) (string, error) {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve HTML report path: %w", err)
+	}
+
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolutePath)}).String(), nil
 }
 
 func requireCandidateCampaign(candidateName string, campaign config.Campaign) error {

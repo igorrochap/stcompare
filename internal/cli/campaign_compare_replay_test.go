@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,16 +247,23 @@ func TestCampaignComparePrintsReplaySummary(t *testing.T) {
 	root.SetOut(&output)
 	root.SetArgs([]string{"campaign", "compare", "gpt5.6", "--base-url", server.URL})
 	err := root.Execute()
+	htmlReportPath, pathErr := filepath.Abs(filepath.Join("reports", "gpt5.6", "comparison.html"))
+	_, htmlStatErr := os.Stat(filepath.Join("reports", "gpt5.6", "comparison.html"))
 
 	got := configCommandOutcome{Output: output.String()}
 	if err != nil {
 		got.Error = err.Error()
+	} else if pathErr != nil {
+		got.Error = pathErr.Error()
+	} else if htmlStatErr != nil {
+		got.Error = htmlStatErr.Error()
 	}
 	want := configCommandOutcome{
 		Output: "replayed 2 baseline interactions\n" +
 			"wrote reports/gpt5.6/replay.har.json\n" +
 			"wrote reports/gpt5.6/comparison.json\n" +
-			"wrote reports/gpt5.6/comparison.md\n",
+			"wrote reports/gpt5.6/comparison.md\n" +
+			"wrote " + (&url.URL{Scheme: "file", Path: htmlReportPath}).String() + "\n",
 	}
 
 	if got != want {
