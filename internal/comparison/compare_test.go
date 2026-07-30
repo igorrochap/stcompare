@@ -241,9 +241,9 @@ func TestPersistComparisonArtifactsWritesCorrelatedProblemEvidence(t *testing.T)
 		Available: true,
 		Problems: []baselineProblem{
 			func() baselineProblem {
-				problem.CheckCategory = checkCategoryUncategorized
-				problem.Outcome = problemOutcomeNotEvaluated
-				problem.OutcomeReason = problemOutcomeReasonUnsupportedCheckCategory
+				problem.CheckCategory = checkCategoryStatusCodeConformance
+				problem.Outcome = problemOutcomeInconclusive
+				problem.OutcomeReason = problemOutcomeReasonSchemaContractUnavailable
 				return problem
 			}(),
 		},

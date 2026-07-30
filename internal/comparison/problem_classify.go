@@ -77,6 +77,7 @@ var problemClassifiersByCategory = map[checkCategory]problemClassifier{
 	checkCategoryNegativeDataRejection:     classifyNegativeDataRejectionProblem,
 	checkCategoryPositiveDataAcceptance:    classifyPositiveDataAcceptanceProblem,
 	checkCategoryResponseSchemaConformance: classifyResponseSchemaProblem,
+	checkCategoryStatusCodeConformance:     classifyStatusCodeConformanceProblem,
 }
 
 func classifyServerErrorProblem(input problemClassificationInput) problemClassification {
@@ -249,6 +250,35 @@ func classifyResponseSchemaProblem(input problemClassificationInput) problemClas
 		outcome:          problemOutcomeInconclusive,
 		outcomeReason:    reason,
 		exerciseEvidence: evidence,
+	}
+}
+
+func classifyStatusCodeConformanceProblem(
+	input problemClassificationInput,
+) problemClassification {
+	documented, reason := input.schemaValidation.StatusCodeDocumented(
+		schemaValidationRequest{
+			Method:   input.interaction.Request.Method,
+			URL:      input.interaction.Request.URL,
+			Response: input.interaction.CandidateResponse,
+		},
+	)
+	if reason != "" {
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: reason,
+		}
+	}
+	if documented {
+		return problemClassification{
+			outcome:       problemOutcomeFixed,
+			outcomeReason: problemOutcomeReasonStatusCodeDocumented,
+		}
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeStillFailing,
+		outcomeReason: problemOutcomeReasonStatusCodeUndocumented,
 	}
 }
 

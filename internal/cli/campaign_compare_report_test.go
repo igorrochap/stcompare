@@ -589,7 +589,7 @@ http_interactions:
 
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "9",
+		SchemaVersion: "10",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,

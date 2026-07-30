@@ -48,7 +48,7 @@ func TestNewReportPreservesUncorrelatedProblemWhenEvidenceAvailable(t *testing.T
 		Available: true,
 		Problems: []baselineProblem{
 			func() baselineProblem {
-				problem.CheckCategory = checkCategoryUncategorized
+				problem.CheckCategory = checkCategoryStatusCodeConformance
 				problem.Outcome = problemOutcomeNotEvaluated
 				problem.OutcomeReason = problemOutcomeReasonUncorrelatedEvidence
 				return problem
@@ -147,8 +147,8 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "9" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "9")
+	if document.SchemaVersion != "10" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "10")
 	}
 }
 
@@ -266,7 +266,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "9",
+		SchemaVersion: "10",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`

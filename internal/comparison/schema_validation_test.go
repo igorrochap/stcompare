@@ -149,6 +149,104 @@ func TestNewReportKeepsSchemaValidStatusChangeInconclusive(t *testing.T) {
 	}
 }
 
+func TestNewReportClassifiesStatusCodeConformanceProblemWithContract(t *testing.T) {
+	tests := []struct {
+		name            string
+		contract        *OpenAPIContract
+		requestURL      string
+		candidateStatus int
+		want            schemaProblemOutcome
+	}{
+		{
+			name:            "explicit documented status fixed",
+			contract:        statusCodeConformanceTestContract(t),
+			requestURL:      "https://baseline.example.test/widgets/123",
+			candidateStatus: 201,
+			want: schemaProblemOutcome{
+				Outcome: problemOutcomeFixed,
+				Reason:  problemOutcomeReasonStatusCodeDocumented,
+				Fixed:   1,
+			},
+		},
+		{
+			name:            "range documented status fixed",
+			contract:        statusCodeConformanceTestContract(t),
+			requestURL:      "https://baseline.example.test/widgets/123",
+			candidateStatus: 204,
+			want: schemaProblemOutcome{
+				Outcome: problemOutcomeFixed,
+				Reason:  problemOutcomeReasonStatusCodeDocumented,
+				Fixed:   1,
+			},
+		},
+		{
+			name:            "default does not document status",
+			contract:        statusCodeConformanceTestContract(t),
+			requestURL:      "https://baseline.example.test/widgets/123",
+			candidateStatus: 418,
+			want: schemaProblemOutcome{
+				Outcome:      problemOutcomeStillFailing,
+				Reason:       problemOutcomeReasonStatusCodeUndocumented,
+				StillFailing: 1,
+			},
+		},
+		{
+			name:            "missing contract inconclusive",
+			contract:        nil,
+			requestURL:      "https://baseline.example.test/widgets/123",
+			candidateStatus: 201,
+			want: schemaProblemOutcome{
+				Outcome:      problemOutcomeInconclusive,
+				Reason:       problemOutcomeReasonSchemaContractUnavailable,
+				Inconclusive: 1,
+			},
+		},
+		{
+			name:            "operation not found inconclusive",
+			contract:        statusCodeConformanceTestContract(t),
+			requestURL:      "https://baseline.example.test/unknown",
+			candidateStatus: 201,
+			want: schemaProblemOutcome{
+				Outcome:      problemOutcomeInconclusive,
+				Reason:       problemOutcomeReasonSchemaOperationNotFound,
+				Inconclusive: 1,
+			},
+		},
+		{
+			name:            "operation ambiguous inconclusive",
+			contract:        ambiguousStatusCodeConformanceTestContract(t),
+			requestURL:      "https://baseline.example.test/widgets/123",
+			candidateStatus: 201,
+			want: schemaProblemOutcome{
+				Outcome:      problemOutcomeInconclusive,
+				Reason:       problemOutcomeReasonSchemaOperationAmbiguous,
+				Inconclusive: 1,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newStatusCodeConformanceReport(t, statusCodeConformanceReportInput{
+				Contract:        test.contract,
+				RequestURL:      test.requestURL,
+				CandidateStatus: test.candidateStatus,
+			})
+
+			got := schemaProblemOutcome{
+				Outcome:      document.Problems[0].Outcome,
+				Reason:       document.Problems[0].OutcomeReason,
+				Fixed:        document.Summary.BaselineProblems.Fixed,
+				StillFailing: document.Summary.BaselineProblems.StillFailing,
+				Inconclusive: document.Summary.BaselineProblems.Inconclusive,
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("status code conformance outcome = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestOpenAPIContractValidationReportsDistinctInconclusiveReasons(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -359,14 +457,15 @@ func TestNewReportIncludesSchemaValidationProvenanceInJSON(t *testing.T) {
 	}
 
 	want := schemaValidationProvenance{
-		Validator:                      "github.com/getkin/kin-openapi/openapi3filter",
-		ValidatorVersion:               "v0.145.0",
-		SupportedOpenAPIVersions:       "3.0, 3.1, 3.2",
-		SupportedJSONSchemaDialects:    "OpenAPI 3.0 Schema Object; JSON Schema 2020-12 for OpenAPI 3.1+",
-		OpenAPIVersion:                 "3.0.3",
-		ResponseValidationUsesRawBody:  true,
-		ResponseMediaTypeSource:        "candidate_response_headers",
-		OperationResolutionTieBehavior: "literal_segments_then_parameter_count; equal-specificity matches are inconclusive",
+		Validator:                       "github.com/getkin/kin-openapi/openapi3filter",
+		ValidatorVersion:                "v0.145.0",
+		SupportedOpenAPIVersions:        "3.0, 3.1, 3.2",
+		SupportedJSONSchemaDialects:     "OpenAPI 3.0 Schema Object; JSON Schema 2020-12 for OpenAPI 3.1+",
+		OpenAPIVersion:                  "3.0.3",
+		StatusCodeConformanceDefinition: "explicit status codes and range codes such as 2XX count as documented; default responses do not document every status",
+		ResponseValidationUsesRawBody:   true,
+		ResponseMediaTypeSource:         "candidate_response_headers",
+		OperationResolutionTieBehavior:  "literal_segments_then_parameter_count; equal-specificity matches are inconclusive",
 	}
 	if !reflect.DeepEqual(got.SchemaValidation, want) {
 		t.Fatalf("schema validation provenance = %#v, want %#v", got.SchemaValidation, want)
@@ -508,6 +607,53 @@ type schemaValidationReportInput struct {
 	PreconditionRule PreconditionHeuristic
 }
 
+type statusCodeConformanceReportInput struct {
+	Contract        *OpenAPIContract
+	RequestURL      string
+	CandidateStatus int
+}
+
+func newStatusCodeConformanceReport(
+	t *testing.T,
+	input statusCodeConformanceReportInput,
+) report {
+	t.Helper()
+
+	interaction := 1
+	return newReport(reportInput{
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         "status_code_conformance",
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-status",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    input.RequestURL,
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request:  harRequest{Method: "GET", URL: input.RequestURL},
+					Response: &harResponse{Status: 418},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{Status: input.CandidateStatus},
+					},
+				},
+			},
+		},
+		SchemaValidation: input.Contract,
+	})
+}
+
 func newSchemaValidationReport(
 	t *testing.T,
 	input schemaValidationReportInput,
@@ -565,6 +711,67 @@ func newSchemaValidationReport(
 		PreconditionPolicy: policy,
 		SchemaValidation:   schemaValidationTestContract(t),
 	})
+}
+
+func statusCodeConformanceTestContract(t *testing.T) *OpenAPIContract {
+	t.Helper()
+
+	return mustLoadOpenAPIContract(t, []byte(`
+openapi: 3.0.3
+info:
+  title: Status codes
+  version: "1.0"
+paths:
+  /widgets/{widget_id}:
+    parameters:
+      - name: widget_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      responses:
+        "201":
+          description: created
+        2XX:
+          description: any successful response
+        default:
+          description: fallback
+`))
+}
+
+func ambiguousStatusCodeConformanceTestContract(t *testing.T) *OpenAPIContract {
+	t.Helper()
+
+	return mustLoadOpenAPIContract(t, []byte(`
+openapi: 3.0.3
+info:
+  title: Ambiguous status codes
+  version: "1.0"
+paths:
+  /widgets/{left}:
+    parameters:
+      - name: left
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      responses:
+        "201":
+          description: created
+  /widgets/{right}:
+    parameters:
+      - name: right
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      responses:
+        "201":
+          description: created
+`))
 }
 
 func schemaValidationTestContract(t *testing.T) *OpenAPIContract {

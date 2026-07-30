@@ -48,6 +48,7 @@ const (
 	checkCategoryNegativeDataRejection     checkCategory = "negative_data_rejection"
 	checkCategoryResponseSchemaConformance checkCategory = "response_schema_conformance"
 	checkCategoryPositiveDataAcceptance    checkCategory = "positive_data_acceptance"
+	checkCategoryStatusCodeConformance     checkCategory = "status_code_conformance"
 	checkCategoryUncategorized             checkCategory = "uncategorized"
 )
 
@@ -86,6 +87,8 @@ const (
 	problemOutcomeReasonSchemaMediaTypeUnsupported        problemOutcomeReason = "schema_media_type_unsupported"
 	problemOutcomeReasonSchemaResponseBodyUnavailable     problemOutcomeReason = "schema_response_body_unavailable"
 	problemOutcomeReasonSchemaResponseBodyUnparseable     problemOutcomeReason = "schema_response_body_unparseable"
+	problemOutcomeReasonStatusCodeDocumented              problemOutcomeReason = "status_code_documented"
+	problemOutcomeReasonStatusCodeUndocumented            problemOutcomeReason = "status_code_undocumented"
 	problemOutcomeReasonUncorrelatedEvidence              problemOutcomeReason = "uncorrelated_evidence"
 	problemOutcomeReasonAmbiguousCorrelation              problemOutcomeReason = "ambiguous_correlation"
 	problemOutcomeReasonReplayInteractionMissing          problemOutcomeReason = "replay_interaction_missing"
@@ -242,4 +245,5 @@ var checkCategoriesByName = map[string]checkCategory{
 	"response_schema_conformance": checkCategoryResponseSchemaConformance,
 	"response violates schema":    checkCategoryResponseSchemaConformance,
 	"positive_data_acceptance":    checkCategoryPositiveDataAcceptance,
+	"status_code_conformance":     checkCategoryStatusCodeConformance,
 }
