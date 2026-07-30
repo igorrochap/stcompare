@@ -154,6 +154,173 @@ func TestRenderHTMLEmphasizesNonzeroRegressionCount(t *testing.T) {
 	}
 }
 
+func TestRenderHTMLShowsBaselineProblemBreakdownMeter(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:        10,
+				Evaluable:    6,
+				Fixed:        4,
+				StillFailing: 1,
+				Inconclusive: 1,
+				Unevaluable:  2,
+				Uncorrelated: 1,
+				Ambiguous:    1,
+				FixRate:      baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, document)
+
+	want := []string{
+		"Baseline problem breakdown",
+		"aria-label=\"Baseline problem bucket breakdown\"",
+		"style=\"width: 40.0000%;\"",
+		"style=\"width: 10.0000%;\"",
+		"style=\"width: 20.0000%;\"",
+		"Fixed</span><strong>4</strong>",
+		"Still failing</span><strong>1</strong>",
+		"Inconclusive</span><strong>1</strong>",
+		"Unevaluable</span><strong>2</strong>",
+		"Uncorrelated</span><strong>1</strong>",
+		"Ambiguous</span><strong>1</strong>",
+		"Total baseline problems</span><strong>10</strong>",
+	}
+	for _, fragment := range want {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML missing %q:\n%s", fragment, html)
+		}
+	}
+	if strings.Contains(html, "Problem outcomes") ||
+		strings.Contains(html, "problem outcome breakdown") ||
+		strings.Contains(html, "outcome meter") {
+		t.Fatalf("renderHTML used glossary-confusing outcome label:\n%s", html)
+	}
+}
+
+func TestRenderHTMLShowsExplicitEmptyAndUnavailableProblemBreakdownMeterStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		document report
+		want     string
+	}{
+		{
+			name: "zero baseline problems",
+			document: report{
+				BaselineProblemsAvailable: true,
+				Summary: reportSummary{
+					BaselineProblems: baselineProblemSummary{
+						Total:   0,
+						FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+					},
+				},
+			},
+			want: "No baseline problems were extracted, so there is no problem breakdown to show.",
+		},
+		{
+			name: "unavailable baseline problems",
+			document: report{
+				BaselineProblemsAvailable: false,
+				BaselineProblemsNote:      baselineProblemsUnavailable,
+				Summary: reportSummary{
+					BaselineProblems: baselineProblemSummary{
+						FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+					},
+				},
+			},
+			want: "Baseline problem breakdown is unavailable.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := mustRenderHTML(t, tt.document)
+
+			if !strings.Contains(html, tt.want) {
+				t.Fatalf("renderHTML missing %q:\n%s", tt.want, html)
+			}
+			if strings.Contains(html, "style=\"width: NaN") ||
+				strings.Contains(html, "style=\"width: +Inf") {
+				t.Fatalf("renderHTML rendered broken meter width:\n%s", html)
+			}
+		})
+	}
+}
+
+func TestRenderHTMLShowsSeparateTrafficClassifications(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:   1,
+				Fixed:   1,
+				FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+			Traffic: trafficSummary{
+				Total:            9,
+				SuccessUnchanged: 6,
+				Changed:          2,
+				Regressed:        1,
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, document)
+
+	want := []string{
+		"<section class=\"traffic\"",
+		"Traffic classifications",
+		"Success unchanged</span><strong>6</strong>",
+		"Changed</span><strong>2</strong>",
+		"Regressed</span><strong>1</strong>",
+		"Traffic total</span><strong>9</strong>",
+	}
+	for _, fragment := range want {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestRenderHTMLShowsCaveats(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:        7,
+				Inconclusive: 2,
+				Unevaluable:  1,
+				Uncorrelated: 3,
+				Ambiguous:    1,
+				UnevaluableByCheckCategory: []unevaluableCheckCategory{
+					{CheckCategory: checkCategoryUncategorized, Count: 1},
+				},
+				FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, document)
+
+	want := []string{
+		"<section class=\"caveats\"",
+		"Caveats",
+		"Inconclusive</span><strong>2</strong>",
+		"Uncorrelated</span><strong>3</strong>",
+		"Ambiguous</span><strong>1</strong>",
+		"Unevaluable</span><strong>1</strong>",
+		"Unevaluable by check category",
+		"uncategorized</span><strong>1</strong>",
+	}
+	for _, fragment := range want {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
 func TestRenderHTMLEscapesDynamicText(t *testing.T) {
 	percentage := 100.0
 	document := report{
