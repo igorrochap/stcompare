@@ -26,6 +26,8 @@ const (
 	fixedResponseDate          = "Mon, 02 Jan 2006 15:04:05 GMT"
 	firstCandidateLength       = "28"
 	secondCandidateLength      = "36"
+	problemCountExplanation    = "JUnit reports deduplicated Schemathesis problems. Structured evidence records every failing case from VCR/NDJSON when available, but no structured problem count is available in this report."
+	problemBucketExplanation   = "evaluable = fixed + still_failing + inconclusive; total = evaluable + unevaluable + uncorrelated + ambiguous. Every extracted Schemathesis problem is assigned to exactly one bucket. Only evaluable problems receive fixed, still_failing, or evaluable inconclusive counts; unevaluable, uncorrelated, and ambiguous problems carry not_evaluated outcomes with a reason on the problem entry."
 	fixRateMeaning             = "Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version."
 	fixRateZeroDenominatorNote = "Fix rate is unavailable because there are zero evaluable baseline problems."
 )
@@ -587,7 +589,7 @@ http_interactions:
 
 func expectedComparisonReport(baseURL string) comparisonReport {
 	return comparisonReport{
-		SchemaVersion: "8",
+		SchemaVersion: "9",
 		Baseline: comparisonCampaign{
 			Campaign:           "baseline",
 			ProblemCount:       3,
@@ -596,6 +598,10 @@ func expectedComparisonReport(baseURL string) comparisonReport {
 		Candidate: comparisonCandidate{
 			Campaign: "gpt5.6",
 			BaseURL:  baseURL,
+		},
+		Explanations: comparisonExplanations{
+			BaselineProblemCounts:  problemCountExplanation,
+			BaselineProblemBuckets: problemBucketExplanation,
 		},
 		Summary: comparisonSummary{
 			InteractionCount: 2,
@@ -848,10 +854,16 @@ type comparisonReport struct {
 	SchemaVersion             string                          `json:"schema_version"`
 	Baseline                  comparisonCampaign              `json:"baseline"`
 	Candidate                 comparisonCandidate             `json:"candidate"`
+	Explanations              comparisonExplanations          `json:"explanations"`
 	Summary                   comparisonSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                            `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                          `json:"baseline_problems_note"`
 	Findings                  []comparisonInteractionEvidence `json:"findings"`
+}
+
+type comparisonExplanations struct {
+	BaselineProblemCounts  string `json:"baseline_problem_counts"`
+	BaselineProblemBuckets string `json:"baseline_problem_buckets"`
 }
 
 type comparisonCampaign struct {

@@ -57,6 +57,7 @@ const (
 	problemOutcomeFixed        problemOutcome = "fixed"
 	problemOutcomeStillFailing problemOutcome = "still_failing"
 	problemOutcomeInconclusive problemOutcome = "inconclusive"
+	problemOutcomeNotEvaluated problemOutcome = "not_evaluated"
 )
 
 type problemOutcomeReason string
@@ -85,6 +86,10 @@ const (
 	problemOutcomeReasonSchemaMediaTypeUnsupported        problemOutcomeReason = "schema_media_type_unsupported"
 	problemOutcomeReasonSchemaResponseBodyUnavailable     problemOutcomeReason = "schema_response_body_unavailable"
 	problemOutcomeReasonSchemaResponseBodyUnparseable     problemOutcomeReason = "schema_response_body_unparseable"
+	problemOutcomeReasonUncorrelatedEvidence              problemOutcomeReason = "uncorrelated_evidence"
+	problemOutcomeReasonAmbiguousCorrelation              problemOutcomeReason = "ambiguous_correlation"
+	problemOutcomeReasonReplayInteractionMissing          problemOutcomeReason = "replay_interaction_missing"
+	problemOutcomeReasonUnsupportedCheckCategory          problemOutcomeReason = "unsupported_check_category"
 )
 
 type correlationStatus string

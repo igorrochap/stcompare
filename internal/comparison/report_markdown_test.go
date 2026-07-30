@@ -47,6 +47,8 @@ func TestRenderMarkdownIncludesAvailableBaselineProblems(t *testing.T) {
 				EvidenceSource:    "junit",
 				CaseID:            "case-junit",
 				CorrelationStatus: correlationStatusUncorrelated,
+				Outcome:           problemOutcomeNotEvaluated,
+				OutcomeReason:     problemOutcomeReasonUncorrelatedEvidence,
 				Reproduction: problemReproduction{
 					Command: "curl https://baseline.example.test/widgets",
 				},
@@ -89,6 +91,8 @@ Body:
 - Message: Server accepted invalid input.
 - Evidence source: ` + "`junit`" + `
 - Case ID: ` + "`case-junit`" + `
+- Outcome: ` + "`not_evaluated`" + `
+- Outcome reason: ` + "`uncorrelated_evidence`" + `
 - Correlation: uncorrelated
 
 #### Reproduction command
@@ -189,6 +193,36 @@ func TestRenderMarkdownMarksAmbiguousBaselineProblemsExplicitly(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownShowsUnevaluableProblemOutcomeReason(t *testing.T) {
+	document := report{
+		BaselineProblemsAvailable: true,
+		Problems: []baselineProblem{
+			{
+				CheckName:         "unsupported_method",
+				CheckCategory:     checkCategoryUncategorized,
+				Message:           "Unsupported methods returned 501.",
+				EvidenceSource:    evidenceSourceVCR,
+				CaseID:            "case-unsupported",
+				CorrelationStatus: correlationStatusCorrelated,
+				Outcome:           problemOutcomeNotEvaluated,
+				OutcomeReason:     problemOutcomeReasonUnsupportedCheckCategory,
+			},
+		},
+	}
+
+	markdown := renderMarkdown(document)
+
+	wantLines := []string{
+		"- Outcome: `not_evaluated`",
+		"- Outcome reason: `unsupported_check_category`",
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(markdown, line) {
+			t.Fatalf("renderMarkdown missing %q:\n%s", line, markdown)
+		}
+	}
+}
+
 func TestRenderMarkdownDoesNotPanicOnCorrelatedProblemWithoutInteraction(t *testing.T) {
 	document := report{
 		BaselineProblemsAvailable: true,
@@ -213,7 +247,7 @@ func TestRenderMarkdownDoesNotPanicOnCorrelatedProblemWithoutInteraction(t *test
 func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T) {
 	aggregateCount := 3
 	aggregateSource := "junit.xml"
-	extractedCount := 2
+	extractedCount := 5
 	extractedSource := "campaign.vcr.yaml"
 	document := report{
 		Baseline: reportCampaign{
@@ -222,6 +256,12 @@ func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T)
 			ExtractedProblemCount:       &extractedCount,
 			ExtractedProblemCountSource: &extractedSource,
 		},
+		Explanations: reportExplanations{
+			BaselineProblemCounts: "JUnit reports deduplicated Schemathesis problems " +
+				"while structured evidence records every failing case from VCR/NDJSON. " +
+				"The 2 extra cases are additional occurrences of already reported defects, " +
+				"not a discrepancy or extraction bug.",
+		},
 	}
 
 	markdown := renderMarkdown(document)
@@ -229,8 +269,15 @@ func TestRenderMarkdownShowsBothAggregateAndExtractedProblemCounts(t *testing.T)
 	if !strings.Contains(markdown, "- Baseline problems: 3 (source: `junit.xml`)") {
 		t.Fatalf("renderMarkdown missing aggregate problem count:\n%s", markdown)
 	}
-	if !strings.Contains(markdown, "- Extracted baseline problems: 2 (source: `campaign.vcr.yaml`)") {
+	if !strings.Contains(markdown, "- Extracted baseline problems: 5 (source: `campaign.vcr.yaml`)") {
 		t.Fatalf("renderMarkdown missing extracted problem count:\n%s", markdown)
+	}
+	wantExplanation := "- Problem count basis: JUnit reports deduplicated Schemathesis " +
+		"problems while structured evidence records every failing case from VCR/NDJSON. " +
+		"The 2 extra cases are additional occurrences of already reported defects, not " +
+		"a discrepancy or extraction bug."
+	if !strings.Contains(markdown, wantExplanation) {
+		t.Fatalf("renderMarkdown missing count explanation:\n%s", markdown)
 	}
 }
 
@@ -239,8 +286,12 @@ func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
 	document := report{
 		Summary: reportSummary{
 			BaselineProblems: baselineProblemSummary{
-				Total:        2,
-				Evaluable:    1,
+				Total:       3,
+				Evaluable:   1,
+				Unevaluable: 1,
+				UnevaluableByCheckCategory: []unevaluableCheckCategory{
+					{CheckCategory: checkCategoryUncategorized, Count: 1},
+				},
 				Uncorrelated: 1,
 				StillFailing: 1,
 				FixRate: baselineProblemFixRate{
@@ -259,6 +310,10 @@ func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
 				Regressed:        1,
 			},
 		},
+		Explanations: reportExplanations{
+			BaselineProblemBuckets: baselineProblemOutcomeSummaryEquation + " " +
+				baselineProblemOutcomeSummaryMeaning,
+		},
 		Problems: []baselineProblem{
 			{
 				CheckName: "not_a_server_error",
@@ -276,9 +331,13 @@ func TestRenderMarkdownShowsClassifiedProblemAndTrafficSummaries(t *testing.T) {
 	markdown := renderMarkdown(document)
 
 	wantLines := []string{
-		"- Baseline problem outcomes: total 2, evaluable 1, fixed 0, " +
-			"still failing 1, inconclusive 0, unevaluable 0, " +
+		"- Baseline problem outcomes: total 3, evaluable 1, fixed 0, " +
+			"still failing 1, inconclusive 0, unevaluable 1, " +
 			"uncorrelated 1, ambiguous 0",
+		"- Unevaluable problem check categories:",
+		"  - `uncategorized`: 1",
+		"- Problem bucket sums: evaluable = fixed + still_failing + inconclusive; " +
+			"total = evaluable + unevaluable + uncorrelated + ambiguous.",
 		"- Fix rate: 0/1 evaluable baseline problems fixed (0.0%).",
 		"- Traffic classifications: total 3, success unchanged 1, changed 1, regressed 1",
 		"- Outcome: `still_failing`",

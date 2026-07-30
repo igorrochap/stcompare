@@ -8,11 +8,18 @@ import (
 )
 
 const (
-	reportSchemaVersion         = "8"
-	baselineProblemsUnavailable = "Baseline Schemathesis problems could not be extracted from structured evidence."
-	fixRateDenominatorBasis     = "evaluable_baseline_problems"
-	fixRateMeaning              = "Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version."
-	fixRateZeroDenominatorNote  = "Fix rate is unavailable because there are zero evaluable baseline problems."
+	reportSchemaVersion                                 = "9"
+	baselineProblemsUnavailable                         = "Baseline Schemathesis problems could not be extracted from structured evidence."
+	baselineProblemOutcomeSummaryEquation               = "evaluable = fixed + still_failing + inconclusive; total = evaluable + unevaluable + uncorrelated + ambiguous."
+	baselineProblemOutcomeSummaryMeaning                = "Every extracted Schemathesis problem is assigned to exactly one bucket. Only evaluable problems receive fixed, still_failing, or evaluable inconclusive counts; unevaluable, uncorrelated, and ambiguous problems carry not_evaluated outcomes with a reason on the problem entry."
+	baselineProblemCountExplanationNoCount              = "JUnit problem count is unavailable. Structured evidence records every failing case from VCR/NDJSON when available."
+	baselineProblemCountExplanationNoExtractedCount     = "JUnit reports deduplicated Schemathesis problems. Structured evidence records every failing case from VCR/NDJSON when available, but no structured problem count is available in this report."
+	baselineProblemCountExplanationNoExtraOccurrences   = "JUnit reports deduplicated Schemathesis problems while structured evidence records every failing case from VCR/NDJSON. The structured count does not add extra occurrences beyond the JUnit defect representatives."
+	baselineProblemCountExplanationOneExtraOccurrence   = "JUnit reports deduplicated Schemathesis problems while structured evidence records every failing case from VCR/NDJSON. The 1 extra case is an additional occurrence of an already reported defect, not a discrepancy or extraction bug."
+	baselineProblemCountExplanationExtraOccurrencesForm = "JUnit reports deduplicated Schemathesis problems while structured evidence records every failing case from VCR/NDJSON. The %d extra cases are additional occurrences of already reported defects, not a discrepancy or extraction bug."
+	fixRateDenominatorBasis                             = "evaluable_baseline_problems"
+	fixRateMeaning                                      = "Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version."
+	fixRateZeroDenominatorNote                          = "Fix rate is unavailable because there are zero evaluable baseline problems."
 )
 
 type report struct {
@@ -21,6 +28,7 @@ type report struct {
 	Candidate                 reportCandidate             `json:"candidate"`
 	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
 	SchemaValidation          schemaValidationProvenance  `json:"schema_validation"`
+	Explanations              reportExplanations          `json:"explanations"`
 	Summary                   reportSummary               `json:"summary"`
 	BaselineProblemsAvailable bool                        `json:"baseline_problems_available"`
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
@@ -41,6 +49,11 @@ type reportCandidate struct {
 	BaseURL  string `json:"base_url"`
 }
 
+type reportExplanations struct {
+	BaselineProblemCounts  string `json:"baseline_problem_counts"`
+	BaselineProblemBuckets string `json:"baseline_problem_buckets"`
+}
+
 type reportSummary struct {
 	InteractionCount  int                    `json:"interaction_count"`
 	BaselineProblems  baselineProblemSummary `json:"baseline_problems"`
@@ -50,15 +63,21 @@ type reportSummary struct {
 }
 
 type baselineProblemSummary struct {
-	Total        int                    `json:"total"`
-	Evaluable    int                    `json:"evaluable"`
-	Unevaluable  int                    `json:"unevaluable"`
-	Uncorrelated int                    `json:"uncorrelated"`
-	Ambiguous    int                    `json:"ambiguous"`
-	Fixed        int                    `json:"fixed"`
-	StillFailing int                    `json:"still_failing"`
-	Inconclusive int                    `json:"inconclusive"`
-	FixRate      baselineProblemFixRate `json:"fix_rate"`
+	Total                      int                        `json:"total"`
+	Evaluable                  int                        `json:"evaluable"`
+	Unevaluable                int                        `json:"unevaluable"`
+	UnevaluableByCheckCategory []unevaluableCheckCategory `json:"unevaluable_by_check_category"`
+	Uncorrelated               int                        `json:"uncorrelated"`
+	Ambiguous                  int                        `json:"ambiguous"`
+	Fixed                      int                        `json:"fixed"`
+	StillFailing               int                        `json:"still_failing"`
+	Inconclusive               int                        `json:"inconclusive"`
+	FixRate                    baselineProblemFixRate     `json:"fix_rate"`
+}
+
+type unevaluableCheckCategory struct {
+	CheckCategory checkCategory `json:"check_category"`
+	Count         int           `json:"count"`
 }
 
 type baselineProblemFixRate struct {
@@ -202,6 +221,7 @@ func newReport(input reportInput) report {
 		},
 		ComparisonPolicy:          policy,
 		SchemaValidation:          input.SchemaValidation.Provenance(),
+		Explanations:              newReportExplanations(problemCount, problemState),
 		Summary:                   newReportSummary(input.Interactions, interactions, classification),
 		BaselineProblemsAvailable: problemState.available,
 		BaselineProblemsNote:      problemState.note,
@@ -234,6 +254,42 @@ func (e baselineProblemEvidence) reportState() baselineProblemReportState {
 	}
 
 	return state
+}
+
+func newReportExplanations(
+	problemCount *int,
+	problemState baselineProblemReportState,
+) reportExplanations {
+	return reportExplanations{
+		BaselineProblemCounts:  baselineProblemCountExplanation(problemCount, problemState),
+		BaselineProblemBuckets: baselineProblemOutcomeSummaryEquation + " " + baselineProblemOutcomeSummaryMeaning,
+	}
+}
+
+func baselineProblemCountExplanation(
+	problemCount *int,
+	problemState baselineProblemReportState,
+) string {
+	if problemCount == nil {
+		return baselineProblemCountExplanationNoCount
+	}
+	if problemState.extractedProblemCount == nil {
+		return baselineProblemCountExplanationNoExtractedCount
+	}
+
+	extra := *problemState.extractedProblemCount - *problemCount
+	if extra <= 0 {
+		return baselineProblemCountExplanationNoExtraOccurrences
+	}
+
+	if extra == 1 {
+		return baselineProblemCountExplanationOneExtraOccurrence
+	}
+
+	return fmt.Sprintf(
+		baselineProblemCountExplanationExtraOccurrencesForm,
+		extra,
+	)
 }
 
 func normalizedBaselineProblems(problems []baselineProblem) []baselineProblem {
@@ -305,11 +361,21 @@ func classifyReport(
 
 	for index := range classified.problems {
 		problem := &classified.problems[index]
-		if problem.CorrelationStatus != correlationStatusCorrelated {
+		switch problem.CorrelationStatus {
+		case correlationStatusUncorrelated:
+			problem.Outcome = problemOutcomeNotEvaluated
+			problem.OutcomeReason = problemOutcomeReasonUncorrelatedEvidence
 			continue
+		case correlationStatusAmbiguous:
+			problem.Outcome = problemOutcomeNotEvaluated
+			problem.OutcomeReason = problemOutcomeReasonAmbiguousCorrelation
+			continue
+		case correlationStatusCorrelated:
 		}
 		if problem.Interaction == nil || *problem.Interaction < 1 ||
 			*problem.Interaction > len(classified.interactions) {
+			problem.Outcome = problemOutcomeNotEvaluated
+			problem.OutcomeReason = problemOutcomeReasonReplayInteractionMissing
 			classified.baselineProblems.Unevaluable++
 			continue
 		}
@@ -328,6 +394,8 @@ func classifyReport(
 		problem.MatchedPreconditionHeuristic =
 			classification.matchedPreconditionHeuristic
 		if classification.outcome == "" {
+			problem.Outcome = problemOutcomeNotEvaluated
+			problem.OutcomeReason = problemOutcomeReasonUnsupportedCheckCategory
 			classified.baselineProblems.Unevaluable++
 			continue
 		}
@@ -341,6 +409,8 @@ func classifyReport(
 			classified.baselineProblems.Fixed++
 		}
 	}
+	classified.baselineProblems.UnevaluableByCheckCategory =
+		newUnevaluableCheckCategoryCounts(classified.problems)
 	classified.baselineProblems.FixRate = newBaselineProblemFixRate(
 		classified.baselineProblems,
 	)
@@ -351,6 +421,37 @@ func classifyReport(
 	)
 
 	return classified
+}
+
+func newUnevaluableCheckCategoryCounts(problems []baselineProblem) []unevaluableCheckCategory {
+	countsByCategory := make(map[checkCategory]int)
+	for _, problem := range problems {
+		if problem.Outcome != problemOutcomeNotEvaluated {
+			continue
+		}
+		if problem.OutcomeReason != problemOutcomeReasonUnsupportedCheckCategory &&
+			problem.OutcomeReason != problemOutcomeReasonReplayInteractionMissing {
+			continue
+		}
+
+		countsByCategory[problem.CheckCategory]++
+	}
+	if len(countsByCategory) == 0 {
+		return nil
+	}
+
+	counts := make([]unevaluableCheckCategory, 0, len(countsByCategory))
+	for category, count := range countsByCategory {
+		counts = append(counts, unevaluableCheckCategory{
+			CheckCategory: category,
+			Count:         count,
+		})
+	}
+	sort.Slice(counts, func(i, j int) bool {
+		return counts[i].CheckCategory < counts[j].CheckCategory
+	})
+
+	return counts
 }
 
 func newBaselineProblemFixRate(summary baselineProblemSummary) baselineProblemFixRate {
