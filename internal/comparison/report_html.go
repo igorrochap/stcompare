@@ -14,6 +14,7 @@ type htmlReportView struct {
 	ProblemBreakdown htmlProblemBreakdownView
 	Traffic          htmlTrafficView
 	Caveats          htmlCaveatsView
+	ProblemLists     htmlProblemListsView
 }
 
 type htmlFixRateView struct {
@@ -57,6 +58,29 @@ type htmlCaveatsView struct {
 	UnevaluableByCheckCategories []unevaluableCheckCategory
 }
 
+type htmlProblemListsView struct {
+	Show         bool
+	Fixed        htmlProblemGroupView
+	StillFailing htmlProblemGroupView
+	NotEvaluated htmlProblemGroupView
+}
+
+type htmlProblemGroupView struct {
+	Count             int
+	InconclusiveCount int
+	Problems          []htmlProblemEntryView
+}
+
+type htmlProblemEntryView struct {
+	CheckName        string
+	CheckCategory    checkCategory
+	Message          string
+	OutcomeLabel     string
+	Reproduction     string
+	StatusTransition string
+	HasDetails       bool
+}
+
 func renderHTML(document report) (string, error) {
 	var output bytes.Buffer
 	if err := comparisonHTMLTemplate.Execute(&output, newHTMLReportView(document)); err != nil {
@@ -91,6 +115,7 @@ func newHTMLReportView(document report) htmlReportView {
 		Caveats: newHTMLCaveatsView(
 			document.Summary.BaselineProblems,
 		),
+		ProblemLists: newHTMLProblemListsView(document),
 	}
 }
 
@@ -189,6 +214,94 @@ func newHTMLCaveatsView(summary baselineProblemSummary) htmlCaveatsView {
 		Ambiguous:                    summary.Ambiguous,
 		UnevaluableByCheckCategories: summary.UnevaluableByCheckCategory,
 	}
+}
+
+func newHTMLProblemListsView(document report) htmlProblemListsView {
+	if !document.BaselineProblemsAvailable {
+		return htmlProblemListsView{}
+	}
+
+	view := htmlProblemListsView{
+		Show: true,
+	}
+
+	transitionsByInteraction := make(map[int]statusTransition, len(document.Findings))
+	for _, finding := range document.Findings {
+		transitionsByInteraction[finding.Interaction] = finding.StatusTransition
+	}
+
+	for _, problem := range document.Problems {
+		entry := newHTMLProblemEntryView(problem, transitionsByInteraction)
+		switch problem.Outcome {
+		case problemOutcomeFixed:
+			view.Fixed.Problems = append(view.Fixed.Problems, entry)
+		case problemOutcomeStillFailing:
+			view.StillFailing.Problems = append(view.StillFailing.Problems, entry)
+			view.StillFailing.Count++
+		case problemOutcomeInconclusive:
+			entry.OutcomeLabel = "Inconclusive"
+			view.StillFailing.Problems = append(view.StillFailing.Problems, entry)
+			view.StillFailing.InconclusiveCount++
+		case problemOutcomeNotEvaluated:
+			view.NotEvaluated.Problems = append(view.NotEvaluated.Problems, entry)
+		}
+	}
+
+	view.Fixed.Count = len(view.Fixed.Problems)
+	view.NotEvaluated.Count = len(view.NotEvaluated.Problems)
+
+	return view
+}
+
+func newHTMLProblemEntryView(
+	problem baselineProblem,
+	transitionsByInteraction map[int]statusTransition,
+) htmlProblemEntryView {
+	entry := htmlProblemEntryView{
+		CheckName:     problem.CheckName,
+		CheckCategory: problem.CheckCategory,
+		Message:       problem.Message,
+		Reproduction:  htmlProblemReproduction(problem.Reproduction),
+	}
+
+	if problem.Interaction == nil {
+		entry.HasDetails = entry.Reproduction != "" || entry.StatusTransition != ""
+		return entry
+	}
+	transition, ok := transitionsByInteraction[*problem.Interaction]
+	if !ok {
+		entry.HasDetails = entry.Reproduction != "" || entry.StatusTransition != ""
+		return entry
+	}
+	entry.StatusTransition = htmlStatusTransition(transition)
+	entry.HasDetails = entry.Reproduction != "" || entry.StatusTransition != ""
+
+	return entry
+}
+
+func htmlProblemReproduction(reproduction problemReproduction) string {
+	if reproduction.Command != "" {
+		return reproduction.Command
+	}
+	if reproduction.Method == "" && reproduction.URL == "" {
+		return ""
+	}
+	if reproduction.Method == "" {
+		return reproduction.URL
+	}
+	if reproduction.URL == "" {
+		return reproduction.Method
+	}
+
+	return reproduction.Method + " " + reproduction.URL
+}
+
+func htmlStatusTransition(transition statusTransition) string {
+	if transition.Baseline == nil {
+		return fmt.Sprintf("unknown -> %d", transition.Candidate)
+	}
+
+	return fmt.Sprintf("%d -> %d", *transition.Baseline, transition.Candidate)
 }
 
 func pluralize(count int, singular string, plural string) string {
@@ -400,6 +513,70 @@ section {
 	margin: 0 0 10px;
 	font-size: 15px;
 }
+.problem-groups {
+	display: grid;
+	gap: 14px;
+}
+.problem-group {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--bg);
+	padding: 14px;
+}
+.problem-group h3, .problem-group > summary {
+	margin: 0 0 10px;
+	font-size: 16px;
+	font-weight: 700;
+}
+.problem-group > summary {
+	cursor: pointer;
+}
+.problem-group h3 span, .problem-group > summary span {
+	color: var(--muted);
+	font-size: 13px;
+	font-weight: 600;
+}
+.problem-group-subordinate {
+	background: transparent;
+}
+.problem-entries {
+	display: grid;
+	gap: 8px;
+}
+.problem-entry {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--panel);
+	padding: 10px 12px;
+}
+.problem-entry-summary {
+	display: grid;
+	gap: 2px;
+}
+.problem-entry summary.problem-entry-summary {
+	cursor: pointer;
+}
+.problem-entry-title {
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+.problem-entry-meta, .problem-entry-detail span {
+	color: var(--muted);
+	font-size: 13px;
+}
+.problem-entry-message {
+	overflow-wrap: anywhere;
+}
+.problem-entry-details {
+	display: grid;
+	gap: 8px;
+	margin-top: 10px;
+}
+.problem-entry-detail strong {
+	display: block;
+	overflow-wrap: anywhere;
+	font-weight: 600;
+}
 .empty {
 	color: var(--muted);
 }
@@ -469,6 +646,82 @@ section {
 <div class="count"><span>Traffic total</span><strong>{{.Traffic.Total}}</strong></div>
 </div>
 </section>
+{{if .ProblemLists.Show}}
+<section class="problem-lists">
+<h2>Baseline problems</h2>
+<p class="section-lede">Compact lists of extracted baseline Schemathesis problems by comparison outcome.</p>
+<div class="problem-groups">
+<div class="problem-group">
+<h3>Fixed <span>{{.ProblemLists.Fixed.Count}}</span></h3>
+{{if .ProblemLists.Fixed.Problems}}
+<div class="problem-entries">
+{{range .ProblemLists.Fixed.Problems}}
+<div class="problem-entry">
+<div class="problem-entry-summary">
+<span class="problem-entry-title">{{.CheckName}}</span>
+<span class="problem-entry-meta">{{.CheckCategory}}</span>
+<span class="problem-entry-message">{{.Message}}</span>
+</div>
+</div>
+{{end}}
+</div>
+{{else}}
+<p class="empty">None</p>
+{{end}}
+</div>
+<div class="problem-group">
+<h3>Still failing <span>{{.ProblemLists.StillFailing.Count}}</span>{{if .ProblemLists.StillFailing.InconclusiveCount}} <span>Inconclusive {{.ProblemLists.StillFailing.InconclusiveCount}}</span>{{end}}</h3>
+{{if .ProblemLists.StillFailing.Problems}}
+<div class="problem-entries">
+{{range .ProblemLists.StillFailing.Problems}}
+{{if .HasDetails}}
+<details class="problem-entry problem-entry-expandable">
+<summary class="problem-entry-summary">
+<span class="problem-entry-title">{{.CheckName}}</span>
+<span class="problem-entry-meta">{{.CheckCategory}}{{if .OutcomeLabel}} - {{.OutcomeLabel}}{{end}}</span>
+<span class="problem-entry-message">{{.Message}}</span>
+</summary>
+<div class="problem-entry-details">
+{{if .Reproduction}}<div class="problem-entry-detail"><span>Reproduction</span><strong>{{.Reproduction}}</strong></div>{{end}}
+{{if .StatusTransition}}<div class="problem-entry-detail"><span>Status transition</span><strong>{{.StatusTransition}}</strong></div>{{end}}
+</div>
+</details>
+{{else}}
+<div class="problem-entry">
+<div class="problem-entry-summary">
+<span class="problem-entry-title">{{.CheckName}}</span>
+<span class="problem-entry-meta">{{.CheckCategory}}{{if .OutcomeLabel}} - {{.OutcomeLabel}}{{end}}</span>
+<span class="problem-entry-message">{{.Message}}</span>
+</div>
+</div>
+{{end}}
+{{end}}
+</div>
+{{else}}
+<p class="empty">None</p>
+{{end}}
+</div>
+<details class="problem-group problem-group-subordinate">
+<summary>Not evaluated <span>{{.ProblemLists.NotEvaluated.Count}}</span></summary>
+{{if .ProblemLists.NotEvaluated.Problems}}
+<div class="problem-entries">
+{{range .ProblemLists.NotEvaluated.Problems}}
+<div class="problem-entry">
+<div class="problem-entry-summary">
+<span class="problem-entry-title">{{.CheckName}}</span>
+<span class="problem-entry-meta">{{.CheckCategory}}</span>
+<span class="problem-entry-message">{{.Message}}</span>
+</div>
+</div>
+{{end}}
+</div>
+{{else}}
+<p class="empty">None</p>
+{{end}}
+</details>
+</div>
+</section>
+{{end}}
 <section class="caveats">
 <h2>Caveats</h2>
 <p class="section-lede">Counts that limit how much of the baseline problem set could contribute to the fix rate.</p>

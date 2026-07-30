@@ -321,6 +321,227 @@ func TestRenderHTMLShowsCaveats(t *testing.T) {
 	}
 }
 
+func TestRenderHTMLShowsProblemListsGroupedByOutcome(t *testing.T) {
+	interaction := 2
+	baselineStatus := 500
+	document := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:        5,
+				Fixed:        1,
+				StillFailing: 1,
+				Inconclusive: 1,
+				Uncorrelated: 1,
+				Ambiguous:    1,
+				FixRate:      baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+		Problems: []baselineProblem{
+			{
+				CheckName:     "not_a_server_error",
+				CheckCategory: checkCategoryServerError,
+				Message:       "returned 200",
+				Outcome:       problemOutcomeFixed,
+			},
+			{
+				CheckName:     "status_code_conformance",
+				CheckCategory: checkCategoryStatusCodeConformance,
+				Message:       "Undocumented HTTP status code",
+				Outcome:       problemOutcomeStillFailing,
+				Reproduction: problemReproduction{
+					Command: `schemathesis run --hypothesis-seed=123 http://api.example/openapi.json`,
+				},
+				Interaction: &interaction,
+			},
+			{
+				CheckName:     "response_schema_conformance",
+				CheckCategory: checkCategoryResponseSchemaConformance,
+				Message:       "No matching replay interaction",
+				Outcome:       problemOutcomeInconclusive,
+				OutcomeReason: problemOutcomeReasonSchemaOperationNotFound,
+			},
+			{
+				CheckName:     "negative_data_rejection",
+				CheckCategory: checkCategoryNegativeDataRejection,
+				Message:       "No matching replay interaction",
+				Outcome:       problemOutcomeNotEvaluated,
+				OutcomeReason: problemOutcomeReasonUncorrelatedEvidence,
+			},
+			{
+				CheckName:     "positive_data_acceptance",
+				CheckCategory: checkCategoryPositiveDataAcceptance,
+				Message:       "Matched multiple replay interactions",
+				Outcome:       problemOutcomeNotEvaluated,
+				OutcomeReason: problemOutcomeReasonAmbiguousCorrelation,
+			},
+		},
+		Findings: []reportInteractionEvidence{
+			{
+				Interaction: 1,
+				StatusTransition: statusTransition{
+					Baseline:  &baselineStatus,
+					Candidate: 200,
+				},
+			},
+			{
+				Interaction: 2,
+				StatusTransition: statusTransition{
+					Baseline:  &baselineStatus,
+					Candidate: 422,
+				},
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, document)
+
+	want := []string{
+		"<section class=\"problem-lists\"",
+		"Fixed <span>1</span>",
+		"Still failing <span>1</span>",
+		"<span>Inconclusive 1</span>",
+		"Not evaluated <span>2</span>",
+		"not_a_server_error",
+		"server_error",
+		"returned 200",
+		"status_code_conformance",
+		"Undocumented HTTP status code",
+		"<details class=\"problem-entry problem-entry-expandable\">",
+		"schemathesis run --hypothesis-seed=123 http://api.example/openapi.json",
+		"Status transition</span><strong>500 -&gt; 422</strong>",
+		"response_schema_conformance",
+		"response_schema_conformance - Inconclusive",
+		"No matching replay interaction",
+		"negative_data_rejection",
+		"positive_data_acceptance",
+		"Matched multiple replay interactions",
+		"<details class=\"problem-group problem-group-subordinate\">",
+	}
+	for _, fragment := range want {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML missing %q:\n%s", fragment, html)
+		}
+	}
+	if strings.Contains(html, "500 -&gt; 200") {
+		t.Fatalf("renderHTML matched status transition without using interaction index:\n%s", html)
+	}
+	lists := newHTMLProblemListsView(document)
+	if lists.StillFailing.Count != document.Summary.BaselineProblems.StillFailing {
+		t.Fatalf(
+			"still-failing list count = %d, want summary still-failing count %d",
+			lists.StillFailing.Count,
+			document.Summary.BaselineProblems.StillFailing,
+		)
+	}
+	if lists.StillFailing.InconclusiveCount != document.Summary.BaselineProblems.Inconclusive {
+		t.Fatalf(
+			"inconclusive list count = %d, want summary inconclusive count %d",
+			lists.StillFailing.InconclusiveCount,
+			document.Summary.BaselineProblems.Inconclusive,
+		)
+	}
+	got := lists.Fixed.Count + lists.StillFailing.Count +
+		lists.StillFailing.InconclusiveCount + lists.NotEvaluated.Count
+	if got != document.Summary.BaselineProblems.Total {
+		t.Fatalf("problem list count sum = %d, want summary total %d", got, document.Summary.BaselineProblems.Total)
+	}
+}
+
+func TestRenderHTMLShowsProblemListEmptyStatesAndHidesListsWhenProblemsUnavailable(t *testing.T) {
+	available := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, available)
+
+	if got := strings.Count(html, "<p class=\"empty\">None</p>"); got != 3 {
+		t.Fatalf("renderHTML None count = %d, want 3:\n%s", got, html)
+	}
+
+	unavailable := report{
+		BaselineProblemsAvailable: false,
+		BaselineProblemsNote:      baselineProblemsUnavailable,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				FixRate: baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+	}
+
+	html = mustRenderHTML(t, unavailable)
+
+	if strings.Contains(html, "<section class=\"problem-lists\"") ||
+		strings.Contains(html, "<p class=\"empty\">None</p>") {
+		t.Fatalf("renderHTML showed problem lists for unavailable baseline problems:\n%s", html)
+	}
+}
+
+func TestRenderHTMLShowsFallbackReproductionRequestAndEscapesProblemText(t *testing.T) {
+	interaction := 1
+	baselineStatus := 500
+	document := report{
+		BaselineProblemsAvailable: true,
+		Summary: reportSummary{
+			BaselineProblems: baselineProblemSummary{
+				Total:        1,
+				StillFailing: 1,
+				FixRate:      baselineProblemFixRate{Meaning: fixRateMeaning},
+			},
+		},
+		Problems: []baselineProblem{
+			{
+				CheckName:     `check<script>`,
+				CheckCategory: checkCategoryServerError,
+				Message:       `message</div>`,
+				Outcome:       problemOutcomeStillFailing,
+				Reproduction: problemReproduction{
+					Method: "POST",
+					URL:    `http://api.example/widgets?q=<script>`,
+				},
+				Interaction: &interaction,
+			},
+		},
+		Findings: []reportInteractionEvidence{
+			{
+				Interaction: 1,
+				StatusTransition: statusTransition{
+					Baseline:  &baselineStatus,
+					Candidate: 500,
+				},
+			},
+		},
+	}
+
+	html := mustRenderHTML(t, document)
+
+	rejected := []string{
+		`check<script>`,
+		`message</div>`,
+		`http://api.example/widgets?q=<script>`,
+	}
+	for _, fragment := range rejected {
+		if strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML included unsafe problem text %q:\n%s", fragment, html)
+		}
+	}
+	want := []string{
+		`check&lt;script&gt;`,
+		`message&lt;/div&gt;`,
+		`POST http://api.example/widgets?q=&lt;script&gt;`,
+	}
+	for _, fragment := range want {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("renderHTML missing escaped problem text %q:\n%s", fragment, html)
+		}
+	}
+}
+
 func TestRenderHTMLEscapesDynamicText(t *testing.T) {
 	percentage := 100.0
 	document := report{
