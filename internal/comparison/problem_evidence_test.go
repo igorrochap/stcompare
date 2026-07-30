@@ -103,6 +103,7 @@ func TestNormalizeBaselineProblemsAssignsSharedCheckVocabulary(t *testing.T) {
 		{CheckName: "Response violates schema"},
 		{CheckName: "negative_data_rejection"},
 		{CheckName: "positive_data_acceptance"},
+		{CheckName: "status_code_conformance"},
 		{CheckName: "unsupported_method"},
 	}
 
@@ -119,6 +120,7 @@ func TestNormalizeBaselineProblemsAssignsSharedCheckVocabulary(t *testing.T) {
 		checkCategoryResponseSchemaConformance,
 		checkCategoryNegativeDataRejection,
 		checkCategoryPositiveDataAcceptance,
+		checkCategoryStatusCodeConformance,
 		checkCategoryUncategorized,
 	}
 	if !reflect.DeepEqual(categories, want) {

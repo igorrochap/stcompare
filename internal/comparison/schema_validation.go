@@ -21,6 +21,7 @@ const (
 	openAPIValidatorVersion              = "v0.145.0"
 	openAPIValidatorSupportedOpenAPI     = "3.0, 3.1, 3.2"
 	openAPIValidatorSupportedJSONSchemas = "OpenAPI 3.0 Schema Object; JSON Schema 2020-12 for OpenAPI 3.1+"
+	statusCodeConformanceDefinition      = "explicit status codes and range codes such as 2XX count as documented; default responses do not document every status"
 )
 
 type OpenAPIContract struct {
@@ -41,17 +42,18 @@ type schemaValidationResult struct {
 }
 
 type schemaValidationProvenance struct {
-	Validator                      string               `json:"validator"`
-	ValidatorVersion               string               `json:"validator_version"`
-	SupportedOpenAPIVersions       string               `json:"supported_openapi_versions"`
-	SupportedJSONSchemaDialects    string               `json:"supported_json_schema_dialects"`
-	OpenAPIVersion                 string               `json:"openapi_version,omitempty"`
-	JSONSchemaDialect              string               `json:"json_schema_dialect,omitempty"`
-	ContractLimitation             problemOutcomeReason `json:"contract_limitation,omitempty"`
-	ContractLimitationMessage      string               `json:"contract_limitation_message,omitempty"`
-	ResponseValidationUsesRawBody  bool                 `json:"response_validation_uses_raw_body"`
-	ResponseMediaTypeSource        string               `json:"response_media_type_source"`
-	OperationResolutionTieBehavior string               `json:"operation_resolution_tie_behavior"`
+	Validator                       string               `json:"validator"`
+	ValidatorVersion                string               `json:"validator_version"`
+	SupportedOpenAPIVersions        string               `json:"supported_openapi_versions"`
+	SupportedJSONSchemaDialects     string               `json:"supported_json_schema_dialects"`
+	StatusCodeConformanceDefinition string               `json:"status_code_conformance_definition"`
+	OpenAPIVersion                  string               `json:"openapi_version,omitempty"`
+	JSONSchemaDialect               string               `json:"json_schema_dialect,omitempty"`
+	ContractLimitation              problemOutcomeReason `json:"contract_limitation,omitempty"`
+	ContractLimitationMessage       string               `json:"contract_limitation_message,omitempty"`
+	ResponseValidationUsesRawBody   bool                 `json:"response_validation_uses_raw_body"`
+	ResponseMediaTypeSource         string               `json:"response_media_type_source"`
+	OperationResolutionTieBehavior  string               `json:"operation_resolution_tie_behavior"`
 }
 
 func LoadOpenAPIContract(path string) *OpenAPIContract {
@@ -97,13 +99,14 @@ func supportedOpenAPIVersion(document *openapi3.T) bool {
 
 func (c *OpenAPIContract) Provenance() schemaValidationProvenance {
 	provenance := schemaValidationProvenance{
-		Validator:                      openAPIValidatorName,
-		ValidatorVersion:               openAPIValidatorVersion,
-		SupportedOpenAPIVersions:       openAPIValidatorSupportedOpenAPI,
-		SupportedJSONSchemaDialects:    openAPIValidatorSupportedJSONSchemas,
-		ResponseValidationUsesRawBody:  true,
-		ResponseMediaTypeSource:        "candidate_response_headers",
-		OperationResolutionTieBehavior: "literal_segments_then_parameter_count; equal-specificity matches are inconclusive",
+		Validator:                       openAPIValidatorName,
+		ValidatorVersion:                openAPIValidatorVersion,
+		SupportedOpenAPIVersions:        openAPIValidatorSupportedOpenAPI,
+		SupportedJSONSchemaDialects:     openAPIValidatorSupportedJSONSchemas,
+		StatusCodeConformanceDefinition: statusCodeConformanceDefinition,
+		ResponseValidationUsesRawBody:   true,
+		ResponseMediaTypeSource:         "candidate_response_headers",
+		OperationResolutionTieBehavior:  "literal_segments_then_parameter_count; equal-specificity matches are inconclusive",
 	}
 	if c == nil {
 		provenance.ContractLimitation = problemOutcomeReasonSchemaContractUnavailable
@@ -117,6 +120,27 @@ func (c *OpenAPIContract) Provenance() schemaValidationProvenance {
 	}
 
 	return provenance
+}
+
+func (c *OpenAPIContract) StatusCodeDocumented(
+	request schemaValidationRequest,
+) (bool, problemOutcomeReason) {
+	if c == nil {
+		return false, problemOutcomeReasonSchemaContractUnavailable
+	}
+	if c.limitation != "" {
+		return false, c.limitation
+	}
+
+	route, reason := c.resolveOperation(request.Method, request.URL)
+	if reason != "" {
+		return false, reason
+	}
+	if route.Operation.Responses == nil || route.Operation.Responses.Len() == 0 {
+		return false, ""
+	}
+
+	return route.Operation.Responses.Status(request.Response.Status) != nil, ""
 }
 
 func (c *OpenAPIContract) Validate(request schemaValidationRequest) schemaValidationResult {

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	reportSchemaVersion                                 = "9"
+	reportSchemaVersion                                 = "10"
 	baselineProblemsUnavailable                         = "Baseline Schemathesis problems could not be extracted from structured evidence."
 	baselineProblemOutcomeSummaryEquation               = "evaluable = fixed + still_failing + inconclusive; total = evaluable + unevaluable + uncorrelated + ambiguous."
 	baselineProblemOutcomeSummaryMeaning                = "Every extracted Schemathesis problem is assigned to exactly one bucket. Only evaluable problems receive fixed, still_failing, or evaluable inconclusive counts; unevaluable, uncorrelated, and ambiguous problems carry not_evaluated outcomes with a reason on the problem entry."

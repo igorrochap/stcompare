@@ -11,6 +11,7 @@ func renderMarkdown(document report) string {
 	output.WriteString("# Campaign comparison\n\n")
 	writeMarkdownSummary(&output, document)
 	writeMarkdownComparisonPolicy(&output, document.ComparisonPolicy)
+	writeMarkdownSchemaValidationProvenance(&output, document.SchemaValidation)
 	if len(document.Problems) != 0 {
 		writeMarkdownProblems(&output, document.Problems)
 	}
@@ -100,6 +101,39 @@ func writeMarkdownComparisonPolicy(
 		}
 	}
 	writeMarkdownNormalizationPolicy(output, policy.Normalization)
+}
+
+func writeMarkdownSchemaValidationProvenance(
+	output *strings.Builder,
+	provenance schemaValidationProvenance,
+) {
+	output.WriteString("\n## Schema validation\n\n")
+	fmt.Fprintf(output, "- Validator: `%s`\n", provenance.Validator)
+	fmt.Fprintf(output, "- Validator version: `%s`\n", provenance.ValidatorVersion)
+	fmt.Fprintf(
+		output,
+		"- Supported OpenAPI versions: `%s`\n",
+		provenance.SupportedOpenAPIVersions,
+	)
+	fmt.Fprintf(
+		output,
+		"- Status code conformance: %s\n",
+		provenance.StatusCodeConformanceDefinition,
+	)
+	if provenance.ContractLimitation != "" {
+		fmt.Fprintf(
+			output,
+			"- Contract limitation: `%s`\n",
+			provenance.ContractLimitation,
+		)
+	}
+	if provenance.ContractLimitationMessage != "" {
+		fmt.Fprintf(
+			output,
+			"- Contract limitation message: %s\n",
+			provenance.ContractLimitationMessage,
+		)
+	}
 }
 
 func writeMarkdownNormalizationPolicy(

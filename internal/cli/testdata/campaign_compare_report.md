@@ -25,6 +25,15 @@
 - Precondition heuristics: none
 - Normalization defaults: enabled
 
+## Schema validation
+
+- Validator: `github.com/getkin/kin-openapi/openapi3filter`
+- Validator version: `v0.145.0`
+- Supported OpenAPI versions: `3.0, 3.1, 3.2`
+- Status code conformance: explicit status codes and range codes such as 2XX count as documented; default responses do not document every status
+- Contract limitation: `schema_contract_unreadable`
+- Contract limitation message: open openapi.json: no such file or directory
+
 ## Findings
 
 ### Finding 1: `POST http://baseline.invalid/widgets?dryRun=true`
