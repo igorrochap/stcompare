@@ -28,6 +28,7 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 	fmt.Fprintf(output, "- Total interactions: %d\n", document.Summary.InteractionCount)
 	writeMarkdownProblemCount(output, document.Baseline)
 	writeMarkdownExtractedProblemCount(output, document.Baseline)
+	writeMarkdownReportExplanations(output, document.Explanations)
 	writeMarkdownBaselineProblemSummary(output, document.Summary.BaselineProblems)
 	writeMarkdownTrafficSummary(output, document.Summary.Traffic)
 	fmt.Fprintf(
@@ -46,6 +47,22 @@ func writeMarkdownSummary(output *strings.Builder, document report) {
 			output,
 			"\n> Baseline Schemathesis problems are unavailable: %s\n",
 			document.BaselineProblemsNote,
+		)
+	}
+}
+
+func writeMarkdownReportExplanations(
+	output *strings.Builder,
+	explanations reportExplanations,
+) {
+	if explanations.BaselineProblemCounts != "" {
+		fmt.Fprintf(output, "- Problem count basis: %s\n", explanations.BaselineProblemCounts)
+	}
+	if explanations.BaselineProblemBuckets != "" {
+		fmt.Fprintf(
+			output,
+			"- Problem bucket sums: %s\n",
+			explanations.BaselineProblemBuckets,
 		)
 	}
 }
@@ -316,7 +333,25 @@ func writeMarkdownBaselineProblemSummary(
 		summary.Uncorrelated,
 		summary.Ambiguous,
 	)
+	writeMarkdownUnevaluableCheckCategoryCounts(
+		output,
+		summary.UnevaluableByCheckCategory,
+	)
 	writeMarkdownBaselineProblemFixRate(output, summary.FixRate)
+}
+
+func writeMarkdownUnevaluableCheckCategoryCounts(
+	output *strings.Builder,
+	counts []unevaluableCheckCategory,
+) {
+	if len(counts) == 0 {
+		return
+	}
+
+	output.WriteString("- Unevaluable problem check categories:\n")
+	for _, count := range counts {
+		fmt.Fprintf(output, "  - `%s`: %d\n", count.CheckCategory, count.Count)
+	}
 }
 
 func writeMarkdownBaselineProblemFixRate(

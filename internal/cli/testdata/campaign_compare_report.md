@@ -4,6 +4,8 @@
 
 - Total interactions: 2
 - Baseline problems: 3 (source: `reports/baseline/junit.xml`)
+- Problem count basis: JUnit reports deduplicated Schemathesis problems. Structured evidence records every failing case from VCR/NDJSON when available, but no structured problem count is available in this report.
+- Problem bucket sums: evaluable = fixed + still_failing + inconclusive; total = evaluable + unevaluable + uncorrelated + ambiguous. Every extracted Schemathesis problem is assigned to exactly one bucket. Only evaluable problems receive fixed, still_failing, or evaluable inconclusive counts; unevaluable, uncorrelated, and ambiguous problems carry not_evaluated outcomes with a reason on the problem entry.
 - Baseline problem outcomes: total 0, evaluable 0, fixed 0, still failing 0, inconclusive 0, unevaluable 0, uncorrelated 0, ambiguous 0
 - Fix rate: unavailable (0 evaluable baseline problems). Problems fixed among evaluable baseline problems in this comparison. It excludes uncorrelated, ambiguous, and unevaluable baseline problems; counts Schemathesis problems rather than distinct defects; and is comparable only for the same baseline and report schema version.
 - Traffic classifications: total 2, success unchanged 0, changed 2, regressed 0

@@ -49,6 +49,8 @@ func TestNewReportPreservesUncorrelatedProblemWhenEvidenceAvailable(t *testing.T
 		Problems: []baselineProblem{
 			func() baselineProblem {
 				problem.CheckCategory = checkCategoryUncategorized
+				problem.Outcome = problemOutcomeNotEvaluated
+				problem.OutcomeReason = problemOutcomeReasonUncorrelatedEvidence
 				return problem
 			}(),
 		},
@@ -145,8 +147,37 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "8" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "8")
+	if document.SchemaVersion != "9" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "9")
+	}
+}
+
+func TestNewReportExplainsBaselineProblemCountsAndBucketSums(t *testing.T) {
+	junitCount := 1
+	document := newReport(reportInput{
+		BaselineProblemCount: &junitCount,
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{EvidenceSource: evidenceSourceVCR, CaseID: "case-1"},
+				{EvidenceSource: evidenceSourceVCR, CaseID: "case-2"},
+			},
+		},
+	})
+
+	wantCountExplanation := "JUnit reports deduplicated Schemathesis problems while " +
+		"structured evidence records every failing case from VCR/NDJSON. The 1 extra " +
+		"case is an additional occurrence of an already reported defect, not a " +
+		"discrepancy or extraction bug."
+	wantBucketExplanation := baselineProblemOutcomeSummaryEquation + " " +
+		baselineProblemOutcomeSummaryMeaning
+	got := document.Explanations
+	want := reportExplanations{
+		BaselineProblemCounts:  wantCountExplanation,
+		BaselineProblemBuckets: wantBucketExplanation,
+	}
+	if got != want {
+		t.Fatalf("newReport explanations = %#v, want %#v", got, want)
 	}
 }
 
@@ -235,7 +266,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "8",
+		SchemaVersion: "9",
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
@@ -666,28 +697,41 @@ func TestNewReportBaselineProblemSummaryAccountsForEveryBucket(t *testing.T) {
 	}
 
 	outcomeTotal := summary.Fixed + summary.StillFailing + summary.Inconclusive
+	unevaluableBreakdownTotal := 0
+	for _, count := range summary.UnevaluableByCheckCategory {
+		unevaluableBreakdownTotal += count.Count
+	}
 	got := struct {
-		Summary      baselineProblemSummary
-		BucketTotal  int
-		Outcome      problemOutcome
-		OutcomeTotal int
+		Summary                   baselineProblemSummary
+		BucketTotal               int
+		Outcome                   problemOutcome
+		Reason                    problemOutcomeReason
+		OutcomeTotal              int
+		UnevaluableBreakdownTotal int
 	}{
-		Summary:      summary,
-		BucketTotal:  bucketTotal,
-		Outcome:      document.Problems[5].Outcome,
-		OutcomeTotal: outcomeTotal,
+		Summary:                   summary,
+		BucketTotal:               bucketTotal,
+		Outcome:                   document.Problems[5].Outcome,
+		Reason:                    document.Problems[5].OutcomeReason,
+		OutcomeTotal:              outcomeTotal,
+		UnevaluableBreakdownTotal: unevaluableBreakdownTotal,
 	}
 	percentage := 100.0 / 3.0
 	want := struct {
-		Summary      baselineProblemSummary
-		BucketTotal  int
-		Outcome      problemOutcome
-		OutcomeTotal int
+		Summary                   baselineProblemSummary
+		BucketTotal               int
+		Outcome                   problemOutcome
+		Reason                    problemOutcomeReason
+		OutcomeTotal              int
+		UnevaluableBreakdownTotal int
 	}{
 		Summary: baselineProblemSummary{
-			Total:        6,
-			Evaluable:    3,
-			Unevaluable:  1,
+			Total:       6,
+			Evaluable:   3,
+			Unevaluable: 1,
+			UnevaluableByCheckCategory: []unevaluableCheckCategory{
+				{CheckCategory: checkCategoryUncategorized, Count: 1},
+			},
 			Uncorrelated: 1,
 			Ambiguous:    1,
 			Fixed:        1,
@@ -702,8 +746,11 @@ func TestNewReportBaselineProblemSummaryAccountsForEveryBucket(t *testing.T) {
 				Meaning:          fixRateMeaning,
 			},
 		},
-		BucketTotal:  6,
-		OutcomeTotal: 3,
+		BucketTotal:               6,
+		Outcome:                   problemOutcomeNotEvaluated,
+		Reason:                    problemOutcomeReasonUnsupportedCheckCategory,
+		OutcomeTotal:              3,
+		UnevaluableBreakdownTotal: 1,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newReport baseline problem bucket summary = %#v, want %#v", got, want)
@@ -1944,6 +1991,8 @@ func TestNewReportKeepsUncategorizedProblemUnevaluable(t *testing.T) {
 	}{
 		CheckName:     "unsupported_method",
 		CheckCategory: checkCategoryUncategorized,
+		Outcome:       problemOutcomeNotEvaluated,
+		OutcomeReason: problemOutcomeReasonUnsupportedCheckCategory,
 		Unevaluable:   1,
 	}
 	if !reflect.DeepEqual(got, want) {
