@@ -80,6 +80,7 @@ type Result struct {
 	ReplayLogPath      string
 	JSONReportPath     string
 	MarkdownReportPath string
+	HTMLReportPath     string
 }
 
 type preparedComparison struct {
@@ -208,12 +209,17 @@ func persistComparisonArtifacts(
 	if err := writeMarkdownReport(markdownReportPath, report); err != nil {
 		return Result{}, err
 	}
+	htmlReportPath := filepath.Join(input.OutputDir, "comparison.html")
+	if err := writeHTMLReport(htmlReportPath, report); err != nil {
+		return Result{}, err
+	}
 
 	return Result{
 		InteractionCount:   len(replayEntries),
 		ReplayLogPath:      replayLogPath,
 		JSONReportPath:     jsonReportPath,
 		MarkdownReportPath: markdownReportPath,
+		HTMLReportPath:     htmlReportPath,
 	}, nil
 }
 
