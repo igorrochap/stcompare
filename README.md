@@ -403,8 +403,11 @@ include:
   evaluable count, and the top-level buckets always sum to total. A problem is
   `evaluable` when it is correlated to a replay interaction and the comparison
   has evidence for an outcome. Correlated problems whose check category is not
-  yet supported are `unevaluable`, not inconclusive. Existing check-specific
-  evaluation covers the Schemathesis server-error check. Generated-resource
+  yet supported are `unevaluable`, not inconclusive. Check-specific evaluation
+  covers the Schemathesis server-error, negative-data-rejection,
+  positive-data-acceptance, response-schema-conformance, and
+  status-code-conformance checks; only uncategorized checks remain
+  `unevaluable`. Generated-resource
   precondition-loss evidence can make a correlated problem of any supported
   check category evaluable and inconclusive. A correlated `not_a_server_error`
   problem remains `still_failing` when replay also returns a 5xx response. A

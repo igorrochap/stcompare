@@ -64,3 +64,11 @@ _Avoid_: Interaction, replay entry
 The baseline and candidate HTTP status codes for an interaction. It is
 supporting evidence and does not by itself determine a problem outcome.
 _Avoid_: Outcome, finding
+
+**Converged**:
+A comparison outcome in which no baseline Schemathesis problem is _Still Failing_
+and no interaction is _Regressed_. Converged is the loop's stop condition. It
+tolerates _Inconclusive_ problems, so a converged comparison may still contain
+unverified problems and is not a claim that every baseline problem was positively
+confirmed fixed.
+_Avoid_: 100% fixed, Fix rate 100%, Passed
