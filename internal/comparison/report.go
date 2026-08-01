@@ -35,6 +35,9 @@ type report struct {
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
 	Problems                  []baselineProblem           `json:"problems"`
 	Findings                  []reportInteractionEvidence `json:"findings"`
+	// allInteractions retains every interaction for compact-view references,
+	// including interactions omitted from the reportable findings list.
+	allInteractions []reportInteractionEvidence
 }
 
 type reportCampaign struct {
@@ -230,6 +233,7 @@ func newReport(input reportInput) report {
 		BaselineProblemsNote:      problemState.note,
 		Problems:                  classification.problems,
 		Findings:                  classification.interactions,
+		allInteractions:           interactions,
 	}
 }
 

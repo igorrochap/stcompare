@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 
 type campaignCompareOptions struct {
 	configOverrides configOverrideOptions
+	format          string
 }
 
 // ExitCodeError carries the process exit code selected by a CLI command.
@@ -55,6 +57,7 @@ func newCampaignCompareCommand(rootOpts *rootOptions) *cobra.Command {
 		},
 	}
 	addConfigOverrideFlags(command, &options.configOverrides)
+	command.Flags().StringVar(&options.format, "format", "", "output format (agent)")
 
 	return command
 }
@@ -77,6 +80,9 @@ func runCampaignCompare(
 	if err := requireCandidateCampaign(candidateName, candidate); err != nil {
 		return toolError(err)
 	}
+	if options.format != "" && options.format != "agent" {
+		return toolError(fmt.Errorf("unsupported comparison format %q", options.format))
+	}
 
 	baselineName := baselineCampaignName(effective)
 
@@ -87,15 +93,22 @@ func runCampaignCompare(
 	if err != nil {
 		return toolError(err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "replayed %d baseline interactions\n", result.InteractionCount)
-	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.ReplayLogPath)
-	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.JSONReportPath)
-	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.MarkdownReportPath)
 	htmlReportURI, err := fileURI(result.HTMLReportPath)
 	if err != nil {
 		return toolError(err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", htmlReportURI)
+	output := cmd.OutOrStdout()
+	if options.format == "agent" {
+		if err := json.NewEncoder(output).Encode(result.AgentView); err != nil {
+			return toolError(fmt.Errorf("write agent comparison view: %w", err))
+		}
+		output = cmd.ErrOrStderr()
+	}
+	fmt.Fprintf(output, "replayed %d baseline interactions\n", result.InteractionCount)
+	fmt.Fprintf(output, "wrote %s\n", result.ReplayLogPath)
+	fmt.Fprintf(output, "wrote %s\n", result.JSONReportPath)
+	fmt.Fprintf(output, "wrote %s\n", result.MarkdownReportPath)
+	fmt.Fprintf(output, "wrote %s\n", htmlReportURI)
 
 	if result.Converged {
 		return nil
