@@ -46,6 +46,9 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	if len(adapter.instructions) != 0 {
 		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
 	}
+	if len(record.RemainingActionable) != 0 {
+		t.Fatalf("remaining actionable = %#v, want empty", record.RemainingActionable)
+	}
 	if got, want := candidate.calls, []string{"stop", "reset", "build", "start", "wait_healthy"}; !sameStrings(got, want) {
 		t.Fatalf("candidate calls = %#v, want %#v", got, want)
 	}
@@ -134,6 +137,244 @@ func TestRunStopsAtMaxIterations(t *testing.T) {
 	}
 	if len(record.RemainingActionable) != 1 || record.RemainingActionable[0].ID != "problem-1" {
 		t.Fatalf("remaining actionable = %#v, want problem-1", record.RemainingActionable)
+	}
+}
+
+func TestRunStopsOnStallAndMarksPersistentActionableItems(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  5,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateStalled {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateStalled)
+	}
+	if record.Iterations != 3 {
+		t.Fatalf("iterations = %d, want 3", record.Iterations)
+	}
+	if len(record.RemainingActionable) != 1 {
+		t.Fatalf("remaining actionable = %#v, want one item", record.RemainingActionable)
+	}
+	if item := record.RemainingActionable[0]; item.ID != "problem-1" || !item.Stuck {
+		t.Fatalf("remaining actionable item = %#v, want persistent stuck item", item)
+	}
+}
+
+func TestRunRejectsNegativeStallWindow(t *testing.T) {
+	_, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		StallWindow:    -1,
+	}, Dependencies{
+		Comparator: &fakeComparator{},
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stall window") {
+		t.Fatalf("Run error = %v, want negative stall-window error", err)
+	}
+}
+
+func TestRunMarksNewlyIntroducedActionableItemsAsNotStuck(t *testing.T) {
+	first := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	regressed := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1, Regressed: 1},
+		Actionable: []agentreport.Actionable{
+			{ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets"},
+			{ID: "regression-1", Kind: agentreport.ActionKindRegressed, Operation: "POST /widgets"},
+		},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: first, exitCode: agentreport.ExitCodeNotConverged},
+		{view: regressed, exitCode: agentreport.ExitCodeNotConverged},
+		{view: regressed, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  5,
+		StallWindow:    2,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateStalled {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateStalled)
+	}
+	if len(record.RemainingActionable) != 2 {
+		t.Fatalf("remaining actionable = %#v, want two items", record.RemainingActionable)
+	}
+	if !record.RemainingActionable[0].Stuck || record.RemainingActionable[1].Stuck {
+		t.Fatalf("remaining actionable = %#v, want persistent then newly introduced", record.RemainingActionable)
+	}
+}
+
+func TestRunWithDecreasingCountsConvergesWithoutStalling(t *testing.T) {
+	first := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 2},
+		Actionable: []agentreport.Actionable{
+			{ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets"},
+			{ID: "problem-2", Kind: agentreport.ActionKindStillFailing, Operation: "POST /widgets"},
+		},
+	}
+	second := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	third := agentreport.View{Converged: true}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: first, exitCode: agentreport.ExitCodeNotConverged},
+		{view: second, exitCode: agentreport.ExitCodeNotConverged},
+		{view: third, exitCode: agentreport.ExitCodeConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  3,
+		StallWindow:    2,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if record.Iterations != 3 {
+		t.Fatalf("iterations = %d, want 3", record.Iterations)
+	}
+}
+
+func TestRunMaxIterationsMarksPersistentAndNewItems(t *testing.T) {
+	first := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	second := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1, Regressed: 1},
+		Actionable: []agentreport.Actionable{
+			{ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets"},
+			{ID: "regression-1", Kind: agentreport.ActionKindRegressed, Operation: "POST /widgets"},
+		},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: first, exitCode: agentreport.ExitCodeNotConverged},
+		{view: second, exitCode: agentreport.ExitCodeNotConverged},
+		{view: second, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  3,
+		StallWindow:    5,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateMaxIterations {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateMaxIterations)
+	}
+	if !record.RemainingActionable[0].Stuck || record.RemainingActionable[1].Stuck {
+		t.Fatalf("remaining actionable = %#v, want persistent then newly introduced", record.RemainingActionable)
+	}
+}
+
+func TestRunMaxIterationsRemainsReachableForOscillatingCounts(t *testing.T) {
+	views := []agentreport.View{
+		{Actionable: []agentreport.Actionable{{ID: "problem-1"}}},
+		{Actionable: []agentreport.Actionable{{ID: "problem-1"}, {ID: "problem-2"}}},
+		{Actionable: []agentreport.Actionable{{ID: "problem-1"}}},
+		{Actionable: []agentreport.Actionable{{ID: "problem-1"}, {ID: "problem-2"}}},
+	}
+	results := make([]comparisonResult, len(views))
+	for i, view := range views {
+		results[i] = comparisonResult{view: view, exitCode: agentreport.ExitCodeNotConverged}
+	}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  4,
+		StallWindow:    3,
+	}, Dependencies{
+		Comparator: &fakeComparator{results: results},
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateMaxIterations {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateMaxIterations)
+	}
+}
+
+func TestRunLargerStallWindowDelaysStall(t *testing.T) {
+	view := agentreport.View{Actionable: []agentreport.Actionable{{ID: "problem-1"}}}
+	results := make([]comparisonResult, 4)
+	for i := range results {
+		results[i] = comparisonResult{view: view, exitCode: agentreport.ExitCodeNotConverged}
+	}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  5,
+		StallWindow:    3,
+	}, Dependencies{
+		Comparator: &fakeComparator{results: results},
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateStalled {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateStalled)
+	}
+	if record.Iterations != 4 {
+		t.Fatalf("iterations = %d, want 4", record.Iterations)
 	}
 }
 
@@ -299,7 +540,7 @@ func (f *fakeAdapter) Fix(instruction string, _ agentreport.View) (*benchrecord.
 }
 
 func testConfig() Config {
-	return Config{BaselineExists: func() bool { return true }, MaxIterations: 5}
+	return Config{BaselineExists: func() bool { return true }, MaxIterations: 5, StallWindow: 3}
 }
 
 func fixedNow(now time.Time) func() time.Time {

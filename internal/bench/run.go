@@ -17,6 +17,9 @@ const (
 	DefaultPromptVersion = "1"
 	// DefaultMaxIterations bounds runs that do not provide an explicit cap.
 	DefaultMaxIterations = 100
+	// DefaultStallWindow is the number of consecutive non-improving transitions
+	// tolerated before a run stalls.
+	DefaultStallWindow = 2
 )
 
 // Config describes one benchmark run.
@@ -38,6 +41,11 @@ type Config struct {
 	// MaxIterations is the hard number of comparisons allowed in a run. A zero
 	// value uses DefaultMaxIterations.
 	MaxIterations int
+
+	// StallWindow is the number of consecutive transitions without a strict
+	// actionable-count decrease allowed before a run stalls. A zero value uses
+	// DefaultStallWindow.
+	StallWindow int
 }
 
 // Dependencies contains the replaceable collaborators used by Run.
@@ -78,6 +86,9 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 
 	if config.MaxIterations == 0 {
 		config.MaxIterations = DefaultMaxIterations
+	}
+	if config.StallWindow == 0 {
+		config.StallWindow = DefaultStallWindow
 	}
 	if config.Prompt.ID == "" {
 		config.Prompt.ID = DefaultPromptID
@@ -139,6 +150,7 @@ type iterationRunner struct {
 	record       *benchrecord.Record
 	timer        *phaseTimer
 	lastView     agentreport.View
+	progress     progressTracker
 	tokensKnown  bool
 }
 
@@ -165,6 +177,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 	}
 	runner.lastView = view
 	runner.record.Final = finalSummary(view)
+	stalled := runner.progress.observe(view, runner.config.StallWindow)
 
 	switch exitCode {
 	case agentreport.ExitCodeConverged:
@@ -176,8 +189,13 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		return true, nil
 	case agentreport.ExitCodeNotConverged:
 		if lastIteration {
-			runner.record.RemainingActionable = actionableItems(view)
+			runner.record.RemainingActionable = actionableItems(view, runner.progress.stuckIDs())
 			runner.complete(benchrecord.TerminalStateMaxIterations)
+			return true, nil
+		}
+		if stalled {
+			runner.record.RemainingActionable = actionableItems(view, runner.progress.stuckIDs())
+			runner.complete(benchrecord.TerminalStateStalled)
 			return true, nil
 		}
 	default:
@@ -224,6 +242,9 @@ func validate(config Config, dependencies Dependencies) error {
 	}
 	if config.MaxIterations < 0 {
 		return fmt.Errorf("max iterations must not be negative")
+	}
+	if config.StallWindow < 0 {
+		return fmt.Errorf("stall window must not be negative")
 	}
 	return nil
 }
@@ -300,16 +321,76 @@ func finalSummary(view agentreport.View) benchrecord.FinalSummary {
 	}
 }
 
-func actionableItems(view agentreport.View) []benchrecord.ActionableItem {
+func actionableItems(view agentreport.View, stuckIDs map[string]struct{}) []benchrecord.ActionableItem {
 	items := make([]benchrecord.ActionableItem, len(view.Actionable))
 	for i, item := range view.Actionable {
 		items[i] = benchrecord.ActionableItem{
 			ID:        item.ID,
 			Kind:      string(item.Kind),
 			Operation: item.Operation,
+			Stuck:     containsID(stuckIDs, item.ID),
 		}
 	}
 	return items
+}
+
+type progressTracker struct {
+	previousCount int
+	hasPrevious   bool
+	nonImproving  int
+	persistentIDs map[string]struct{}
+}
+
+func (tracker *progressTracker) observe(view agentreport.View, stallWindow int) bool {
+	currentIDs := actionableIDs(view)
+	currentCount := len(view.Actionable)
+	if !tracker.hasPrevious {
+		tracker.hasPrevious = true
+		tracker.previousCount = currentCount
+		tracker.persistentIDs = currentIDs
+		return false
+	}
+
+	if currentCount < tracker.previousCount {
+		tracker.nonImproving = 0
+		tracker.persistentIDs = currentIDs
+	} else {
+		tracker.nonImproving++
+		tracker.persistentIDs = intersectIDs(tracker.persistentIDs, currentIDs)
+	}
+	tracker.previousCount = currentCount
+
+	return tracker.nonImproving >= stallWindow
+}
+
+func (tracker progressTracker) stuckIDs() map[string]struct{} {
+	if tracker.nonImproving == 0 {
+		return nil
+	}
+	return tracker.persistentIDs
+}
+
+func actionableIDs(view agentreport.View) map[string]struct{} {
+	ids := make(map[string]struct{}, len(view.Actionable))
+	for _, item := range view.Actionable {
+		ids[item.ID] = struct{}{}
+	}
+	return ids
+}
+
+func intersectIDs(left, right map[string]struct{}) map[string]struct{} {
+	intersection := make(map[string]struct{})
+	for id := range left {
+		if _, ok := right[id]; ok {
+			intersection[id] = struct{}{}
+		}
+	}
+	return intersection
+}
+
+func containsID(ids map[string]struct{}, id string) bool {
+	_, ok := ids[id]
+	return ok
 }
 
 func tokenRecord(known bool, usage *benchrecord.TokenUsage) *benchrecord.TokenUsage {
