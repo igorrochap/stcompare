@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"stcompare/agentreport"
 )
 
 // PreconditionPolicy identifies replay responses that may reflect missing
@@ -78,6 +80,7 @@ type Dependencies struct {
 type Result struct {
 	InteractionCount   int
 	Converged          bool
+	AgentView          agentreport.View
 	ReplayLogPath      string
 	JSONReportPath     string
 	MarkdownReportPath string
@@ -218,6 +221,7 @@ func persistComparisonArtifacts(
 	return Result{
 		InteractionCount:   len(replayEntries),
 		Converged:          report.Converged,
+		AgentView:          newAgentView(report),
 		ReplayLogPath:      replayLogPath,
 		JSONReportPath:     jsonReportPath,
 		MarkdownReportPath: markdownReportPath,
