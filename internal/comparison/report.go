@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	reportSchemaVersion                                 = "10"
+	reportSchemaVersion                                 = "11"
 	baselineProblemsUnavailable                         = "Baseline Schemathesis problems could not be extracted from structured evidence."
 	baselineProblemOutcomeSummaryEquation               = "evaluable = fixed + still_failing + inconclusive; total = evaluable + unevaluable + uncorrelated + ambiguous."
 	baselineProblemOutcomeSummaryMeaning                = "Every extracted Schemathesis problem is assigned to exactly one bucket. Only evaluable problems receive fixed, still_failing, or evaluable inconclusive counts; unevaluable, uncorrelated, and ambiguous problems carry not_evaluated outcomes with a reason on the problem entry."
@@ -24,6 +24,7 @@ const (
 
 type report struct {
 	SchemaVersion             string                      `json:"schema_version"`
+	Converged                 bool                        `json:"converged"`
 	Baseline                  reportCampaign              `json:"baseline"`
 	Candidate                 reportCandidate             `json:"candidate"`
 	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
@@ -208,6 +209,8 @@ func newReport(input reportInput) report {
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
+		Converged: classification.baselineProblems.StillFailing == 0 &&
+			classification.traffic.Regressed == 0,
 		Baseline: reportCampaign{
 			Campaign:                    input.BaselineCampaign,
 			ProblemCount:                problemCount,

@@ -86,6 +86,69 @@ func TestNewReportRepresentsAvailableZeroProblemEvidence(t *testing.T) {
 	}
 }
 
+func TestNewReportConvergedVerdictUsesStillFailingAndRegressedCounts(t *testing.T) {
+	interaction := 1
+	cases := []struct {
+		name      string
+		document  report
+		converged bool
+	}{
+		{
+			name: "no actionable outcomes",
+			document: newReport(reportInput{
+				BaselineProblemEvidence: baselineProblemEvidence{Available: true},
+			}),
+			converged: true,
+		},
+		{
+			name:      "still failing problem",
+			document:  newSingleProblemReport("negative_data_rejection", 200),
+			converged: false,
+		},
+		{
+			name: "regressed interaction",
+			document: newReport(reportInput{
+				BaselineProblemEvidence: baselineProblemEvidence{Available: true},
+				Interactions: []reportInteraction{{
+					Baseline: harEntry{Response: &harResponse{Status: 200}},
+					Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 503}}},
+				}},
+			}),
+			converged: false,
+		},
+		{
+			name: "inconclusive problem",
+			document: newReport(reportInput{
+				BaselineProblemEvidence: baselineProblemEvidence{
+					Available: true,
+					Problems: []baselineProblem{{
+						CheckName:         "not_a_server_error",
+						CorrelationStatus: correlationStatusCorrelated,
+						Interaction:       &interaction,
+					}},
+				},
+				Interactions: []reportInteraction{{
+					Baseline: harEntry{Response: &harResponse{Status: 500}},
+					Replay:   replayResult{Entry: harEntry{Response: &harResponse{Status: 200}}},
+				}},
+			}),
+			converged: true,
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if test.document.Converged != test.converged {
+				t.Fatalf("converged = %t, want %t", test.document.Converged, test.converged)
+			}
+			if test.document.Converged != (test.document.Summary.BaselineProblems.StillFailing == 0 &&
+				test.document.Summary.Traffic.Regressed == 0) {
+				t.Fatal("converged does not match the deciding summary counts")
+			}
+		})
+	}
+}
+
 func TestNewReportKeepsJUnitProblemCountAndAddsStructuredExtractedCount(t *testing.T) {
 	legacyCount := 1
 	legacySource := "junit.xml"
@@ -147,8 +210,8 @@ func TestNewReportUsesCorrelatedProblemSchemaVersion(t *testing.T) {
 		},
 	})
 
-	if document.SchemaVersion != "10" {
-		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "10")
+	if document.SchemaVersion != "11" {
+		t.Fatalf("newReport schema version = %q, want %q", document.SchemaVersion, "11")
 	}
 }
 
@@ -250,6 +313,7 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 	}
 	type reportProjection struct {
 		SchemaVersion string `json:"schema_version"`
+		Converged     bool   `json:"converged"`
 		Comparison    struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
@@ -266,7 +330,8 @@ func TestNewReportIncludesPreconditionPolicyProvenanceInJSON(t *testing.T) {
 		t.Fatalf("decode report projection: %v", err)
 	}
 	want := reportProjection{
-		SchemaVersion: "10",
+		SchemaVersion: "11",
+		Converged:     true,
 		Comparison: struct {
 			MissingResourceStatuses []int                 `json:"missing_resource_statuses"`
 			PreconditionHeuristics  []heuristicProjection `json:"precondition_heuristics"`
