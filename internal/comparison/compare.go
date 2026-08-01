@@ -77,6 +77,7 @@ type Dependencies struct {
 // Result describes the artifacts produced by a completed comparison.
 type Result struct {
 	InteractionCount   int
+	Converged          bool
 	ReplayLogPath      string
 	JSONReportPath     string
 	MarkdownReportPath string
@@ -216,6 +217,7 @@ func persistComparisonArtifacts(
 
 	return Result{
 		InteractionCount:   len(replayEntries),
+		Converged:          report.Converged,
 		ReplayLogPath:      replayLogPath,
 		JSONReportPath:     jsonReportPath,
 		MarkdownReportPath: markdownReportPath,

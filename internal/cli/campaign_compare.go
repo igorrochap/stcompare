@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -8,12 +9,40 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"stcompare/agentreport"
 	"stcompare/internal/comparison"
 	"stcompare/internal/config"
 )
 
 type campaignCompareOptions struct {
 	configOverrides configOverrideOptions
+}
+
+// ExitCodeError carries the process exit code selected by a CLI command.
+type ExitCodeError struct {
+	// Code is the process exit code selected by the command.
+	Code int
+	// Err is the underlying command failure, when one exists.
+	Err error
+}
+
+func (e *ExitCodeError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *ExitCodeError) Unwrap() error {
+	return e.Err
+}
+
+func exitCodeError(code int, err error) *ExitCodeError {
+	return &ExitCodeError{Code: code, Err: err}
+}
+
+func toolError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return exitCodeError(agentreport.ExitCodeToolError, err)
 }
 
 func newCampaignCompareCommand(rootOpts *rootOptions) *cobra.Command {
@@ -43,10 +72,10 @@ func runCampaignCompare(
 		options.configOverrides,
 	)
 	if err != nil {
-		return err
+		return toolError(err)
 	}
 	if err := requireCandidateCampaign(candidateName, candidate); err != nil {
-		return err
+		return toolError(err)
 	}
 
 	baselineName := baselineCampaignName(effective)
@@ -56,7 +85,7 @@ func runCampaignCompare(
 		comparison.Dependencies{Now: rootOpts.deps.Now},
 	)
 	if err != nil {
-		return err
+		return toolError(err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "replayed %d baseline interactions\n", result.InteractionCount)
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.ReplayLogPath)
@@ -64,11 +93,18 @@ func runCampaignCompare(
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", result.MarkdownReportPath)
 	htmlReportURI, err := fileURI(result.HTMLReportPath)
 	if err != nil {
-		return err
+		return toolError(err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", htmlReportURI)
 
-	return nil
+	if result.Converged {
+		return nil
+	}
+
+	return exitCodeError(
+		agentreport.ExitCodeNotConverged,
+		errors.New("comparison did not converge"),
+	)
 }
 
 func fileURI(path string) (string, error) {
