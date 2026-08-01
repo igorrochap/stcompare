@@ -1,0 +1,328 @@
+package bench
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"stcompare/agentreport"
+	"stcompare/benchrecord"
+)
+
+func TestRunConvergesOnFirstIteration(t *testing.T) {
+	view := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Converged:     true,
+		Candidate:     "candidate",
+		Baseline:      "baseline",
+		Counts:        agentreport.Counts{Fixed: 2},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{view: view, exitCode: agentreport.ExitCodeConverged}}}
+	candidate := &fakeCandidate{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		Agent:          "agent",
+		Candidate:      "candidate",
+		Baseline:       "baseline",
+		BaselineExists: func() bool { return true },
+		MaxIterations:  3,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if record.Iterations != 1 {
+		t.Fatalf("iterations = %d, want 1", record.Iterations)
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
+	}
+	if got, want := candidate.calls, []string{"stop", "reset", "build", "start", "wait_healthy"}; !sameStrings(got, want) {
+		t.Fatalf("candidate calls = %#v, want %#v", got, want)
+	}
+	if len(comparator.configs) != 1 {
+		t.Fatalf("comparator calls = %d, want 1", len(comparator.configs))
+	}
+}
+
+func TestRunIteratesThenConvergesAndPassesRenderedPrompt(t *testing.T) {
+	first := agentreport.View{
+		Converged: false,
+		Counts:    agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	second := first
+	third := agentreport.View{Converged: true, Counts: agentreport.Counts{Fixed: 1}}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: first, exitCode: agentreport.ExitCodeNotConverged},
+		{view: second, exitCode: agentreport.ExitCodeNotConverged},
+		{view: third, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{usages: []*benchrecord.TokenUsage{
+		{Input: 1, Output: 2, Total: 3},
+		{Input: 4, Output: 5, Total: 9},
+	}}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if record.Iterations != 3 {
+		t.Fatalf("iterations = %d, want 3", record.Iterations)
+	}
+	if len(adapter.instructions) != 2 {
+		t.Fatalf("adapter calls = %d, want 2", len(adapter.instructions))
+	}
+	if !strings.Contains(adapter.instructions[0], `"problem-1"`) {
+		t.Fatalf("rendered instruction does not contain the compact view: %q", adapter.instructions[0])
+	}
+	if !strings.Contains(adapter.instructions[0], "stbench-default@1") {
+		t.Fatalf("rendered instruction does not contain the prompt identity: %q", adapter.instructions[0])
+	}
+	if got, want := *record.Tokens, (benchrecord.TokenUsage{Input: 5, Output: 7, Total: 12}); got != want {
+		t.Fatalf("tokens = %#v, want %#v", got, want)
+	}
+	if record.Final.StillFailing != 0 || record.Final.Converged != true {
+		t.Fatalf("final summary = %#v, want converged with no remaining failures", record.Final)
+	}
+}
+
+func TestRunStopsAtMaxIterations(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  2,
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: fixedNow(time.Unix(0, 0))})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateMaxIterations {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateMaxIterations)
+	}
+	if len(adapter.instructions) != 1 {
+		t.Fatalf("adapter calls = %d, want 1", len(adapter.instructions))
+	}
+	if len(record.RemainingActionable) != 1 || record.RemainingActionable[0].ID != "problem-1" {
+		t.Fatalf("remaining actionable = %#v, want problem-1", record.RemainingActionable)
+	}
+}
+
+func TestRunStopsOnComparatorToolError(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{{exitCode: agentreport.ExitCodeToolError}}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(testConfig(), Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: fixedNow(time.Unix(0, 0))})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateToolError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateToolError)
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
+	}
+}
+
+func TestRunStopsOnAdapterError(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{{exitCode: agentreport.ExitCodeNotConverged}}}
+	adapter := &fakeAdapter{errs: []error{errors.New("agent failed")}}
+
+	record, err := Run(testConfig(), Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: fixedNow(time.Unix(0, 0))})
+	if err == nil || !strings.Contains(err.Error(), "agent failed") {
+		t.Fatalf("Run error = %v, want adapter error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAdapterError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateAdapterError)
+	}
+}
+
+func TestRunRecordsFailedCandidatePhase(t *testing.T) {
+	candidate := &fakeCandidate{failPhase: "build", failErr: errors.New("compile failed")}
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: &fakeComparator{}, Candidate: candidate, Adapter: &fakeAdapter{}, Now: fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "build") {
+		t.Fatalf("Run error = %v, want build phase", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateLifecycleError || record.LifecyclePhase != "build" {
+		t.Fatalf("lifecycle failure = state %q phase %q", record.TerminalState, record.LifecyclePhase)
+	}
+}
+
+func TestRunMissingBaselineFailsBeforeCandidateLifecycle(t *testing.T) {
+	candidate := &fakeCandidate{}
+	comparator := &fakeComparator{}
+	record, err := Run(Config{
+		Baseline:       "baseline",
+		BaselineExists: func() bool { return false },
+		MaxIterations:  2,
+	}, Dependencies{Comparator: comparator, Candidate: candidate, Adapter: &fakeAdapter{}, Now: fixedNow(time.Unix(0, 0))})
+	if err == nil || !strings.Contains(err.Error(), "baseline") {
+		t.Fatalf("Run error = %v, want missing baseline error", err)
+	}
+	if record.Iterations != 0 || len(candidate.calls) != 0 || len(comparator.configs) != 0 {
+		t.Fatalf("missing baseline performed work: iterations=%d candidate=%#v comparator=%#v", record.Iterations, candidate.calls, comparator.configs)
+	}
+	if record.LifecyclePhase != benchrecord.LifecyclePhaseBaselinePrecondition {
+		t.Fatalf("lifecycle phase = %q, want %q", record.LifecyclePhase, benchrecord.LifecyclePhaseBaselinePrecondition)
+	}
+}
+
+func TestRunTimeBreakdownSumsAndUnknownTokensStayNull(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{
+		{exitCode: agentreport.ExitCodeNotConverged},
+		{exitCode: agentreport.ExitCodeNotConverged},
+		{exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{usages: []*benchrecord.TokenUsage{{Input: 3, Output: 4, Total: 7}, nil}}
+	now := advancingNow(10 * time.Millisecond)
+
+	record, err := Run(Config{BaselineExists: func() bool { return true }, MaxIterations: 3}, Dependencies{
+		Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.Tokens != nil {
+		t.Fatalf("tokens = %#v, want null after unknown usage", record.Tokens)
+	}
+	if got := record.TimeMS.Total; got != record.TimeMS.CandidateReset+record.TimeMS.Compare+record.TimeMS.AgentFix {
+		t.Fatalf("time total = %d, phase sum = %d", got, record.TimeMS.CandidateReset+record.TimeMS.Compare+record.TimeMS.AgentFix)
+	}
+}
+
+type comparisonResult struct {
+	view     agentreport.View
+	exitCode int
+	err      error
+}
+
+type fakeComparator struct {
+	results []comparisonResult
+	configs []Config
+}
+
+func (f *fakeComparator) Compare(config Config) (agentreport.View, int, error) {
+	f.configs = append(f.configs, config)
+	result := f.results[0]
+	f.results = f.results[1:]
+	return result.view, result.exitCode, result.err
+}
+
+type fakeCandidate struct {
+	calls     []string
+	failPhase string
+	failErr   error
+}
+
+func (f *fakeCandidate) Stop() error {
+	f.calls = append(f.calls, "stop")
+	return f.fail("stop")
+}
+
+func (f *fakeCandidate) Reset() error {
+	f.calls = append(f.calls, "reset")
+	return f.fail("reset")
+}
+
+func (f *fakeCandidate) Build() error {
+	f.calls = append(f.calls, "build")
+	return f.fail("build")
+}
+
+func (f *fakeCandidate) Start() error {
+	f.calls = append(f.calls, "start")
+	return f.fail("start")
+}
+
+func (f *fakeCandidate) WaitHealthy() error {
+	f.calls = append(f.calls, "wait_healthy")
+	return f.fail("wait_healthy")
+}
+
+func (f *fakeCandidate) fail(phase string) error {
+	if f.failPhase == phase {
+		return f.failErr
+	}
+	return nil
+}
+
+type fakeAdapter struct {
+	instructions []string
+	usages       []*benchrecord.TokenUsage
+	errs         []error
+}
+
+func (f *fakeAdapter) Fix(instruction string, _ agentreport.View) (*benchrecord.TokenUsage, error) {
+	f.instructions = append(f.instructions, instruction)
+	var usage *benchrecord.TokenUsage
+	if len(f.usages) != 0 {
+		usage = f.usages[0]
+		f.usages = f.usages[1:]
+	}
+	var err error
+	if len(f.errs) != 0 {
+		err = f.errs[0]
+		f.errs = f.errs[1:]
+	}
+	return usage, err
+}
+
+func testConfig() Config {
+	return Config{BaselineExists: func() bool { return true }, MaxIterations: 5}
+}
+
+func fixedNow(now time.Time) func() time.Time {
+	return func() time.Time { return now }
+}
+
+func advancingNow(step time.Duration) func() time.Time {
+	now := time.Unix(0, 0)
+	return func() time.Time {
+		current := now
+		now = now.Add(step)
+		return current
+	}
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}

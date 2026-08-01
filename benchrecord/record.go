@@ -22,6 +22,24 @@ const (
 	TerminalStateLifecycleError TerminalState = "lifecycle_error"
 )
 
+// LifecyclePhase identifies the phase that failed while preparing a run.
+type LifecyclePhase string
+
+const (
+	// LifecyclePhaseBaselinePrecondition identifies a missing baseline campaign.
+	LifecyclePhaseBaselinePrecondition LifecyclePhase = "baseline_precondition"
+	// LifecyclePhaseStop identifies the candidate stop phase.
+	LifecyclePhaseStop LifecyclePhase = "stop"
+	// LifecyclePhaseReset identifies the candidate reset phase.
+	LifecyclePhaseReset LifecyclePhase = "reset"
+	// LifecyclePhaseBuild identifies the candidate build phase.
+	LifecyclePhaseBuild LifecyclePhase = "build"
+	// LifecyclePhaseStart identifies the candidate start phase.
+	LifecyclePhaseStart LifecyclePhase = "start"
+	// LifecyclePhaseWaitHealthy identifies the candidate health-check phase.
+	LifecyclePhaseWaitHealthy LifecyclePhase = "wait_healthy"
+)
+
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
 	SchemaVersion       string           `json:"schema_version"`
@@ -35,6 +53,7 @@ type Record struct {
 	EndedAt             string           `json:"ended_at"`
 	Iterations          int              `json:"iterations"`
 	TerminalState       TerminalState    `json:"terminal_state"`
+	LifecyclePhase      LifecyclePhase   `json:"lifecycle_phase,omitempty"`
 	TimeMS              TimeBreakdown    `json:"time_ms"`
 	Tokens              *TokenUsage      `json:"tokens"`
 	Final               FinalSummary     `json:"final"`
