@@ -20,6 +20,7 @@ type Config struct {
 	Schemathesis SchemathesisConfig  `yaml:"schemathesis"`
 	Comparison   ComparisonConfig    `yaml:"comparison,omitempty"`
 	Campaigns    map[string]Campaign `yaml:"campaigns"`
+	Stbench      *StbenchConfig      `yaml:"stbench,omitempty"`
 }
 
 type SchemathesisConfig struct {
@@ -63,6 +64,39 @@ type HeaderNormalizationRule struct {
 
 type Campaign struct {
 	Kind string `yaml:"kind"`
+}
+
+// StbenchConfig contains optional settings for the benchmark runner.
+type StbenchConfig struct {
+	Candidate       string                 `yaml:"candidate"`
+	Agent           string                 `yaml:"agent"`
+	Model           string                 `yaml:"model"`
+	Hardware        string                 `yaml:"hardware"`
+	Adapter         string                 `yaml:"adapter"`
+	CandidateDir    string                 `yaml:"candidate_dir"`
+	StcompareBinary string                 `yaml:"stcompare_binary"`
+	RecordPath      string                 `yaml:"record_path"`
+	Prompt          StbenchPromptConfig    `yaml:"prompt,omitempty"`
+	Lifecycle       StbenchLifecycleConfig `yaml:"lifecycle,omitempty"`
+	MaxIterations   int                    `yaml:"max_iterations"`
+	StallWindow     int                    `yaml:"stall_window"`
+}
+
+// StbenchPromptConfig identifies the fixed task prompt used by a run.
+type StbenchPromptConfig struct {
+	ID      string `yaml:"id"`
+	Version string `yaml:"version"`
+}
+
+// StbenchLifecycleConfig contains candidate process and health-check hooks.
+type StbenchLifecycleConfig struct {
+	Stop           string `yaml:"stop"`
+	Reset          string `yaml:"reset"`
+	Build          string `yaml:"build"`
+	Start          string `yaml:"start"`
+	HealthURL      string `yaml:"health_url"`
+	HealthTimeout  string `yaml:"health_timeout"`
+	HealthInterval string `yaml:"health_interval"`
 }
 
 func (c Config) Validate() error {

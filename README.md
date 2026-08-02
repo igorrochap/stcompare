@@ -22,6 +22,7 @@ Build a local binary from the repository root:
 
 ```sh
 go build -o stcompare ./cmd/stcompare
+go build -o stbench ./cmd/stbench
 ```
 
 The examples below assume the binary is available as `stcompare`; use
@@ -484,6 +485,55 @@ metadata. When Schemathesis aborts before completing the campaign, `stcompare`
 removes a newly-created campaign directory and does not write success metadata.
 Forced runs against an existing directory leave existing files in place if
 Schemathesis aborts.
+
+## Run Benchmark Loops
+
+`stbench` owns the neutral fix loop and invokes `stcompare` through its public
+CLI contract. Add a `stbench` section to `stcompare.yaml`, or provide the same
+values as flags:
+
+```yaml
+stbench:
+  candidate: gpt5.6
+  agent: local-agent
+  model: model-name
+  hardware: hardware-name
+  adapter: python adapter.py
+  candidate_dir: ./candidate
+  stcompare_binary: stcompare
+  record_path: records/gpt5.6.json
+  lifecycle:
+    stop: ./stop-candidate.sh
+    reset: ./reset-candidate.sh
+    build: ./build-candidate.sh
+    start: ./start-candidate.sh
+    health_url: http://localhost:8080/health
+    health_timeout: 30s
+    health_interval: 100ms
+  max_iterations: 100
+  stall_window: 2
+```
+
+Run the loop with:
+
+```sh
+stbench run --config stcompare.yaml
+```
+
+Before each comparison, `stbench` runs stop, optional reset, build, start, and
+health polling. The adapter runs with `candidate_dir` as its working directory.
+It receives one JSON object on stdin and must write one JSON object to stdout:
+
+```json
+{"instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+```
+
+The result is `{ "status": "ok"|"error", "message": "...", "tokens":
+{ "input": 1, "output": 2, "total": 3 } | null }`. The adapter edits the
+candidate in place; unknown token usage must be reported as `null`. The command
+writes the versioned benchmark record to `record_path`, exits `0` on
+convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
+lifecycle errors.
 
 ## Development
 

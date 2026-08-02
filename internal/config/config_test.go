@@ -1,6 +1,51 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadParsesOptionalStbenchConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stcompare.yaml")
+	contents := `schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  workers: 1
+campaigns:
+  baseline:
+    kind: baseline
+  candidate:
+    kind: candidate
+stbench:
+  candidate: candidate
+  adapter: python adapter.py
+  lifecycle:
+    stop: ./stop.sh
+    build: ./build.sh
+    start: ./start.sh
+    health_url: http://localhost:8080/health
+    health_timeout: 5s
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Stbench == nil {
+		t.Fatal("Stbench = nil, want parsed stbench section")
+	}
+	if loaded.Stbench.Candidate != "candidate" || loaded.Stbench.Adapter != "python adapter.py" {
+		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)
+	}
+	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
+		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
+	}
+}
 
 func TestConfigValidateRejectsTrimmedDuplicatePreconditionHeuristicNames(t *testing.T) {
 	config := Default()
