@@ -288,9 +288,10 @@ real subprocesses, services, or agents.
 - Any change to `stcompare`'s evaluation, replay, reporting, or the agent
   contract itself — that is the separate agent-contract spec and is a dependency
   of this one.
-- Shipping concrete production adapters for specific agents. This spec defines
-  the adapter *protocol* and a test stub; real adapters (Claude Code, a local
-  model scaffold, etc.) are separate work.
+- Shipping concrete production integrations for specific agents. The repository
+  does provide reference examples for an on-prem local-model scaffold, a
+  Codex/Claude Code CLI, and a cloud API fallback; these examples do not change
+  the protocol or claim to be production integrations.
 - Cost ($) computation and cross-run aggregation/plotting — downstream analysis
   over the emitted records, not `stbench`'s job.
 - Parallelism across multiple candidates/agents in one invocation — one run per

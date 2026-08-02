@@ -3,4 +3,5 @@ skills-lock.json
 .claude
 .scratch
 .cache
+__pycache__/
 /stcompare.yaml

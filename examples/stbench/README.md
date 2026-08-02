@@ -1,0 +1,129 @@
+# stbench adapter examples
+
+`stbench` owns the benchmark loop. An adapter is only the per-iteration
+delivery boundary:
+
+1. `stbench` sends one JSON request on stdin: the rendered, versioned task
+   instruction and the compact `agentreport.View`.
+2. The adapter delivers that instruction in the selected agent's envelope and
+   edits the candidate in its current working directory.
+3. The adapter writes one JSON result on stdout:
+
+   ```json
+   {
+     "status": "ok",
+     "message": "",
+     "response": "short audit text",
+     "tokens": {"input": 12, "output": 34, "total": 46}
+   }
+   ```
+
+   Report `"tokens": null` when the agent does not expose token usage.
+
+The adapter must not run the compare/fix loop, replace the task with its own
+prompt, or read `junit.xml`/HAR/VCR/NDJSON files. The instruction already
+contains the fixed stbench task and compact view from `compare --format agent`.
+
+## Which example to use
+
+| File | Audience | Edits candidate in place | External dependency |
+| --- | --- | --- | --- |
+| [`local_model_adapter.py`](local_model_adapter.py) | Study subjects using an on-prem model | Yes, through read/write/command tools | An OpenAI-compatible local inference server |
+| [`coding_agent_adapter.py`](coding_agent_adapter.py) | Research engineers testing with Codex or Claude Code | Yes, through the installed CLI | `codex` or `claude` |
+| [`adapter.py`](adapter.py) | Explicit fallback when neither path is available | Yes, after validating a generated diff | OpenAI cloud API and Git |
+
+All scripts use only the Python standard library. Keep `_protocol.py` beside a
+copied adapter.
+
+## Local-model adapter
+
+Start an on-prem inference server that exposes a compatible
+`/v1/chat/completions` endpoint with tool-call support, then configure the
+adapter command. Keep the server URL, model, timeout, and turn limit directly
+in the adapter command so the complete configuration stays in `stcompare.yaml`:
+
+```yaml
+stbench:
+  agent: local-model
+  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --model my-local-code-model --timeout 300 --max-turns 20
+```
+
+Use an absolute script path when `candidate_dir` is not the repository root.
+If the local server requires authentication, keep the credential in
+`STBENCH_LOCAL_MODEL_API_KEY`.
+
+The scaffold exposes `list_files`, `read_file`, `write_file`, and shell-free
+`run_command` tools. Paths are confined to the candidate directory. The
+adapter sums usage reported by each inference response and returns `null` if a
+response omits usage.
+
+## Coding-agent CLI adapter
+
+This is a first-class, supported path for research engineers doing local
+sanity checks, demos, or out-of-target comparisons. It invokes one installed
+CLI per stbench iteration; the CLI can use its own native file and command
+tools, but the adapter itself does not own the loop.
+
+Codex:
+
+```yaml
+stbench:
+  agent: codex
+  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --agent codex --timeout 1800
+```
+
+Claude Code:
+
+```yaml
+stbench:
+  agent: claude
+  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --agent claude --timeout 1800
+```
+
+The adapter uses Codex's non-interactive `codex exec --json` mode with
+`--sandbox workspace-write`, and Claude Code's `claude -p --output-format
+json` mode. The selected CLI must be available on `PATH`. The CLI adapter
+reports usage when the CLI emits it and otherwise returns `tokens: null`. For
+an alternate launcher, pass `--command` with the command and arguments to
+invoke, and use `--agent` to select the matching output format.
+
+The Codex CLI details are documented in [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/), and the Claude Code
+flags are documented in the [Claude Code CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage).
+
+## Cloud API fallback
+
+[`adapter.py`](adapter.py) is intentionally a fallback, not the default study
+path. It requires `OPENAI_API_KEY`, sends a snapshot of tracked text files to
+the cloud Responses API, asks for a unified diff, validates the diff, and
+applies it with `git apply`.
+
+```sh
+export OPENAI_API_KEY=...
+```
+
+Configure it without changing the runner:
+
+```yaml
+stbench:
+  agent: cloud-fallback
+  adapter: python /absolute/path/to/stcompare/examples/stbench/adapter.py --model gpt-5.6 --responses-url https://api.openai.com/v1/responses --timeout 600 --max-snapshot-bytes 1000000
+```
+
+Before using this fallback, account for its limitations:
+
+- candidate source leaves the on-prem environment and is subject to cloud API
+  retention, access, and size policies;
+- only tracked files are included, and the snapshot is capped by
+  `--max-snapshot-bytes` (1 MiB by default);
+- the model must express edits as a valid unified diff, so large or binary
+  repositories are a poor fit;
+- `git apply --check` validates the patch before mutation, but this remains a
+  less capable editing path than a native coding-agent CLI or local tool
+  scaffold.
+- the raw model response is returned in the adapter result and archived in the
+  benchmark record, but it does not make the cloud-generated patch auditable
+  without also retaining the surrounding run artifacts.
+
+The cloud fallback uses the [OpenAI Responses API](https://platform.openai.com/docs/quickstart/make-your-first-api-request). It is provided so the
+adapter protocol remains usable when the first-class local and CLI options
+are unavailable; it is not the recommended path for the on-prem study.
