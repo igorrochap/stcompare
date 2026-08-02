@@ -520,9 +520,29 @@ Run the loop with:
 stbench run --config stcompare.yaml
 ```
 
+To scaffold the lifecycle hooks in a candidate directory, run:
+
+```sh
+stbench init
+```
+
+This creates executable `stop.sh`, `reset.sh`, `build.sh`, and `start.sh`
+stubs, then prints a matching `stbench:` configuration stanza. Add that
+stanza to `stcompare.yaml` and replace the no-op commands with the candidate's
+commands. The generated `stop` hook is safe to run before the first iteration,
+when no candidate process exists. The `reset` hook must clean per-iteration
+runtime state without reverting source files, because source changes are the
+agent's progress.
+
 Before each comparison, `stbench` runs stop, optional reset, build, start, and
-health polling. The adapter runs with `candidate_dir` as its working directory.
-It receives one JSON object on stdin and must write one JSON object to stdout:
+health polling. `stop` may be called when nothing is running and should be
+idempotent. `reset` is for runtime state only; it must not run commands such as
+`git checkout .` that erase source changes. `build` prepares the candidate, and
+`start` must launch a long-running candidate process. After `start` returns,
+`stbench` polls `health_url` until it receives a `2xx` response or the health
+timeout expires; `health_interval` controls the delay between polls. The
+adapter runs with `candidate_dir` as its working directory. It receives one
+JSON object on stdin and must write one JSON object to stdout:
 
 ```json
 {"instruction":"...","view":{"schema_version":"1", "actionable":[]}}

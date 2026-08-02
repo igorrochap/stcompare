@@ -42,6 +42,7 @@ func NewRootCommand() *cobra.Command {
 		SilenceUsage: true,
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", config.DefaultFilename, "stcompare configuration path")
+	root.AddCommand(newInitCommand())
 	root.AddCommand(newRunCommand(&options))
 	return root
 }
