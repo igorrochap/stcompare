@@ -66,7 +66,7 @@ func TestCommandAdapterSendsInstructionAndViewAndReadsTokens(t *testing.T) {
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_INPUT\"\n"+
 		"pwd > \"$STBENCH_PWD\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18}}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"response\":\"raw model response\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18}}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -81,12 +81,15 @@ func TestCommandAdapterSendsInstructionAndViewAndReadsTokens(t *testing.T) {
 		}},
 	}
 
-	usage, err := adapter.Fix("fix the candidate", wantView)
+	result, err := adapter.Fix("fix the candidate", wantView)
 	if err != nil {
 		t.Fatalf("Fix() error = %v", err)
 	}
-	if got, want := *usage, (benchrecord.TokenUsage{Input: 11, Output: 7, Total: 18}); got != want {
+	if got, want := *result.Tokens, (benchrecord.TokenUsage{Input: 11, Output: 7, Total: 18}); got != want {
 		t.Fatalf("usage = %#v, want %#v", got, want)
+	}
+	if result.Response != "raw model response" {
+		t.Fatalf("response = %q, want raw model response", result.Response)
 	}
 
 	contents, err := os.ReadFile(inputPath)
@@ -124,12 +127,12 @@ func TestCommandAdapterMapsErrorStatusToAdapterError(t *testing.T) {
 		"printf '%s' '{\"status\":\"error\",\"message\":\"cannot edit\",\"tokens\":null}'\n")
 	adapter := &CommandAdapter{Command: script, WorkingDir: dir}
 
-	usage, err := adapter.Fix("instruction", agentreport.View{})
+	result, err := adapter.Fix("instruction", agentreport.View{})
 	if err == nil || !strings.Contains(err.Error(), "cannot edit") {
 		t.Fatalf("Fix() error = %v, want adapter message", err)
 	}
-	if usage != nil {
-		t.Fatalf("usage = %#v, want nil", usage)
+	if result == nil || result.Tokens != nil {
+		t.Fatalf("result = %#v, want result with nil tokens", result)
 	}
 }
 

@@ -528,10 +528,10 @@ It receives one JSON object on stdin and must write one JSON object to stdout:
 {"instruction":"...","view":{"schema_version":"1", "actionable":[]}}
 ```
 
-The result is `{ "status": "ok"|"error", "message": "...", "tokens":
-{ "input": 1, "output": 2, "total": 3 } | null }`. The adapter edits the
-candidate in place; unknown token usage must be reported as `null`. The command
-writes the versioned benchmark record to `record_path`, exits `0` on
+The result is `{ "status": "ok"|"error", "message": "...", "response":
+"<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
+null }`. The adapter edits the candidate in place; unknown token usage must be
+reported as `null`. The command writes the versioned benchmark record to `record_path`, exits `0` on
 convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
 lifecycle errors.
 

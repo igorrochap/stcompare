@@ -109,6 +109,48 @@ func TestRunIteratesThenConvergesAndPassesRenderedPrompt(t *testing.T) {
 	}
 }
 
+func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{responses: []string{"raw model response"}}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(record.Prompt.Hash) != 64 {
+		t.Fatalf("prompt hash length = %d, want SHA-256 hex length", len(record.Prompt.Hash))
+	}
+	if len(record.PromptInstructions) != 1 {
+		t.Fatalf("prompt instructions = %#v, want one rendered instruction", record.PromptInstructions)
+	}
+	if record.PromptInstructions[0] != adapter.instructions[0] {
+		t.Fatalf("archived instruction = %q, want adapter instruction %q", record.PromptInstructions[0], adapter.instructions[0])
+	}
+	if strings.Contains(record.PromptInstructions[0], record.Prompt.Hash) {
+		t.Fatalf("rendered instruction should not contain audit metadata: %q", record.PromptInstructions[0])
+	}
+	if len(record.RenderedPromptHashes) != 1 || len(record.RenderedPromptHashes[0]) != 64 {
+		t.Fatalf("rendered prompt hashes = %#v, want one SHA-256 hash", record.RenderedPromptHashes)
+	}
+	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "raw model response" {
+		t.Fatalf("agent responses = %#v, want archived raw model response", record.AgentResponses)
+	}
+}
+
 func TestRunStopsAtMaxIterations(t *testing.T) {
 	view := agentreport.View{
 		Counts: agentreport.Counts{StillFailing: 1},
@@ -396,7 +438,10 @@ func TestRunStopsOnComparatorToolError(t *testing.T) {
 
 func TestRunStopsOnAdapterError(t *testing.T) {
 	comparator := &fakeComparator{results: []comparisonResult{{exitCode: agentreport.ExitCodeNotConverged}}}
-	adapter := &fakeAdapter{errs: []error{errors.New("agent failed")}}
+	adapter := &fakeAdapter{
+		responses: []string{"partial raw model response"},
+		errs:      []error{errors.New("agent failed")},
+	}
 
 	record, err := Run(testConfig(), Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: fixedNow(time.Unix(0, 0))})
 	if err == nil || !strings.Contains(err.Error(), "agent failed") {
@@ -404,6 +449,9 @@ func TestRunStopsOnAdapterError(t *testing.T) {
 	}
 	if record.TerminalState != benchrecord.TerminalStateAdapterError {
 		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateAdapterError)
+	}
+	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "partial raw model response" {
+		t.Fatalf("agent responses = %#v, want archived response from failed adapter", record.AgentResponses)
 	}
 }
 
@@ -521,22 +569,28 @@ func (f *fakeCandidate) fail(phase string) error {
 type fakeAdapter struct {
 	instructions []string
 	usages       []*benchrecord.TokenUsage
+	responses    []string
 	errs         []error
 }
 
-func (f *fakeAdapter) Fix(instruction string, _ agentreport.View) (*benchrecord.TokenUsage, error) {
+func (f *fakeAdapter) Fix(instruction string, _ agentreport.View) (*AdapterResult, error) {
 	f.instructions = append(f.instructions, instruction)
 	var usage *benchrecord.TokenUsage
 	if len(f.usages) != 0 {
 		usage = f.usages[0]
 		f.usages = f.usages[1:]
 	}
+	var response string
+	if len(f.responses) != 0 {
+		response = f.responses[0]
+		f.responses = f.responses[1:]
+	}
 	var err error
 	if len(f.errs) != 0 {
 		err = f.errs[0]
 		f.errs = f.errs[1:]
 	}
-	return usage, err
+	return &AdapterResult{Tokens: usage, Response: response}, err
 }
 
 func testConfig() Config {

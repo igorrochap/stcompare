@@ -171,7 +171,8 @@ integration test.
 - The prompt is fixed by default and overridable via config **only** for
   deliberate prompt-ablation experiments. The prompt identity (version or content
   hash) is recorded in the benchmark record, and two runs are comparable only
-  when their recorded prompt identity matches.
+  when their recorded prompt identity matches. The record also stores a hash of
+  each exact rendered instruction sent to the adapter.
 
 **Adapter protocol (language-agnostic, per-agent):**
 
@@ -184,8 +185,9 @@ integration test.
   (those are internal evidence only; see Further Notes).
 - The adapter edits the candidate source **in place** and writes a small result
   JSON to **stdout**: `{ "tokens": {"input": N, "output": N, "total": N} | null,
-  "status": "ok" | "error", "message": "…" }`. A non-zero adapter exit or
-  `status: "error"` ends the run as `adapter_error`.
+  "response": "<raw model response>", "status": "ok" | "error",
+  "message": "…" }`. A non-zero adapter exit or `status: "error"` ends the
+  run as `adapter_error`; the response text is retained for audit.
 - The adapter — not `stbench` — is responsible for capturing tokens from its
   agent (provider `usage` for cloud/API agents; inference-server counts or a
   local tokenizer for local models). Unknown → `tokens: null`.
@@ -208,7 +210,11 @@ integration test.
 {
   "schema_version": "...",
   "agent": "...", "model": "...", "hardware": "...",   // provided by the caller
-  "prompt": { "id": "...", "version": "..." },          // task-prompt identity (ADR-0007)
+  "prompt": { "id": "...", "version": "...", "hash": "..." },
+                                                        // task-prompt identity (ADR-0007)
+  "prompt_instructions": ["..."],                     // rendered instruction per agent fix
+  "rendered_prompt_hashes": ["..."],                   // hash of each exact instruction
+  "agent_responses": ["..."],                          // raw adapter/model response per fix
   "candidate": "...", "baseline": "...",
   "started_at": "...", "ended_at": "...",
   "iterations": N,
@@ -225,6 +231,9 @@ integration test.
   "remaining_actionable": [ { id, kind, operation, stuck: bool } ]
 }
 ```
+
+The three per-fix arrays use the same index: instruction, rendered-instruction
+hash, and raw agent response.
 
 - `tokens` at the record level is the sum over iterations; `null` if any
   iteration's tokens were unknown (unknown is contagious, so aggregates are
@@ -261,6 +270,8 @@ real subprocesses, services, or agents.
   - Time breakdown sums correctly from the injected clock across phases.
   - Token aggregation: numeric usages sum; any `null` iteration makes the record
     total `null`.
+  - The embedded prompt template is identified by a content hash, and each
+    rendered instruction is archived in the benchmark record.
 - **Benchmark record schema (`benchrecord`).** Pure marshal/round-trip tests of
   the record shape and `schema_version`, mirroring `report_test.go`'s JSON
   assertions.

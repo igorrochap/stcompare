@@ -2,13 +2,25 @@
 package bench
 
 import (
+	"bytes"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"text/template"
 	"time"
 
 	"stcompare/agentreport"
 	"stcompare/benchrecord"
 )
+
+//go:embed prompt.md
+var promptTemplateText string
+
+var promptTemplate = template.Must(template.New("stbench-prompt").Parse(promptTemplateText))
+
+var promptTemplateHash = hashContent(promptTemplateText)
 
 const (
 	// DefaultPromptID identifies the canonical stbench task prompt.
@@ -70,9 +82,9 @@ type Candidate interface {
 	WaitHealthy() error
 }
 
-// Adapter applies one rendered task instruction to the candidate.
+// Adapter applies one rendered task instruction and reports the adapter result.
 type Adapter interface {
-	Fix(instruction string, view agentreport.View) (*benchrecord.TokenUsage, error)
+	Fix(instruction string, view agentreport.View) (*AdapterResult, error)
 }
 
 // Run drives a candidate until convergence or a terminal condition.
@@ -96,19 +108,23 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 	if config.Prompt.Version == "" {
 		config.Prompt.Version = DefaultPromptVersion
 	}
+	config.Prompt.Hash = promptTemplateHash
 
 	startedAt := dependencies.Now()
 	record := benchrecord.Record{
-		SchemaVersion: benchrecord.SchemaVersion,
-		Agent:         config.Agent,
-		Model:         config.Model,
-		Hardware:      config.Hardware,
-		Prompt:        config.Prompt,
-		Candidate:     config.Candidate,
-		Baseline:      config.Baseline,
-		StartedAt:     startedAt.Format(time.RFC3339Nano),
-		Tokens:        &benchrecord.TokenUsage{},
-		Final:         benchrecord.FinalSummary{},
+		SchemaVersion:        benchrecord.SchemaVersion,
+		Agent:                config.Agent,
+		Model:                config.Model,
+		Hardware:             config.Hardware,
+		Prompt:               config.Prompt,
+		Candidate:            config.Candidate,
+		Baseline:             config.Baseline,
+		StartedAt:            startedAt.Format(time.RFC3339Nano),
+		PromptInstructions:   []string{},
+		RenderedPromptHashes: []string{},
+		AgentResponses:       []string{},
+		Tokens:               &benchrecord.TokenUsage{},
+		Final:                benchrecord.FinalSummary{},
 	}
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
@@ -205,15 +221,25 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		)
 	}
 
-	if err := runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
-		return runAgentFix(
+	// Keep the result outside the timed closure so rendered output survives adapter errors.
+	var fix agentFixResult
+	err := runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
+		var err error
+		fix, err = runAgentFix(
 			runner.dependencies.Adapter,
 			runner.config.Prompt,
 			view,
 			runner.record.Tokens,
 			&runner.tokensKnown,
 		)
-	}); err != nil {
+		return err
+	})
+	if fix.Rendered {
+		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
+		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
+		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
+	}
+	if err != nil {
 		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
 	}
 	return false, nil
@@ -269,17 +295,36 @@ func runCandidateLifecycle(candidate Candidate, failedPhase *benchrecord.Lifecyc
 	return nil
 }
 
+type promptTemplateData struct {
+	Prompt         benchrecord.PromptIdentity
+	ComparisonView string
+}
+
 func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (string, error) {
 	compactView, err := json.Marshal(view)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf(
-		"Task prompt %s@%s:\nUse the comparison result below to fix the candidate source. Apply the necessary fixes and preserve existing behavior outside the reported problems.\n\nComparison view:\n%s",
-		prompt.ID,
-		prompt.Version,
-		compactView,
-	), nil
+	var instruction bytes.Buffer
+	if err := promptTemplate.Execute(&instruction, promptTemplateData{
+		Prompt:         prompt,
+		ComparisonView: string(compactView),
+	}); err != nil {
+		return "", fmt.Errorf("render task prompt template: %w", err)
+	}
+	return instruction.String(), nil
+}
+
+func hashContent(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:])
+}
+
+type agentFixResult struct {
+	Instruction string
+	Hash        string
+	Response    string
+	Rendered    bool
 }
 
 func runAgentFix(
@@ -288,23 +333,31 @@ func runAgentFix(
 	view agentreport.View,
 	tokens *benchrecord.TokenUsage,
 	tokensKnown *bool,
-) error {
+) (agentFixResult, error) {
 	instruction, err := renderPrompt(prompt, view)
 	if err != nil {
-		return fmt.Errorf("render task prompt: %w", err)
+		return agentFixResult{}, fmt.Errorf("render task prompt: %w", err)
 	}
-	usage, err := adapter.Fix(instruction, view)
-	if usage == nil {
+	fix := agentFixResult{
+		Instruction: instruction,
+		Hash:        hashContent(instruction),
+		Rendered:    true,
+	}
+	result, err := adapter.Fix(instruction, view)
+	if result == nil || result.Tokens == nil {
 		*tokensKnown = false
 	} else if *tokensKnown {
-		tokens.Input += usage.Input
-		tokens.Output += usage.Output
-		tokens.Total += usage.Total
+		tokens.Input += result.Tokens.Input
+		tokens.Output += result.Tokens.Output
+		tokens.Total += result.Tokens.Total
+	}
+	if result != nil {
+		fix.Response = result.Response
 	}
 	if err != nil {
-		return fmt.Errorf("adapter fix: %w", err)
+		return fix, fmt.Errorf("adapter fix: %w", err)
 	}
-	return nil
+	return fix, nil
 }
 
 func finalSummary(view agentreport.View) benchrecord.FinalSummary {

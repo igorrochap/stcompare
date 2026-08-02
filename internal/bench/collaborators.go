@@ -116,9 +116,16 @@ type AdapterRequest struct {
 
 // AdapterResponse is the JSON result expected from an external adapter.
 type AdapterResponse struct {
-	Tokens  *benchrecord.TokenUsage `json:"tokens"`
-	Status  string                  `json:"status"`
-	Message string                  `json:"message"`
+	Tokens   *benchrecord.TokenUsage `json:"tokens"`
+	Response string                  `json:"response"`
+	Status   string                  `json:"status"`
+	Message  string                  `json:"message"`
+}
+
+// AdapterResult contains the result returned to the benchmark runner.
+type AdapterResult struct {
+	Tokens   *benchrecord.TokenUsage
+	Response string
 }
 
 // CommandAdapter invokes a language-agnostic adapter process.
@@ -140,7 +147,7 @@ func NewCommandAdapter(command string, workingDir string) *CommandAdapter {
 }
 
 // Fix sends the rendered instruction and compact view to the adapter.
-func (adapter *CommandAdapter) Fix(instruction string, view agentreport.View) (*benchrecord.TokenUsage, error) {
+func (adapter *CommandAdapter) Fix(instruction string, view agentreport.View) (*AdapterResult, error) {
 	if strings.TrimSpace(adapter.Command) == "" {
 		return nil, errors.New("adapter command is required")
 	}
@@ -177,9 +184,13 @@ func (adapter *CommandAdapter) Fix(instruction string, view agentreport.View) (*
 		}
 		return nil, fmt.Errorf("decode adapter result: %w", err)
 	}
+	result := &AdapterResult{
+		Tokens:   response.Tokens,
+		Response: response.Response,
+	}
 
 	if runErr != nil {
-		return response.Tokens, fmt.Errorf(
+		return result, fmt.Errorf(
 			"adapter command failed: %w%s",
 			runErr,
 			formatCommandStderr(stderr.Bytes()),
@@ -187,15 +198,15 @@ func (adapter *CommandAdapter) Fix(instruction string, view agentreport.View) (*
 	}
 	switch response.Status {
 	case "ok":
-		return response.Tokens, nil
+		return result, nil
 	case "error":
 		message := strings.TrimSpace(response.Message)
 		if message == "" {
 			message = "adapter returned status error"
 		}
-		return response.Tokens, errors.New(message)
+		return result, errors.New(message)
 	default:
-		return response.Tokens, fmt.Errorf("adapter returned invalid status %q", response.Status)
+		return result, fmt.Errorf("adapter returned invalid status %q", response.Status)
 	}
 }
 
