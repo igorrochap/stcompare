@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -105,10 +106,14 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Schema) == "" {
 		return errors.New("schema is required")
 	}
-	baseURL, err := url.Parse(c.BaseURL)
-	if err != nil || !baseURL.IsAbs() || baseURL.Host == "" ||
-		(!strings.EqualFold(baseURL.Scheme, "http") && !strings.EqualFold(baseURL.Scheme, "https")) {
+	baseURL, err := parseHTTPURL(c.BaseURL)
+	if err != nil {
 		return errors.New("base_url must be an absolute HTTP(S) URL")
+	}
+	if c.Stbench != nil {
+		if err := validateStbenchHealthURL(baseURL, c.Stbench.Lifecycle.HealthURL); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(c.ReportsDir) == "" {
 		return errors.New("reports_dir is required")
@@ -212,6 +217,53 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func parseHTTPURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return nil, errors.New("URL must be an absolute HTTP(S) URL")
+	}
+
+	return parsed, nil
+}
+
+func validateStbenchHealthURL(baseURL *url.URL, rawHealthURL string) error {
+	if strings.TrimSpace(rawHealthURL) == "" {
+		return nil
+	}
+
+	healthURL, err := parseHTTPURL(rawHealthURL)
+	if err != nil {
+		return errors.New("stbench.lifecycle.health_url must be an absolute HTTP(S) URL")
+	}
+
+	baseHostPort := normalizedHostPort(baseURL)
+	healthHostPort := normalizedHostPort(healthURL)
+	if baseHostPort != healthHostPort {
+		return fmt.Errorf(
+			"stbench.lifecycle.health_url host/port must match base_url: got %q, want %q",
+			healthHostPort,
+			baseHostPort,
+		)
+	}
+
+	return nil
+}
+
+func normalizedHostPort(parsed *url.URL) string {
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port == "" {
+		if strings.EqualFold(parsed.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+
+	return net.JoinHostPort(host, port)
 }
 
 func isAllowedMissingResourceStatus(status int) bool {

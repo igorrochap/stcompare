@@ -191,3 +191,72 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigValidateRejectsStbenchHealthURLHostPortMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		healthURL string
+		wantError string
+	}{
+		{
+			name:      "port mismatch",
+			healthURL: "http://localhost:9090/health",
+			wantError: `stbench.lifecycle.health_url host/port must match base_url: got "localhost:9090", want "localhost:8080"`,
+		},
+		{
+			name:      "host mismatch",
+			healthURL: "http://candidate.test:8080/health",
+			wantError: `stbench.lifecycle.health_url host/port must match base_url: got "candidate.test:8080", want "localhost:8080"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Default()
+			config.Stbench = &StbenchConfig{
+				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
+			}
+
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want host/port mismatch error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAcceptsStbenchHealthURLWithMatchingHostPort(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseURL   string
+		healthURL string
+	}{
+		{
+			name:      "default HTTP port",
+			baseURL:   "http://localhost",
+			healthURL: "http://localhost/health",
+		},
+		{
+			name:      "default HTTPS port",
+			baseURL:   "https://localhost",
+			healthURL: "https://localhost/health",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Default()
+			config.BaseURL = test.baseURL
+			config.Stbench = &StbenchConfig{
+				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
+			}
+
+			if err := config.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v, want nil for matching default port", err)
+			}
+		})
+	}
+}

@@ -155,6 +155,10 @@ integration test.
   record captures which phase failed.
 - The candidate base URL is taken from the existing `stcompare` config /
   `--base-url` override and passed through to `compare`.
+- `base_url` and `lifecycle.health_url` must use the same candidate host and
+  effective port. An omitted port means 80 for HTTP or 443 for HTTPS. Config
+  validation reports a mismatch before the benchmark starts; the health URL may
+  use a different path.
 
 **Task prompt (fixed, versioned, owned by `stbench`; see ADR-0007):**
 
