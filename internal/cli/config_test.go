@@ -349,6 +349,16 @@ func TestConfigShowRejectsNonAbsoluteBaseURLBeforeOutput(t *testing.T) {
 	}, "base_url must be an absolute HTTP(S) URL")
 }
 
+func TestConfigShowRejectsStbenchHealthURLHostPortMismatchBeforeOutput(t *testing.T) {
+	assertConfigShowRejected(t, func(document configDocument) {
+		document["stbench"] = map[string]any{
+			"lifecycle": map[string]any{
+				"health_url": "http://localhost:9090/health",
+			},
+		}
+	}, `stbench.lifecycle.health_url host/port must match base_url: got "localhost:9090", want "localhost:8080"`)
+}
+
 func TestConfigShowRejectsMissingReportsDirBeforeOutput(t *testing.T) {
 	assertConfigShowRejected(t, func(document configDocument) {
 		delete(document, "reports_dir")

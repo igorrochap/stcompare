@@ -543,6 +543,10 @@ idempotent. `reset` is for runtime state only; it must not run commands such as
 `start` must launch a long-running candidate process. After `start` returns,
 `stbench` polls `health_url` until it receives a `2xx` response or the health
 timeout expires; `health_interval` controls the delay between polls. The
+candidate must listen on the host and effective port declared by `base_url`,
+and `lifecycle.health_url` must use that same host and port. An omitted port
+means 80 for HTTP or 443 for HTTPS. Configuration validation reports a mismatch
+before the benchmark starts; the health URL may use a different path.
 `adapter_timeout` bounds each adapter invocation and
 `lifecycle.command_timeout` bounds each lifecycle hook; both default to 30
 minutes and can also be supplied as `--adapter-timeout` and
