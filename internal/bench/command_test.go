@@ -15,12 +15,12 @@ import (
 
 func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 	settings := defaultRunSettings(&config.StbenchConfig{
-		Candidate:       "candidate",
+		Campaign:        "campaign",
 		Agent:           "local-agent",
 		Model:           "model-name",
 		Hardware:        "hardware-name",
 		Adapter:         "python adapter.py",
-		CandidateDir:    "candidate-src",
+		SourceDir:       "candidate-src",
 		StcompareBinary: "./stcompare",
 		RecordPath:      "records/run.json",
 		Prompt:          config.StbenchPromptConfig{ID: "prompt", Version: "2"},
@@ -39,7 +39,7 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		StallWindow:    3,
 	})
 
-	if settings.candidate != "candidate" || settings.adapter != "python adapter.py" || settings.candidateDir != "candidate-src" {
+	if settings.campaign != "campaign" || settings.adapter != "python adapter.py" || settings.sourceDir != "candidate-src" {
 		t.Fatalf("settings = %#v, want caller configuration", settings)
 	}
 	if settings.stop != "./stop.sh" || settings.reset != "./reset.sh" || settings.healthTimeout != "5s" ||
@@ -51,11 +51,99 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 	}
 }
 
-func TestApplyRunSettingsAcceptsPositionalCandidate(t *testing.T) {
+func TestApplyRunSettingsAcceptsPositionalCampaign(t *testing.T) {
 	settings := defaultRunSettings(nil)
-	applyRunSettings(&settings, runCommandOptions{candidate: "candidate"}, &cobra.Command{})
-	if settings.candidate != "candidate" {
-		t.Fatalf("candidate = %q, want positional candidate", settings.candidate)
+	applyRunSettings(&settings, runCommandOptions{campaign: "campaign"}, &cobra.Command{})
+	if settings.campaign != "campaign" {
+		t.Fatalf("campaign = %q, want positional campaign", settings.campaign)
+	}
+}
+
+func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
+	root := NewRootCommand()
+	run, _, err := root.Find([]string{"run"})
+	if err != nil {
+		t.Fatalf("find run command: %v", err)
+	}
+
+	canonical := []string{
+		"campaign", "agent", "model", "hardware", "adapter", "adapter-timeout",
+		"source-dir", "stcompare-binary", "record-path", "base-url",
+		"stop-command", "reset-command", "build-command", "start-command",
+		"command-timeout", "health-url", "health-timeout", "health-interval",
+		"max-iterations", "stall-window", "prompt-id", "prompt-version",
+	}
+	for _, name := range canonical {
+		if run.Flags().Lookup(name) == nil {
+			t.Errorf("canonical flag --%s is not registered", name)
+		}
+	}
+
+	aliases := []string{
+		"candidate", "adapter-command", "candidate-dir", "stcompare", "record",
+		"stop", "reset", "build", "start",
+	}
+	for _, name := range aliases {
+		if run.Flags().Lookup(name) != nil {
+			t.Errorf("legacy alias --%s is still registered", name)
+		}
+	}
+}
+
+func TestApplyRunSettingsFlagsOverrideConfiguration(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("campaign", "", "")
+	command.Flags().String("source-dir", "", "")
+	command.Flags().String("adapter", "", "")
+	command.Flags().String("record-path", "", "")
+	command.Flags().String("stop-command", "", "")
+	for name, value := range map[string]string{
+		"campaign":     "flag-campaign",
+		"source-dir":   "flag-source",
+		"adapter":      "flag-adapter",
+		"record-path":  "flag-record.json",
+		"stop-command": "flag-stop",
+	} {
+		if err := command.Flags().Set(name, value); err != nil {
+			t.Fatalf("set --%s: %v", name, err)
+		}
+	}
+
+	settings := runSettings{
+		campaign:   "config-campaign",
+		sourceDir:  "config-source",
+		adapter:    "config-adapter",
+		recordPath: "config-record.json",
+		stop:       "config-stop",
+	}
+	applyRunSettings(&settings, runCommandOptions{
+		campaign:   "flag-campaign",
+		sourceDir:  "flag-source",
+		adapter:    "flag-adapter",
+		recordPath: "flag-record.json",
+		stop:       "flag-stop",
+	}, command)
+
+	if settings.campaign != "flag-campaign" || settings.sourceDir != "flag-source" ||
+		settings.adapter != "flag-adapter" || settings.recordPath != "flag-record.json" ||
+		settings.stop != "flag-stop" {
+		t.Fatalf("settings = %#v, want explicit flag values to override config", settings)
+	}
+}
+
+func TestApplyRunOverridesBaseURLFlag(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("base-url", "", "")
+	if err := command.Flags().Set("base-url", "http://flag.example.test:9090"); err != nil {
+		t.Fatalf("set --base-url: %v", err)
+	}
+
+	effective := config.Default()
+	effective.BaseURL = "http://config.example.test:8080"
+	applyRunOverrides(command, &effective, &runCommandOptions{baseURL: "http://flag.example.test:9090"})
+
+	if effective.BaseURL != "http://flag.example.test:9090" {
+		t.Fatalf("base URL = %q, want explicit flag value", effective.BaseURL)
 	}
 }
 

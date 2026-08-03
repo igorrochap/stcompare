@@ -65,7 +65,7 @@ stbench:
   adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 300 --max-turns 20
 ```
 
-Use an absolute script path when `candidate_dir` is not the repository root.
+Use an absolute script path when `source_dir` is not the repository root.
 If the local server requires authentication, keep the credential in
 `STBENCH_LOCAL_MODEL_API_KEY`.
 

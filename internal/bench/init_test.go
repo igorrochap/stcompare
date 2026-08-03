@@ -70,6 +70,8 @@ func TestInitCreatesRunnableLifecycleScaffoldAndConfigStanza(t *testing.T) {
 	for _, want := range []string{
 		"# Add this stanza to stcompare.yaml",
 		"stbench:",
+		"campaign: gpt5.6",
+		"source_dir: .",
 		filepath.Join(harnessDir, "stop.sh"),
 		filepath.Join(harnessDir, "reset.sh"),
 		filepath.Join(harnessDir, "build.sh"),
@@ -78,6 +80,9 @@ func TestInitCreatesRunnableLifecycleScaffoldAndConfigStanza(t *testing.T) {
 		if !strings.Contains(configStanza, want) {
 			t.Errorf("init output = %q, want %q", configStanza, want)
 		}
+	}
+	if strings.Contains(configStanza, "candidate_dir:") || strings.Contains(configStanza, "candidate: gpt5.6") {
+		t.Fatalf("init output = %q, want campaign/source_dir names", configStanza)
 	}
 }
 

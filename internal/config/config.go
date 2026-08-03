@@ -69,19 +69,40 @@ type Campaign struct {
 
 // StbenchConfig contains optional settings for the benchmark runner.
 type StbenchConfig struct {
-	Candidate       string                 `yaml:"candidate"`
+	Campaign        string                 `yaml:"campaign"`
 	Agent           string                 `yaml:"agent"`
 	Model           string                 `yaml:"model"`
 	Hardware        string                 `yaml:"hardware"`
 	Adapter         string                 `yaml:"adapter"`
 	AdapterTimeout  string                 `yaml:"adapter_timeout"`
-	CandidateDir    string                 `yaml:"candidate_dir"`
+	SourceDir       string                 `yaml:"source_dir"`
 	StcompareBinary string                 `yaml:"stcompare_binary"`
 	RecordPath      string                 `yaml:"record_path"`
 	Prompt          StbenchPromptConfig    `yaml:"prompt,omitempty"`
 	Lifecycle       StbenchLifecycleConfig `yaml:"lifecycle,omitempty"`
 	MaxIterations   int                    `yaml:"max_iterations"`
 	StallWindow     int                    `yaml:"stall_window"`
+}
+
+// UnmarshalYAML rejects the old candidate names with an actionable migration
+// message instead of silently ignoring them as unknown YAML fields.
+func (c *StbenchConfig) UnmarshalYAML(node *yaml.Node) error {
+	type stbenchConfig StbenchConfig
+	var decoded stbenchConfig
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		switch node.Content[index].Value {
+		case "candidate":
+			return errors.New("stbench.candidate is deprecated; use stbench.campaign")
+		case "candidate_dir":
+			return errors.New("stbench.candidate_dir is deprecated; use stbench.source_dir")
+		}
+	}
+
+	*c = StbenchConfig(decoded)
+	return nil
 }
 
 // StbenchPromptConfig identifies the fixed task prompt used by a run.

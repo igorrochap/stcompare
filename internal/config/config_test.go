@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,7 +20,8 @@ campaigns:
   candidate:
     kind: candidate
 stbench:
-  candidate: candidate
+  campaign: candidate
+  source_dir: candidate-src
   adapter: python adapter.py
   adapter_timeout: 3m
   lifecycle:
@@ -41,12 +43,48 @@ stbench:
 	if loaded.Stbench == nil {
 		t.Fatal("Stbench = nil, want parsed stbench section")
 	}
-	if loaded.Stbench.Candidate != "candidate" || loaded.Stbench.Adapter != "python adapter.py" ||
+	if loaded.Stbench.Campaign != "candidate" || loaded.Stbench.SourceDir != "candidate-src" ||
+		loaded.Stbench.Adapter != "python adapter.py" ||
 		loaded.Stbench.AdapterTimeout != "3m" || loaded.Stbench.Lifecycle.CommandTimeout != "2m" {
 		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
 		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
+	}
+}
+
+func TestLoadRejectsDeprecatedStbenchCandidateNames(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		key         string
+		wantMessage string
+	}{
+		{
+			name:        "campaign",
+			key:         "candidate",
+			wantMessage: "stbench.candidate is deprecated; use stbench.campaign",
+		},
+		{
+			name:        "source directory",
+			key:         "candidate_dir",
+			wantMessage: "stbench.candidate_dir is deprecated; use stbench.source_dir",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "CONFIG")
+			contents := "stbench:\n  " + test.key + ": value\n"
+			if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load() error = nil, want deprecated-name error")
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("Load() error = %q, want message %q", err.Error(), test.wantMessage)
+			}
+		})
 	}
 }
 

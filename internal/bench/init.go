@@ -169,18 +169,18 @@ func lifecycleConfigStanzaFor(harnessDir string) string {
 		return strconv.Quote(quoteShellPath(filepath.Join(harnessDir, name)))
 	}
 
-	return fmt.Sprintf(`# Add this stanza to stcompare.yaml and adjust the candidate, adapter, and health URL.
+	return fmt.Sprintf(`# Add this stanza to stcompare.yaml and adjust the campaign, adapter, and health URL.
 # The lifecycle scripts and benchmark record live in the managed stbench state directory:
 # %s
 stbench:
-  candidate: gpt5.6
+  campaign: gpt5.6
   agent: local-agent
   model: model-name
   hardware: hardware-name
   # Keep the adapter command outside the API repository as well.
   adapter: python /absolute/path/to/adapter.py
   adapter_timeout: 30m
-  candidate_dir: .
+  source_dir: .
   stcompare_binary: stcompare
   record_path: %s
   lifecycle:

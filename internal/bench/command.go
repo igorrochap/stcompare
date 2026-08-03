@@ -52,13 +52,13 @@ type rootCommandOptions struct {
 }
 
 type runCommandOptions struct {
-	candidate       string
+	campaign        string
 	agent           string
 	model           string
 	hardware        string
 	adapter         string
 	adapterTimeout  string
-	candidateDir    string
+	sourceDir       string
 	stcompareBinary string
 	recordPath      string
 	baseURL         string
@@ -79,42 +79,34 @@ type runCommandOptions struct {
 func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	options := runCommandOptions{}
 	command := &cobra.Command{
-		Use:  "run [candidate]",
+		Use:  "run [campaign]",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
-				if cmd.Flags().Changed("candidate") && options.candidate != args[0] {
-					return errors.New("candidate is specified both as an argument and a flag")
+				if cmd.Flags().Changed("campaign") && options.campaign != args[0] {
+					return errors.New("campaign is specified both as an argument and a flag")
 				}
-				options.candidate = args[0]
+				options.campaign = args[0]
 			}
 			return runCommand(cmd, rootOptions.configPath, options)
 		},
 	}
 
 	flags := command.Flags()
-	flags.StringVar(&options.candidate, "candidate", "", "candidate campaign name")
+	flags.StringVar(&options.campaign, "campaign", "", "campaign to benchmark (must be a candidate campaign)")
 	flags.StringVar(&options.agent, "agent", "", "agent metadata recorded and passed to the adapter")
 	flags.StringVar(&options.model, "model", "", "model metadata recorded and passed to the adapter")
 	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded and passed to the adapter")
 	flags.StringVar(&options.adapter, "adapter", "", "adapter command")
-	flags.StringVar(&options.adapter, "adapter-command", "", "alias for --adapter")
 	flags.StringVar(&options.adapterTimeout, "adapter-timeout", "", "adapter command timeout")
-	flags.StringVar(&options.candidateDir, "candidate-dir", "", "candidate source directory")
-	flags.StringVar(&options.candidateDir, "source-dir", "", "alias for --candidate-dir")
+	flags.StringVar(&options.sourceDir, "source-dir", "", "candidate source directory")
 	flags.StringVar(&options.stcompareBinary, "stcompare-binary", "", "stcompare executable")
-	flags.StringVar(&options.stcompareBinary, "stcompare", "", "alias for --stcompare-binary")
-	flags.StringVar(&options.recordPath, "record", "", "benchmark record output path")
-	flags.StringVar(&options.recordPath, "record-path", "", "alias for --record")
+	flags.StringVar(&options.recordPath, "record-path", "", "benchmark record output path")
 	flags.StringVar(&options.baseURL, "base-url", "", "candidate base URL override")
-	flags.StringVar(&options.stop, "stop", "", "candidate stop command")
-	flags.StringVar(&options.stop, "stop-command", "", "alias for --stop")
-	flags.StringVar(&options.reset, "reset", "", "optional candidate reset command")
-	flags.StringVar(&options.reset, "reset-command", "", "alias for --reset")
-	flags.StringVar(&options.build, "build", "", "candidate build command")
-	flags.StringVar(&options.build, "build-command", "", "alias for --build")
-	flags.StringVar(&options.start, "start", "", "candidate start command")
-	flags.StringVar(&options.start, "start-command", "", "alias for --start")
+	flags.StringVar(&options.stop, "stop-command", "", "candidate stop command")
+	flags.StringVar(&options.reset, "reset-command", "", "optional candidate reset command")
+	flags.StringVar(&options.build, "build-command", "", "candidate build command")
+	flags.StringVar(&options.start, "start-command", "", "candidate start command")
 	flags.StringVar(&options.commandTimeout, "command-timeout", "", "candidate lifecycle command timeout")
 	flags.StringVar(&options.healthURL, "health-url", "", "candidate health-check URL")
 	flags.StringVar(&options.healthTimeout, "health-timeout", "", "health-check timeout")
@@ -143,14 +135,14 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		return err
 	}
 
-	workingDir, err := filepath.Abs(settings.candidateDir)
+	workingDir, err := filepath.Abs(settings.sourceDir)
 	if err != nil {
-		return fmt.Errorf("resolve candidate directory: %w", err)
+		return fmt.Errorf("resolve source directory: %w", err)
 	}
 	if info, statErr := os.Stat(workingDir); statErr != nil {
-		return fmt.Errorf("inspect candidate directory: %w", statErr)
+		return fmt.Errorf("inspect source directory: %w", statErr)
 	} else if !info.IsDir() {
-		return fmt.Errorf("candidate directory %s is not a directory", workingDir)
+		return fmt.Errorf("source directory %s is not a directory", workingDir)
 	}
 
 	healthTimeout, err := parseDuration("health timeout", settings.healthTimeout)
@@ -177,7 +169,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 			Model:    settings.model,
 			Hardware: settings.hardware,
 		},
-		Candidate:     settings.candidate,
+		Candidate:     settings.campaign,
 		Baseline:      baselineName,
 		Prompt:        benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
 		MaxIterations: settings.maxIterations,
@@ -239,13 +231,13 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 }
 
 type runSettings struct {
-	candidate       string
+	campaign        string
 	agent           string
 	model           string
 	hardware        string
 	adapter         string
 	adapterTimeout  string
-	candidateDir    string
+	sourceDir       string
 	stcompareBinary string
 	recordPath      string
 	stop            string
@@ -264,21 +256,21 @@ type runSettings struct {
 
 func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings := runSettings{
-		candidateDir:    ".",
+		sourceDir:       ".",
 		stcompareBinary: "stcompare",
 		recordPath:      defaultRecordPath,
 	}
 	if source == nil {
 		return settings
 	}
-	settings.candidate = source.Candidate
+	settings.campaign = source.Campaign
 	settings.agent = source.Agent
 	settings.model = source.Model
 	settings.hardware = source.Hardware
 	settings.adapter = source.Adapter
 	settings.adapterTimeout = source.AdapterTimeout
-	if source.CandidateDir != "" {
-		settings.candidateDir = source.CandidateDir
+	if source.SourceDir != "" {
+		settings.sourceDir = source.SourceDir
 	}
 	if source.StcompareBinary != "" {
 		settings.stcompareBinary = source.StcompareBinary
@@ -302,8 +294,8 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 }
 
 func applyRunSettings(settings *runSettings, options runCommandOptions, command *cobra.Command) {
-	if command.Flags().Changed("candidate") || options.candidate != "" {
-		settings.candidate = options.candidate
+	if command.Flags().Changed("campaign") || options.campaign != "" {
+		settings.campaign = options.campaign
 	}
 	if command.Flags().Changed("agent") {
 		settings.agent = options.agent
@@ -314,31 +306,31 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	if command.Flags().Changed("hardware") {
 		settings.hardware = options.hardware
 	}
-	if command.Flags().Changed("adapter") || command.Flags().Changed("adapter-command") {
+	if command.Flags().Changed("adapter") {
 		settings.adapter = options.adapter
 	}
 	if command.Flags().Changed("adapter-timeout") {
 		settings.adapterTimeout = options.adapterTimeout
 	}
-	if command.Flags().Changed("candidate-dir") || command.Flags().Changed("source-dir") {
-		settings.candidateDir = options.candidateDir
+	if command.Flags().Changed("source-dir") {
+		settings.sourceDir = options.sourceDir
 	}
-	if command.Flags().Changed("stcompare-binary") || command.Flags().Changed("stcompare") {
+	if command.Flags().Changed("stcompare-binary") {
 		settings.stcompareBinary = options.stcompareBinary
 	}
-	if command.Flags().Changed("record") || command.Flags().Changed("record-path") {
+	if command.Flags().Changed("record-path") {
 		settings.recordPath = options.recordPath
 	}
-	if command.Flags().Changed("stop") || command.Flags().Changed("stop-command") {
+	if command.Flags().Changed("stop-command") {
 		settings.stop = options.stop
 	}
-	if command.Flags().Changed("reset") || command.Flags().Changed("reset-command") {
+	if command.Flags().Changed("reset-command") {
 		settings.reset = options.reset
 	}
-	if command.Flags().Changed("build") || command.Flags().Changed("build-command") {
+	if command.Flags().Changed("build-command") {
 		settings.build = options.build
 	}
-	if command.Flags().Changed("start") || command.Flags().Changed("start-command") {
+	if command.Flags().Changed("start-command") {
 		settings.start = options.start
 	}
 	if command.Flags().Changed("command-timeout") {
@@ -374,15 +366,15 @@ func applyRunOverrides(command *cobra.Command, effective *config.Config, options
 }
 
 func validateRunSettings(effective config.Config, settings runSettings) error {
-	if strings.TrimSpace(settings.candidate) == "" {
-		return errors.New("candidate is required")
+	if strings.TrimSpace(settings.campaign) == "" {
+		return errors.New("campaign is required")
 	}
-	campaign, ok := effective.Campaigns[settings.candidate]
+	campaign, ok := effective.Campaigns[settings.campaign]
 	if !ok {
-		return fmt.Errorf("campaign %q is not configured", settings.candidate)
+		return fmt.Errorf("campaign %q is not configured", settings.campaign)
 	}
 	if campaign.Kind != "candidate" {
-		return fmt.Errorf("campaign %q has kind %q: stbench requires a candidate campaign", settings.candidate, campaign.Kind)
+		return fmt.Errorf("campaign %q has kind %q: stbench requires a candidate campaign", settings.campaign, campaign.Kind)
 	}
 	if strings.TrimSpace(settings.adapter) == "" {
 		return errors.New("adapter command is required")

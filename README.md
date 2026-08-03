@@ -494,13 +494,13 @@ values as flags:
 
 ```yaml
 stbench:
-  candidate: gpt5.6
+  campaign: gpt5.6
   agent: local-agent
   model: model-name
   hardware: hardware-name
   adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
   adapter_timeout: 30m
-  candidate_dir: .
+  source_dir: .
   stcompare_binary: stcompare
   record_path: .local/stbench/records/gpt5.6.json
   lifecycle:
@@ -521,6 +521,18 @@ Run the loop with:
 ```sh
 stbench run --config stcompare.yaml
 ```
+
+The canonical `stbench run` flags use the same names as the settings they
+override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
+`--adapter`, `--adapter-timeout`,
+`--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
+`--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
+`--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
+`--stall-window`, `--prompt-id`, and `--prompt-version`. The old short and
+duplicate aliases are not accepted. Effective values follow this precedence:
+explicit run flags override the `stbench` YAML section, which overrides the
+documented defaults. The `--base-url` override is applied before configuration
+validation.
 
 To scaffold the lifecycle hooks from the API repository root, run:
 
@@ -557,7 +569,7 @@ before the benchmark starts; the health URL may use a different path.
 `lifecycle.command_timeout` bounds each lifecycle hook; both default to 30
 minutes and can also be supplied as `--adapter-timeout` and
 `--command-timeout`. Timed-out commands are terminated as process groups and
-produce an adapter or lifecycle error. The adapter runs with `candidate_dir` as
+produce an adapter or lifecycle error. The adapter runs with `source_dir` as
 its working directory, while its own adapter files and lifecycle harness stay
 outside that tree. It receives one
 JSON object on stdin and must write one JSON object to stdout:
@@ -609,7 +621,7 @@ Three reference adapters are provided in
   the `stbench` configuration and pass only the timeout on the `adapter:`
   command; no runner code changes are needed.
 - `adapter.py` is the explicit cloud fallback. It snapshots tracked source
-  below `candidate_dir`; it excludes the repository-local `.local/stbench`
+  below `source_dir`; it excludes the repository-local `.local/stbench`
   and `.local/stcompare` control-plane paths from snapshots and patches. It
   requests a unified diff, validates it with `git apply --check`, and applies
   it. Keep the adapter and `_protocol.py` outside the API
