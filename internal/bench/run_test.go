@@ -57,6 +57,73 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	}
 }
 
+func TestRunClosesAdapterAndRecordsNegotiatedProcessReuse(t *testing.T) {
+	adapter := &trackingAdapter{
+		fakeAdapter:  &fakeAdapter{},
+		processReuse: true,
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		ReuseProcess:   true,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if adapter.closeCalls != 1 {
+		t.Fatalf("adapter close calls = %d, want 1", adapter.closeCalls)
+	}
+	if !record.ProcessReuse {
+		t.Fatal("record.ProcessReuse = false, want true")
+	}
+}
+
+func TestRunKeepsConvergedRecordWhenAdapterCloseFails(t *testing.T) {
+	adapter := &trackingAdapter{
+		fakeAdapter:  &fakeAdapter{},
+		processReuse: true,
+		closeErr:     errors.New("adapter process exited on cleanup"),
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		ReuseProcess:   true,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil || !strings.Contains(err.Error(), "cleanup") {
+		t.Fatalf("Run() error = %v, want cleanup error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want converged", record.TerminalState)
+	}
+}
+
+func TestRunRecordsColdFallbackWhenAdapterDoesNotNegotiateReuse(t *testing.T) {
+	adapter := &trackingAdapter{fakeAdapter: &fakeAdapter{}, processReuse: false}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		ReuseProcess:   true,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.ProcessReuse {
+		t.Fatal("record.ProcessReuse = true, want cold fallback")
+	}
+}
+
 func TestRunPreflightsLifecycleAndAdapterBeforeComparison(t *testing.T) {
 	view := agentreport.View{
 		Converged: true,
@@ -749,6 +816,22 @@ type fakeAdapter struct {
 	usages            []*benchrecord.TokenUsage
 	responses         []string
 	errs              []error
+}
+
+type trackingAdapter struct {
+	*fakeAdapter
+	closeCalls   int
+	processReuse bool
+	closeErr     error
+}
+
+func (adapter *trackingAdapter) Close() error {
+	adapter.closeCalls++
+	return adapter.closeErr
+}
+
+func (adapter *trackingAdapter) ProcessReuseActive() bool {
+	return adapter.processReuse
 }
 
 func (f *fakeAdapter) Preflight(metadata AdapterMetadata) error {

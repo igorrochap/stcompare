@@ -75,6 +75,7 @@ type StbenchConfig struct {
 	Hardware        string                 `yaml:"hardware"`
 	Adapter         string                 `yaml:"adapter"`
 	AdapterTimeout  string                 `yaml:"adapter_timeout"`
+	ReuseProcess    bool                   `yaml:"reuse_process"`
 	SourceDir       string                 `yaml:"source_dir"`
 	StcompareBinary string                 `yaml:"stcompare_binary"`
 	RecordPath      string                 `yaml:"record_path"`

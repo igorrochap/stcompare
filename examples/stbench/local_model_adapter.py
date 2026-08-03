@@ -25,7 +25,7 @@ from _protocol import (
     handle_preflight,
     is_managed_state_path,
     metadata_headers,
-    read_request,
+    read_requests,
     request_metadata,
     usage_to_tokens,
 )
@@ -123,24 +123,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
-        request, instruction = read_request()
-        if handle_preflight(request):
-            return 0
-        metadata = request_metadata(request)
-        response, usages = run_agent(
-            instruction,
-            Path.cwd(),
-            url=settings.url,
-            model=settings.model or metadata["model"],
-            metadata=metadata,
-            timeout=settings.timeout,
-            max_turns=settings.max_turns,
-        )
-        emit_result(
-            status="ok",
-            response=response,
-            tokens=aggregate_usages(usages),
-        )
+        for request, instruction in read_requests():
+            try:
+                if handle_preflight(request):
+                    continue
+                metadata = request_metadata(request)
+                response, usages = run_agent(
+                    instruction,
+                    Path.cwd(),
+                    url=settings.url,
+                    model=settings.model or metadata["model"],
+                    metadata=metadata,
+                    timeout=settings.timeout,
+                    max_turns=settings.max_turns,
+                )
+                emit_result(
+                    status="ok",
+                    response=response,
+                    tokens=aggregate_usages(usages),
+                )
+            except (OSError, ValueError, RuntimeError) as error:
+                emit_error(str(error))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         emit_error(str(error))

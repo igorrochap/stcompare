@@ -23,7 +23,7 @@ from _protocol import (
     emit_result,
     handle_preflight,
     metadata_environment,
-    read_request,
+    read_requests,
     request_metadata,
     usage_to_tokens,
 )
@@ -54,53 +54,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
-        request, instruction = read_request()
-        if handle_preflight(request):
-            return 0
-        metadata = request_metadata(request)
-        agent = (settings.agent or metadata["agent"]).strip().lower()
-        model = settings.model or metadata["model"] or None
-        command = agent_command(agent, settings.command, model)
-        timeout = settings.timeout
-        if timeout <= 0:
+        if settings.timeout <= 0:
             raise ValueError("--timeout must be positive")
-        environment = os.environ.copy()
-        child_metadata = dict(metadata)
-        child_metadata["agent"] = agent
-        child_metadata["model"] = model or ""
-        environment.update(metadata_environment(child_metadata))
-        completed = subprocess.run(
-            command,
-            input=instruction,
-            text=True,
-            cwd=os.getcwd(),
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-            env=environment,
-        )
-        if completed.stderr:
-            sys.stderr.write(completed.stderr)
+        for request, instruction in read_requests():
+            try:
+                if handle_preflight(request):
+                    continue
+                metadata = request_metadata(request)
+                agent = (settings.agent or metadata["agent"]).strip().lower()
+                model = settings.model or metadata["model"] or None
+                command = agent_command(agent, settings.command, model)
+                environment = os.environ.copy()
+                child_metadata = dict(metadata)
+                child_metadata["agent"] = agent
+                child_metadata["model"] = model or ""
+                environment.update(metadata_environment(child_metadata))
+                completed = subprocess.run(
+                    command,
+                    input=instruction,
+                    text=True,
+                    cwd=os.getcwd(),
+                    capture_output=True,
+                    timeout=settings.timeout,
+                    check=False,
+                    env=environment,
+                )
+                if completed.stderr:
+                    sys.stderr.write(completed.stderr)
 
-        response, usages, agent_error = parse_output(agent, completed.stdout)
-        if completed.returncode != 0:
-            detail = agent_error or f"{agent} exited with status {completed.returncode}"
-            if completed.stderr.strip():
-                detail += f": {cap_text(completed.stderr.strip())}"
-            emit_error(detail, response=response)
-            return 0
-        if agent_error:
-            emit_error(agent_error, response=response)
-            return 0
+                response, usages, agent_error = parse_output(agent, completed.stdout)
+                if completed.returncode != 0:
+                    detail = agent_error or f"{agent} exited with status {completed.returncode}"
+                    if completed.stderr.strip():
+                        detail += f": {cap_text(completed.stderr.strip())}"
+                    emit_error(detail, response=response)
+                    continue
+                if agent_error:
+                    emit_error(agent_error, response=response)
+                    continue
 
-        emit_result(
-            status="ok",
-            response=response,
-            tokens=aggregate_usages(usages),
-        )
-        return 0
-    except subprocess.TimeoutExpired:
-        emit_error("coding-agent CLI timed out")
+                emit_result(
+                    status="ok",
+                    response=response,
+                    tokens=aggregate_usages(usages),
+                )
+            except subprocess.TimeoutExpired:
+                emit_error("coding-agent CLI timed out")
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                emit_error(str(error))
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as error:
         emit_error(str(error))

@@ -31,6 +31,23 @@ adapter must return an `ok` result for this no-op request without invoking the
 model or editing the candidate. This lets `stbench` verify that the configured
 adapter command is runnable before spending model time.
 
+## Optional process reuse
+
+Set `reuse_process: true` (or pass `--reuse-process`) only for an adapter that
+implements the negotiated line-delimited session protocol. During preflight,
+stbench includes `"reuse_process": true`; the adapter opts in by returning
+`"reuse_process": true` in its successful result and then keeping stdin/stdout
+open. It receives one complete JSON request and returns one complete JSON
+result per line thereafter.
+
+Each line still contains the same metadata, rendered instruction, and compact
+view that a cold invocation would receive. No previous prompt, reasoning,
+tool transcript, or session history is added. This is process reuse, not
+context carry; context carry is out of scope because it would confound agent
+comparisons and can exceed local-model context windows. A stateless adapter
+must leave the capability false, in which case stbench falls back to the cold
+path and records `process_reuse: false`.
+
 The adapter must not run the compare/fix loop, replace the task with its own
 prompt, or read `junit.xml`/HAR/VCR/NDJSON files. The instruction already
 contains the fixed stbench task and compact view from `compare --format agent`.

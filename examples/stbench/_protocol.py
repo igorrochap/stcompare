@@ -8,9 +8,10 @@ directory.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Iterator
 
 
 MANAGED_STATE_PATHS = (
@@ -33,11 +34,29 @@ def is_managed_state_path(relative: str) -> bool:
 
 
 def read_request() -> tuple[dict[str, Any], str]:
-    """Decode the one JSON request written by stbench."""
+    """Decode one JSON request written by stbench."""
 
     raw = sys.stdin.read()
     if not raw.strip():
         raise ValueError("adapter input is empty")
+
+    return decode_request(raw)
+
+
+def read_requests() -> Iterator[tuple[dict[str, Any], str]]:
+    """Yield one request at a time in cold or reusable adapter mode."""
+
+    if os.environ.get("STBENCH_REUSE_PROCESS") != "1":
+        yield read_request()
+        return
+
+    for raw in sys.stdin:
+        if raw.strip():
+            yield decode_request(raw)
+
+
+def decode_request(raw: str) -> tuple[dict[str, Any], str]:
+    """Decode and validate one protocol-framed request."""
 
     request = json.loads(raw)
     if not isinstance(request, dict):
@@ -93,6 +112,7 @@ def emit_result(
     response: str = "",
     tokens: dict[str, int] | None = None,
     message: str = "",
+    reuse_process: bool = False,
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
 
@@ -101,6 +121,7 @@ def emit_result(
         "message": message,
         "response": response,
         "tokens": tokens,
+        "reuse_process": reuse_process,
     }
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
@@ -114,7 +135,10 @@ def handle_preflight(request: dict[str, Any]) -> bool:
 
     if not is_preflight_request(request):
         return False
-    emit_result(status="ok")
+    # The bundled adapters are stateless per request. A native resumable
+    # adapter must explicitly implement this handshake instead of claiming
+    # support through a generic environment toggle.
+    emit_result(status="ok", reuse_process=False)
     return True
 
 

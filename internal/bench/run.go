@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"text/template"
 	"time"
@@ -63,6 +64,10 @@ type Config struct {
 	// actionable-count decrease allowed before a run stalls. A zero value uses
 	// DefaultStallWindow.
 	StallWindow int
+
+	// ReuseProcess requests a negotiated long-lived adapter process. Adapters
+	// that do not support the protocol fall back to cold invocations.
+	ReuseProcess bool
 }
 
 // Dependencies contains the replaceable collaborators used by Run.
@@ -93,8 +98,18 @@ type Adapter interface {
 	Fix(instruction string, view agentreport.View, metadata AdapterMetadata) (*AdapterResult, error)
 }
 
+// AdapterCloser releases adapter resources after a benchmark run.
+type AdapterCloser interface {
+	Close() error
+}
+
+// ProcessReuseReporter reports whether the adapter negotiated process reuse.
+type ProcessReuseReporter interface {
+	ProcessReuseActive() bool
+}
+
 // Run drives a candidate until convergence or a terminal condition.
-func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+func Run(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
 	if err := validate(config, dependencies); err != nil {
 		return benchrecord.Record{}, err
 	}
@@ -117,7 +132,7 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 	config.Prompt.Hash = promptTemplateHash
 
 	startedAt := dependencies.Now()
-	record := benchrecord.Record{
+	record = benchrecord.Record{
 		SchemaVersion:        benchrecord.SchemaVersion,
 		Agent:                config.Agent,
 		Model:                config.Model,
@@ -129,8 +144,27 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 		PromptInstructions:   []string{},
 		RenderedPromptHashes: []string{},
 		AgentResponses:       []string{},
+		ProcessReuse:         config.ReuseProcess,
 		Final:                benchrecord.FinalSummary{},
 	}
+	defer func() {
+		if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
+			record.ProcessReuse = reporter.ProcessReuseActive()
+		}
+		if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
+			if err := closer.Close(); err != nil {
+				closeErr := fmt.Errorf("close adapter: %w", err)
+				if runErr == nil {
+					if record.TerminalState != benchrecord.TerminalStateConverged {
+						record = finish(record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
+					}
+					runErr = closeErr
+				} else {
+					runErr = errors.Join(runErr, closeErr)
+				}
+			}
+		}
+	}()
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
 		record.LifecyclePhase = benchrecord.LifecyclePhaseBaselinePrecondition
@@ -140,6 +174,9 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 
 	if state, err := runPreflight(config, dependencies, &record.LifecyclePhase); err != nil {
 		return finish(record, dependencies.Now(), state), err
+	}
+	if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
+		record.ProcessReuse = reporter.ProcessReuseActive()
 	}
 
 	return runIterations(config, dependencies, record, startedAt)

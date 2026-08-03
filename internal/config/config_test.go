@@ -21,6 +21,7 @@ campaigns:
     kind: candidate
 stbench:
   campaign: candidate
+  reuse_process: true
   source_dir: candidate-src
   adapter: python adapter.py
   adapter_timeout: 3m
@@ -43,7 +44,7 @@ stbench:
 	if loaded.Stbench == nil {
 		t.Fatal("Stbench = nil, want parsed stbench section")
 	}
-	if loaded.Stbench.Campaign != "candidate" || loaded.Stbench.SourceDir != "candidate-src" ||
+	if loaded.Stbench.Campaign != "candidate" || !loaded.Stbench.ReuseProcess || loaded.Stbench.SourceDir != "candidate-src" ||
 		loaded.Stbench.Adapter != "python adapter.py" ||
 		loaded.Stbench.AdapterTimeout != "3m" || loaded.Stbench.Lifecycle.CommandTimeout != "2m" {
 		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)

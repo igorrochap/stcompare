@@ -500,6 +500,7 @@ stbench:
   hardware: hardware-name
   adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
   adapter_timeout: 30m
+  # reuse_process: true
   source_dir: .
   stcompare_binary: stcompare
   record_path: .local/stbench/records/gpt5.6.json
@@ -528,7 +529,7 @@ override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
 `--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
 `--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
 `--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
-`--stall-window`, `--prompt-id`, and `--prompt-version`. The old short and
+`--stall-window`, `--prompt-id`, `--prompt-version`, and `--reuse-process`. The old short and
 duplicate aliases are not accepted. Effective values follow this precedence:
 explicit run flags override the `stbench` YAML section, which overrides the
 documented defaults. The `--base-url` override is applied before configuration
@@ -582,6 +583,19 @@ JSON object on stdin and must write one JSON object to stdout:
 the adapter's execution metadata. Adapter-specific flags are optional explicit
 overrides; do not duplicate these values in the adapter command by default.
 
+`reuse_process` is opt-in and off by default. When enabled, stbench asks the
+adapter during preflight whether it supports a line-delimited request/response
+session. A supporting adapter keeps its process alive and returns one JSON
+result per request; an adapter that does not advertise support automatically
+falls back to the cold one-shot invocation. Every reused turn receives the
+same fresh metadata, rendered instruction, and compact view as the cold path.
+This is process reuse, not context carry: stbench never sends prior prompts,
+reasoning, tool transcripts, or session history. Context carry is intentionally
+out of scope because it would confound agent comparisons and can overflow the
+small context windows targeted by local-model studies. Each request is still
+bounded by `adapter_timeout`, and the benchmark record's `process_reuse`
+field reports whether reuse was actually negotiated.
+
 Before the first comparison, `stbench` automatically runs a preflight smoke
 test: stop, optional reset, build, start, health check, and stop again. It then
 sends the adapter a no-op request with `"preflight": true`; a compatible
@@ -589,10 +603,15 @@ adapter returns an `ok` result without invoking its model or editing the
 candidate. Any failed preflight phase is reported before iteration 1 or a
 comparison begins.
 
+Reusable adapters set `reuse_process: true` in their successful preflight
+result and read one newline-delimited JSON request at a time. The reference
+adapters remain stateless by default and therefore return `reuse_process:
+false`; enabling the runner option is a verified no-op for those adapters.
+
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
-null }`. The adapter edits the candidate in place; unknown token usage must be
-reported as `null`. The command writes the versioned benchmark record to
+null, "reuse_process": false }`. The adapter edits the candidate in place;
+unknown token usage must be reported as `null`. The command writes the versioned benchmark record to
 `record_path`; its `tokens` field sums known usage, while
 `unknown_token_iterations` counts fix iterations that reported `null`. If no
 iteration reports token usage, `tokens` remains `null`. The command exits `0`

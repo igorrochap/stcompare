@@ -20,6 +20,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		PromptInstructions:   []string{"Task prompt stbench-default@2026-01-01"},
 		RenderedPromptHashes: []string{"rendered-prompt-hash"},
 		AgentResponses:       []string{"raw model response"},
+		ProcessReuse:         true,
 		Candidate:            "candidate",
 		Baseline:             "baseline",
 		StartedAt:            "2026-01-01T00:00:00Z",

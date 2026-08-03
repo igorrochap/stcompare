@@ -174,6 +174,150 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	}
 }
 
+func TestCommandAdapterReusesNegotiatedProcessAcrossRequests(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pidsPath := filepath.Join(dir, "pids")
+	requestsPath := filepath.Join(dir, "requests")
+	adapter := &CommandAdapter{
+		Command:      "",
+		WorkingDir:   dir,
+		ReuseProcess: true,
+		Env: []string{
+			"STBENCH_PIDS=" + pidsPath,
+			"STBENCH_REQUESTS=" + requestsPath,
+		},
+	}
+	adapter.Command = `printf '%s\n' "$$" >> "$STBENCH_PIDS"
+first_request=yes
+while IFS= read -r request; do
+  printf '%s\n' "$request" >> "$STBENCH_REQUESTS"
+  if [ "$first_request" = yes ]; then
+    printf '%s\n' '{"status":"ok","reuse_process":true}'
+    first_request=no
+  else
+    printf '%s\n' '{"status":"ok","response":"same process"}'
+  fi
+done`
+
+	metadata := AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"}
+	if err := adapter.Preflight(metadata); err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if !adapter.ProcessReuseActive() {
+		t.Fatal("ProcessReuseActive() = false, want true")
+	}
+	for _, instruction := range []string{"first instruction", "second instruction"} {
+		result, err := adapter.Fix(instruction, agentreport.View{Candidate: "candidate"}, metadata)
+		if err != nil {
+			t.Fatalf("Fix(%q) error = %v", instruction, err)
+		}
+		if result.Response != "same process" {
+			t.Fatalf("Fix(%q) response = %q, want same process", instruction, result.Response)
+		}
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	pids, err := os.ReadFile(pidsPath)
+	if err != nil {
+		t.Fatalf("read process IDs: %v", err)
+	}
+	if got := strings.TrimSpace(string(pids)); strings.Count(got, string(rune(10))) != 0 {
+		t.Fatalf("process IDs = %q, want one process", got)
+	}
+	requests, err := os.ReadFile(requestsPath)
+	if err != nil {
+		t.Fatalf("read requests: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(requests)), string(rune(10)))
+	if len(lines) != 3 {
+		t.Fatalf("request count = %d, want preflight plus two fixes", len(lines))
+	}
+	for index, line := range lines {
+		if !strings.Contains(line, `"agent":"codex"`) || !strings.Contains(line, `"model":"gpt-5"`) ||
+			!strings.Contains(line, `"hardware":"m4-pro"`) {
+			t.Fatalf("request %d = %q, want metadata on every request", index, line)
+		}
+	}
+}
+
+func TestCommandAdapterReuseFallsBackToColdProcessForStatelessAdapter(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	invocationsPath := filepath.Join(dir, "invocations")
+	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
+		"printf '%s\\n' \"$$\" >> \"$STBENCH_INVOCATIONS\"\n"+
+		"IFS= read -r request\n"+"printf '%s\\n' '{\"status\":\"ok\"}'\n")
+	adapter := &CommandAdapter{
+		Command:      script,
+		WorkingDir:   dir,
+		ReuseProcess: true,
+		Env:          []string{"STBENCH_INVOCATIONS=" + invocationsPath},
+	}
+	metadata := AdapterMetadata{Agent: "local", Model: "model", Hardware: "host"}
+	if err := adapter.Preflight(metadata); err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if adapter.ProcessReuseActive() {
+		t.Fatal("ProcessReuseActive() = true, want cold fallback")
+	}
+	if _, err := adapter.Fix("first", agentreport.View{}, metadata); err != nil {
+		t.Fatalf("first Fix() error = %v", err)
+	}
+	if _, err := adapter.Fix("second", agentreport.View{}, metadata); err != nil {
+		t.Fatalf("second Fix() error = %v", err)
+	}
+
+	invocations, err := os.ReadFile(invocationsPath)
+	if err != nil {
+		t.Fatalf("read invocation IDs: %v", err)
+	}
+	if got := len(strings.Split(strings.TrimSpace(string(invocations)), string(rune(10)))); got != 3 {
+		t.Fatalf("invocations = %q, want three cold processes", invocations)
+	}
+}
+
+func TestCommandAdapterReusedProcessTimeoutTerminatesSession(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	markerPath := filepath.Join(dir, "child-finished")
+	adapter := &CommandAdapter{
+		Command:        "",
+		WorkingDir:     dir,
+		ReuseProcess:   true,
+		CommandTimeout: 20 * time.Millisecond,
+		Env:            []string{"STBENCH_MARKER=" + markerPath},
+	}
+	adapter.Command = `first_request=yes
+while IFS= read -r request; do
+  if [ "$first_request" = yes ]; then
+    printf '%s\n' '{"status":"ok","reuse_process":true}'
+    first_request=no
+  else
+    sleep 0.2
+    printf alive > "$STBENCH_MARKER"
+    printf '%s\n' '{"status":"ok"}'
+  fi
+done`
+	metadata := AdapterMetadata{Agent: "local", Model: "model", Hardware: "host"}
+	if err := adapter.Preflight(metadata); err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	_, err := adapter.Fix("hang", agentreport.View{}, metadata)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Fix() error = %v, want timeout", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
+		t.Fatalf("marker error = %v, want persistent process terminated", statErr)
+	}
+}
+
 func TestCommandAdapterMapsErrorStatusToAdapterError(t *testing.T) {
 	t.Parallel()
 

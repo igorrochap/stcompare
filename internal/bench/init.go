@@ -180,6 +180,8 @@ stbench:
   # Keep the adapter command outside the API repository as well.
   adapter: python /absolute/path/to/adapter.py
   adapter_timeout: 30m
+  # Opt in only when the adapter advertises the reusable line protocol.
+  # reuse_process: true
   source_dir: .
   stcompare_binary: stcompare
   record_path: %s

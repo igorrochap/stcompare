@@ -76,7 +76,7 @@ class AdapterExamplesTest(unittest.TestCase):
                 safe_path(root, ".local/stbench/stop.sh")
 
     def test_adapter_examples_accept_no_op_preflight_without_running_agent(self) -> None:
-        request = json.dumps({"preflight": True})
+        request = json.dumps({"preflight": True, "reuse_process": True})
         with tempfile.TemporaryDirectory() as directory:
             for adapter in (LOCAL_ADAPTER, CLI_ADAPTER, FALLBACK_ADAPTER):
                 with self.subTest(adapter=adapter.name):
@@ -90,7 +90,9 @@ class AdapterExamplesTest(unittest.TestCase):
                     )
 
                     self.assertEqual(completed.returncode, 0, completed.stderr)
-                    self.assertEqual(json.loads(completed.stdout)["status"], "ok")
+                    result = json.loads(completed.stdout)
+                    self.assertEqual(result["status"], "ok")
+                    self.assertFalse(result["reuse_process"])
 
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:

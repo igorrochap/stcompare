@@ -27,7 +27,7 @@ from _protocol import (
     handle_preflight,
     is_managed_state_path,
     metadata_headers,
-    read_request,
+    read_requests,
     request_metadata,
     usage_to_tokens,
 )
@@ -69,23 +69,26 @@ def main(argv: list[str] | None = None) -> int:
     raw_response = ""
     try:
         settings = parse_args(argv)
-        request, instruction = read_request()
-        if handle_preflight(request):
-            return 0
-        metadata = request_metadata(request)
-        root = Path.cwd()
-        snapshot = tracked_snapshot(root, settings.max_snapshot_bytes)
-        raw_response, tokens = request_patch(
-            instruction,
-            snapshot,
-            model=settings.model or metadata["model"],
-            metadata=metadata,
-            responses_url=settings.responses_url,
-            timeout=settings.timeout,
-        )
-        patch = extract_patch(raw_response)
-        apply_patch(root, patch)
-        emit_result(status="ok", response=raw_response, tokens=tokens)
+        for request, instruction in read_requests():
+            try:
+                if handle_preflight(request):
+                    continue
+                metadata = request_metadata(request)
+                root = Path.cwd()
+                snapshot = tracked_snapshot(root, settings.max_snapshot_bytes)
+                raw_response, tokens = request_patch(
+                    instruction,
+                    snapshot,
+                    model=settings.model or metadata["model"],
+                    metadata=metadata,
+                    responses_url=settings.responses_url,
+                    timeout=settings.timeout,
+                )
+                patch = extract_patch(raw_response)
+                apply_patch(root, patch)
+                emit_result(status="ok", response=raw_response, tokens=tokens)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                emit_error(str(error), response=raw_response)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         emit_error(str(error), response=raw_response)

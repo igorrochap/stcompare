@@ -212,6 +212,27 @@ integration test.
   agent (provider `usage` for cloud/API agents; inference-server counts or a
   local tokenizer for local models). Unknown → `tokens: null`.
 
+**Optional adapter-process reuse:**
+
+- `reuse_process` is opt-in and false by default. The cold one-shot adapter
+  invocation remains the baseline behavior.
+- When enabled, `stbench` asks for reuse during preflight. An adapter opts in
+  by returning `reuse_process: true` and keeping its process alive with one
+  newline-delimited JSON response for each newline-delimited request. Adapters
+  that do not opt in use cold invocations automatically, making the option a
+  no-op for stateless calls.
+- Every reused request contains the same metadata, rendered task instruction,
+  and compact comparison view as the cold request. `stbench` never injects
+  prior prompts, reasoning, tool transcripts, or session history. This is
+  process reuse, not context carry; context carry is out of scope because it
+  would reintroduce the agent-plus-harness confound and can exceed small local
+  model context windows.
+- Each response is bounded by the per-request adapter timeout. A crashed or
+  wedged reused process ends the run as an adapter error, and the process is
+  closed on convergence, stall, max-iterations, adapter/lifecycle/tool error,
+  and final CLI cleanup. `process_reuse` in the benchmark record reports the
+  negotiated execution mode.
+
 **Termination and stall detection:**
 
 - **Converged** — `compare` exits `0`. Terminal state `converged`.
@@ -230,6 +251,7 @@ integration test.
 {
   "schema_version": "...",
   "agent": "...", "model": "...", "hardware": "...",   // provided by the caller
+  "process_reuse": bool,                                // negotiated adapter mode
   "prompt": { "id": "...", "version": "...", "hash": "..." },
                                                         // task-prompt identity (ADR-0007)
   "prompt_instructions": ["..."],                     // rendered instruction per agent fix

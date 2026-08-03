@@ -58,6 +58,7 @@ type runCommandOptions struct {
 	hardware        string
 	adapter         string
 	adapterTimeout  string
+	reuseProcess    bool
 	sourceDir       string
 	stcompareBinary string
 	recordPath      string
@@ -99,6 +100,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded and passed to the adapter")
 	flags.StringVar(&options.adapter, "adapter", "", "adapter command")
 	flags.StringVar(&options.adapterTimeout, "adapter-timeout", "", "adapter command timeout")
+	flags.BoolVar(&options.reuseProcess, "reuse-process", false, "reuse a negotiated adapter process across iterations")
 	flags.StringVar(&options.sourceDir, "source-dir", "", "candidate source directory")
 	flags.StringVar(&options.stcompareBinary, "stcompare-binary", "", "stcompare executable")
 	flags.StringVar(&options.recordPath, "record-path", "", "benchmark record output path")
@@ -172,6 +174,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		Candidate:     settings.campaign,
 		Baseline:      baselineName,
 		Prompt:        benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
+		ReuseProcess:  settings.reuseProcess,
 		MaxIterations: settings.maxIterations,
 		StallWindow:   settings.stallWindow,
 		BaselineExists: func() bool {
@@ -194,6 +197,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	candidate.ErrorOutput = command.ErrOrStderr()
 	adapter := NewCommandAdapter(settings.adapter, workingDir)
 	adapter.CommandTimeout = adapterTimeout
+	adapter.ReuseProcess = settings.reuseProcess
 	adapter.Stderr = command.ErrOrStderr()
 
 	defer func() {
@@ -237,6 +241,7 @@ type runSettings struct {
 	hardware        string
 	adapter         string
 	adapterTimeout  string
+	reuseProcess    bool
 	sourceDir       string
 	stcompareBinary string
 	recordPath      string
@@ -269,6 +274,7 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings.hardware = source.Hardware
 	settings.adapter = source.Adapter
 	settings.adapterTimeout = source.AdapterTimeout
+	settings.reuseProcess = source.ReuseProcess
 	if source.SourceDir != "" {
 		settings.sourceDir = source.SourceDir
 	}
@@ -311,6 +317,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("adapter-timeout") {
 		settings.adapterTimeout = options.adapterTimeout
+	}
+	if command.Flags().Changed("reuse-process") {
+		settings.reuseProcess = options.reuseProcess
 	}
 	if command.Flags().Changed("source-dir") {
 		settings.sourceDir = options.sourceDir

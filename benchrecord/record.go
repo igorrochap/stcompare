@@ -50,15 +50,17 @@ type Record struct {
 	PromptInstructions   []string       `json:"prompt_instructions"`
 	RenderedPromptHashes []string       `json:"rendered_prompt_hashes"`
 	AgentResponses       []string       `json:"agent_responses"`
-	Candidate            string         `json:"candidate"`
-	Baseline             string         `json:"baseline"`
-	StartedAt            string         `json:"started_at"`
-	EndedAt              string         `json:"ended_at"`
-	Iterations           int            `json:"iterations"`
-	TerminalState        TerminalState  `json:"terminal_state"`
-	LifecyclePhase       LifecyclePhase `json:"lifecycle_phase,omitempty"`
-	TimeMS               TimeBreakdown  `json:"time_ms"`
-	Tokens               *TokenUsage    `json:"tokens"`
+	// ProcessReuse reports whether the adapter negotiated a reusable process.
+	ProcessReuse   bool           `json:"process_reuse"`
+	Candidate      string         `json:"candidate"`
+	Baseline       string         `json:"baseline"`
+	StartedAt      string         `json:"started_at"`
+	EndedAt        string         `json:"ended_at"`
+	Iterations     int            `json:"iterations"`
+	TerminalState  TerminalState  `json:"terminal_state"`
+	LifecyclePhase LifecyclePhase `json:"lifecycle_phase,omitempty"`
+	TimeMS         TimeBreakdown  `json:"time_ms"`
+	Tokens         *TokenUsage    `json:"tokens"`
 	// UnknownTokenIterations counts fix iterations without reported token usage.
 	UnknownTokenIterations int              `json:"unknown_token_iterations"`
 	Final                  FinalSummary     `json:"final"`

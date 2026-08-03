@@ -20,6 +20,7 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		Model:           "model-name",
 		Hardware:        "hardware-name",
 		Adapter:         "python adapter.py",
+		ReuseProcess:    true,
 		SourceDir:       "candidate-src",
 		StcompareBinary: "./stcompare",
 		RecordPath:      "records/run.json",
@@ -39,7 +40,7 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		StallWindow:    3,
 	})
 
-	if settings.campaign != "campaign" || settings.adapter != "python adapter.py" || settings.sourceDir != "candidate-src" {
+	if settings.campaign != "campaign" || settings.adapter != "python adapter.py" || !settings.reuseProcess || settings.sourceDir != "candidate-src" {
 		t.Fatalf("settings = %#v, want caller configuration", settings)
 	}
 	if settings.stop != "./stop.sh" || settings.reset != "./reset.sh" || settings.healthTimeout != "5s" ||
@@ -67,7 +68,7 @@ func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
 	}
 
 	canonical := []string{
-		"campaign", "agent", "model", "hardware", "adapter", "adapter-timeout",
+		"campaign", "agent", "model", "hardware", "adapter", "adapter-timeout", "reuse-process",
 		"source-dir", "stcompare-binary", "record-path", "base-url",
 		"stop-command", "reset-command", "build-command", "start-command",
 		"command-timeout", "health-url", "health-timeout", "health-interval",
