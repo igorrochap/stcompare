@@ -39,8 +39,9 @@ see ADR-0004, ADR-0006). For each run it:
 3. Terminates the loop on convergence, on a **stall** (the actionable count
    stops dropping), or on a **max-iteration** cap.
 4. Emits one **benchmark record** per `(agent, candidate, run)` capturing
-   terminal state, iteration count, a per-phase time breakdown, token totals
-   (`null` when the agent cannot report them), and the final convergence counts.
+   terminal state, iteration count, a per-phase time breakdown, known token
+   totals plus the number of iterations with unknown usage, and the final
+   convergence counts.
 
 The candidate lifecycle (reset/build/start/health) is uniform and therefore
 owned by `stbench` via configuration; only the "work the fixes" step varies per
@@ -81,9 +82,10 @@ across agents so the benchmark measures the model, not its harness.
 12. As a researcher, I want the record to include the iteration count and the
     terminal state (converged, stalled, max-iterations, tool error, adapter
     error), so that I know how and why each run ended.
-13. As a researcher, I want token usage recorded as `{input, output, total}`
-    and as explicit `null` when the agent cannot report it, so that "unknown"
-    never collapses into "zero" and corrupts averages.
+13. As a researcher, I want known token usage recorded as `{input, output,
+    total}` while unknown iterations are counted explicitly, so that partial
+    data is retained without collapsing "unknown" into "zero" or overstating
+    an aggregate.
 14. As a researcher, I want the record to carry model and hardware metadata I
     provide, so that I can read latency and token numbers fairly across cloud
     and local runs.
@@ -233,6 +235,7 @@ integration test.
                     | "tool_error" | "adapter_error" | "lifecycle_error",
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
+  "unknown_token_iterations": N,
   "final": {
     "converged": bool,
     "still_failing": N, "regressed": N,
@@ -246,9 +249,10 @@ integration test.
 The three per-fix arrays use the same index: instruction, rendered-instruction
 hash, and raw agent response.
 
-- `tokens` at the record level is the sum over iterations; `null` if any
-  iteration's tokens were unknown (unknown is contagious, so aggregates are
-  never silently understated).
+- `tokens` at the record level is the sum of iterations with known usage.
+  `unknown_token_iterations` counts fix iterations whose usage was unknown.
+  `tokens` is `null` only when no iteration reported known usage, which
+  distinguishes an all-unknown run from a run with a retained partial sum.
 - `remaining_actionable` is empty on a converged run.
 
 **Configuration/CLI:** `stbench run` takes the candidate name, the agent/adapter
@@ -279,8 +283,9 @@ real subprocesses, services, or agents.
   - Lifecycle failure (fake `Candidate` fails a phase) → `lifecycle_error` with
     the failing phase recorded.
   - Time breakdown sums correctly from the injected clock across phases.
-  - Token aggregation: numeric usages sum; any `null` iteration makes the record
-    total `null`.
+  - Token aggregation: numeric usages sum, mixed numeric/`null` iterations
+    retain the known sum and count the unknown iterations, and an all-`null`
+    run keeps the record total `null`.
   - The embedded prompt template is identified by a content hash, and each
     rendered instruction is archived in the benchmark record.
 - **Benchmark record schema (`benchrecord`).** Pure marshal/round-trip tests of

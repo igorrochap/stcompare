@@ -32,7 +32,8 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 			CandidateReset: 10000,
 			Compare:        30000,
 		},
-		Tokens: &TokenUsage{Input: 10, Output: 20, Total: 30},
+		Tokens:                 &TokenUsage{Input: 10, Output: 20, Total: 30},
+		UnknownTokenIterations: 1,
 		Final: FinalSummary{
 			Converged:    true,
 			StillFailing: 0,
@@ -66,6 +67,9 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	}
 	if string(fields["schema_version"]) != `"1"` {
 		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "1")
+	}
+	if string(fields["unknown_token_iterations"]) != `1` {
+		t.Fatalf("unknown_token_iterations = %s, want 1", fields["unknown_token_iterations"])
 	}
 }
 

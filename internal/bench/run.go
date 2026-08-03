@@ -129,7 +129,6 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 		PromptInstructions:   []string{},
 		RenderedPromptHashes: []string{},
 		AgentResponses:       []string{},
-		Tokens:               &benchrecord.TokenUsage{},
 		Final:                benchrecord.FinalSummary{},
 	}
 
@@ -152,12 +151,12 @@ func runIterations(
 	record benchrecord.Record,
 	startedAt time.Time,
 ) (benchrecord.Record, error) {
+	record.Tokens = &benchrecord.TokenUsage{}
 	runner := iterationRunner{
 		config:       config,
 		dependencies: dependencies,
 		record:       &record,
 		timer:        &phaseTimer{now: dependencies.Now, cursor: startedAt},
-		tokensKnown:  true,
 	}
 	for iteration := 1; iteration <= config.MaxIterations; iteration++ {
 		runner.record.Iterations = iteration
@@ -171,13 +170,14 @@ func runIterations(
 }
 
 type iterationRunner struct {
-	config       Config
-	dependencies Dependencies
-	record       *benchrecord.Record
-	timer        *phaseTimer
-	lastView     agentreport.View
-	progress     progressTracker
-	tokensKnown  bool
+	config                 Config
+	dependencies           Dependencies
+	record                 *benchrecord.Record
+	timer                  *phaseTimer
+	lastView               agentreport.View
+	progress               progressTracker
+	unknownTokenIterations int
+	hasKnownTokens         bool
 }
 
 func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
@@ -241,10 +241,12 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 			view,
 			runner.config.AdapterMetadata,
 			runner.record.Tokens,
-			&runner.tokensKnown,
+			&runner.hasKnownTokens,
+			&runner.unknownTokenIterations,
 		)
 		return err
 	})
+	runner.record.UnknownTokenIterations = runner.unknownTokenIterations
 	if fix.Rendered {
 		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
 		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
@@ -257,13 +259,13 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 }
 
 func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) error {
-	runner.record.Tokens = tokenRecord(runner.tokensKnown, runner.record.Tokens)
+	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
 	return err
 }
 
 func (runner *iterationRunner) complete(state benchrecord.TerminalState) {
-	runner.record.Tokens = tokenRecord(runner.tokensKnown, runner.record.Tokens)
+	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
 }
 
@@ -362,7 +364,8 @@ func runAgentFix(
 	view agentreport.View,
 	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
-	tokensKnown *bool,
+	hasKnownTokens *bool,
+	unknownTokenIterations *int,
 ) (agentFixResult, error) {
 	instruction, err := renderPrompt(prompt, view)
 	if err != nil {
@@ -375,8 +378,9 @@ func runAgentFix(
 	}
 	result, err := adapter.Fix(instruction, view, metadata)
 	if result == nil || result.Tokens == nil {
-		*tokensKnown = false
-	} else if *tokensKnown {
+		(*unknownTokenIterations)++
+	} else {
+		*hasKnownTokens = true
 		tokens.Input += result.Tokens.Input
 		tokens.Output += result.Tokens.Output
 		tokens.Total += result.Tokens.Total
@@ -476,8 +480,8 @@ func containsID(ids map[string]struct{}, id string) bool {
 	return ok
 }
 
-func tokenRecord(known bool, usage *benchrecord.TokenUsage) *benchrecord.TokenUsage {
-	if !known {
+func tokenRecord(hasKnownTokens bool, usage *benchrecord.TokenUsage) *benchrecord.TokenUsage {
+	if !hasKnownTokens {
 		return nil
 	}
 	return usage

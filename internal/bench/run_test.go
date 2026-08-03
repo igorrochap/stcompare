@@ -637,7 +637,7 @@ func TestRunMissingBaselineFailsBeforeCandidateLifecycle(t *testing.T) {
 	}
 }
 
-func TestRunTimeBreakdownSumsAndUnknownTokensStayNull(t *testing.T) {
+func TestRunTimeBreakdownSumsAndPartialTokens(t *testing.T) {
 	comparator := &fakeComparator{results: []comparisonResult{
 		{exitCode: agentreport.ExitCodeNotConverged},
 		{exitCode: agentreport.ExitCodeNotConverged},
@@ -652,11 +652,36 @@ func TestRunTimeBreakdownSumsAndUnknownTokensStayNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if record.Tokens != nil {
-		t.Fatalf("tokens = %#v, want null after unknown usage", record.Tokens)
+	if got, want := *record.Tokens, (benchrecord.TokenUsage{Input: 3, Output: 4, Total: 7}); got != want {
+		t.Fatalf("tokens = %#v, want known partial sum %#v", got, want)
+	}
+	if got, want := record.UnknownTokenIterations, 1; got != want {
+		t.Fatalf("unknown token iterations = %d, want %d", got, want)
 	}
 	if got := record.TimeMS.Total; got != record.TimeMS.CandidateReset+record.TimeMS.Compare+record.TimeMS.AgentFix {
 		t.Fatalf("time total = %d, phase sum = %d", got, record.TimeMS.CandidateReset+record.TimeMS.Compare+record.TimeMS.AgentFix)
+	}
+}
+
+func TestRunKeepsTokensNullWhenEveryFixOmitsTokenUsage(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{
+		{exitCode: agentreport.ExitCodeNotConverged},
+		{exitCode: agentreport.ExitCodeNotConverged},
+		{exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{usages: []*benchrecord.TokenUsage{nil, nil}}
+
+	record, err := Run(Config{BaselineExists: func() bool { return true }, MaxIterations: 3}, Dependencies{
+		Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter, Now: fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.Tokens != nil {
+		t.Fatalf("tokens = %#v, want null when every fix omits usage", record.Tokens)
+	}
+	if got, want := record.UnknownTokenIterations, 2; got != want {
+		t.Fatalf("unknown token iterations = %d, want %d", got, want)
 	}
 }
 

@@ -574,8 +574,11 @@ The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
 null }`. The adapter edits the candidate in place; unknown token usage must be
 reported as `null`. The command writes the versioned benchmark record to
-`record_path`, exits `0` on convergence, `2` on a stalled or capped run, and
-`1` on tool, adapter, or lifecycle errors.
+`record_path`; its `tokens` field sums known usage, while
+`unknown_token_iterations` counts fix iterations that reported `null`. If no
+iteration reports token usage, `tokens` remains `null`. The command exits `0`
+on convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
+lifecycle errors.
 
 ### Adapter examples
 
