@@ -23,6 +23,7 @@ from _protocol import (
     emit_error,
     emit_result,
     handle_preflight,
+    is_managed_state_path,
     metadata_headers,
     read_request,
     request_metadata,
@@ -269,6 +270,7 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
 
 
 def list_files(root: Path, relative: str) -> dict[str, Any]:
+    root = root.resolve()
     directory = safe_path(root, relative)
     if not directory.is_dir():
         raise ValueError(f"not a directory: {relative}")
@@ -277,7 +279,10 @@ def list_files(root: Path, relative: str) -> dict[str, Any]:
         if ".git" in path.parts or "__pycache__" in path.parts:
             continue
         if path.is_file():
-            paths.append(str(path.relative_to(root)))
+            relative_path = path.relative_to(root)
+            if is_managed_state_path(relative_path.as_posix()):
+                continue
+            paths.append(str(relative_path))
         if len(paths) >= 200:
             break
     return {"ok": True, "files": paths, "truncated": len(paths) >= 200}
@@ -329,11 +334,14 @@ def run_command(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def safe_path(root: Path, relative: str) -> Path:
+    root = root.resolve()
     candidate = (root / relative).resolve()
     try:
-        candidate.relative_to(root.resolve())
+        relative_path = candidate.relative_to(root)
     except ValueError as error:
         raise ValueError("path escapes the candidate directory") from error
+    if is_managed_state_path(relative_path.as_posix()):
+        raise ValueError("path belongs to managed tool state")
     return candidate
 
 

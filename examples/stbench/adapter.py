@@ -25,6 +25,7 @@ from _protocol import (
     emit_error,
     emit_result,
     handle_preflight,
+    is_managed_state_path,
     metadata_headers,
     read_request,
     request_metadata,
@@ -113,6 +114,9 @@ def tracked_snapshot(root: Path, max_snapshot_bytes: int) -> str:
         if not encoded_path:
             continue
         relative = encoded_path.decode("utf-8")
+        if is_managed_state_path(relative):
+            skipped += 1
+            continue
         path = (root / relative).resolve()
         try:
             path.relative_to(root.resolve())
@@ -227,6 +231,17 @@ def extract_patch(response: str) -> str:
 
 
 def apply_patch(root: Path, patch: str) -> None:
+    for line in patch.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        for path in fields[2:4]:
+            relative = path[2:] if path[:2] in {"a/", "b/"} else path
+            if is_managed_state_path(relative):
+                raise ValueError(f"cloud patch cannot modify managed tool state: {relative}")
+
     check = subprocess.run(
         ["git", "apply", "--check", "--whitespace=nowarn", "-"],
         cwd=root,

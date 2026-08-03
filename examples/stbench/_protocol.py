@@ -1,20 +1,35 @@
 """Small helpers shared by the stbench adapter examples.
 
 The examples intentionally use only the Python standard library.  Keep this
-file next to an adapter when copying one into a candidate project.
+file next to an adapter in the managed harness state or another external
+directory.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from pathlib import PurePosixPath
 from typing import Any
+
+
+MANAGED_STATE_PATHS = (
+    PurePosixPath(".local/stbench"),
+    PurePosixPath(".local/stcompare"),
+)
 
 
 def is_preflight_request(request: dict[str, Any]) -> bool:
     """Return whether stbench sent the no-op adapter preflight request."""
 
     return request.get("preflight") is True
+
+
+def is_managed_state_path(relative: str) -> bool:
+    """Return whether a candidate-relative path belongs to tool state."""
+
+    path = PurePosixPath(relative)
+    return any(path == prefix or prefix in path.parents for prefix in MANAGED_STATE_PATHS)
 
 
 def read_request() -> tuple[dict[str, Any], str]:

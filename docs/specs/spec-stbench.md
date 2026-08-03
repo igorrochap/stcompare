@@ -184,6 +184,13 @@ integration test.
 
 - `stbench` invokes the configured adapter command with the candidate source
   directory as its working directory.
+- The adapter implementation and lifecycle harness are control-plane files,
+  not candidate source. `stbench init` stores generated lifecycle scripts and
+  the benchmark record in the repository-local `.local/stbench` control-plane
+  directory by default, and prints configuration paths for that directory.
+  Adapters exclude `.local/stbench` and `.local/stcompare` from source views and
+  edits; reference adapter implementations should remain outside the source
+  tree.
 - The `agent`, `model`, and `hardware` metadata from the stbench configuration,
   the rendered task instruction, and the compact `agentreport.View` (the
   actionable list and counts) are passed to the adapter on **stdin** as JSON.

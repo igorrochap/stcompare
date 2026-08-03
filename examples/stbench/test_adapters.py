@@ -13,12 +13,68 @@ from pathlib import Path
 
 
 EXAMPLES = Path(__file__).parent
+sys.path.insert(0, str(EXAMPLES))
+
+from adapter import apply_patch, tracked_snapshot
+from local_model_adapter import list_files, safe_path
+
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
 CLI_ADAPTER = EXAMPLES / "coding_agent_adapter.py"
 FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def test_cloud_snapshot_excludes_managed_tool_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "api.py").write_text("print('api')\n", encoding="utf-8")
+            state_file = root / ".local" / "stbench" / "stop.sh"
+            state_file.parent.mkdir(parents=True)
+            state_file.write_text("echo stop\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            snapshot = tracked_snapshot(root, 10_000)
+
+            self.assertIn("--- api.py ---", snapshot)
+            self.assertNotIn(".local/stbench", snapshot)
+
+    def test_cloud_patch_rejects_managed_tool_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            state_file = root / ".local" / "stbench" / "stop.sh"
+            state_file.parent.mkdir(parents=True)
+            state_file.write_text("echo stop\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            patch = (
+                "diff --git a/.local/stbench/stop.sh b/.local/stbench/stop.sh\n"
+                "--- a/.local/stbench/stop.sh\n"
+                "+++ b/.local/stbench/stop.sh\n"
+                "@@ -1 +1 @@\n"
+                "-echo stop\n"
+                "+echo changed\n"
+            )
+
+            with self.assertRaises(ValueError):
+                apply_patch(root, patch)
+
+            self.assertEqual(state_file.read_text(encoding="utf-8"), "echo stop\n")
+
+    def test_local_model_tools_hide_and_reject_managed_tool_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("print('api')\n", encoding="utf-8")
+            state_file = root / ".local" / "stbench" / "stop.sh"
+            state_file.parent.mkdir(parents=True)
+            state_file.write_text("echo stop\n", encoding="utf-8")
+
+            listing = list_files(root, ".")
+
+            self.assertEqual(listing["files"], ["api.py"])
+            with self.assertRaises(ValueError):
+                safe_path(root, ".local/stbench/stop.sh")
+
     def test_adapter_examples_accept_no_op_preflight_without_running_agent(self) -> None:
         request = json.dumps({"preflight": True})
         with tempfile.TemporaryDirectory() as directory:

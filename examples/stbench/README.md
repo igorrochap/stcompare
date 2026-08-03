@@ -45,8 +45,10 @@ use adapter flags only for deliberate overrides.
 | [`coding_agent_adapter.py`](coding_agent_adapter.py) | Research engineers testing with Codex or Claude Code | Yes, through the installed CLI | `codex` or `claude` |
 | [`adapter.py`](adapter.py) | Explicit fallback when neither path is available | Yes, after validating a generated diff | OpenAI cloud API and Git |
 
-All scripts use only the Python standard library. Keep `_protocol.py` beside a
-copied adapter.
+All scripts use only the Python standard library. Keep `_protocol.py` beside
+the adapter outside the API repository; do not copy adapter support files into
+the source tree being modified by the agent. `stbench init` keeps lifecycle
+scripts in `.local/stbench/` and adds that directory to `.gitignore`.
 
 ## Local-model adapter
 
@@ -68,16 +70,20 @@ If the local server requires authentication, keep the credential in
 `STBENCH_LOCAL_MODEL_API_KEY`.
 
 The scaffold exposes `list_files`, `read_file`, `write_file`, and shell-free
-`run_command` tools. Paths are confined to the candidate directory. The
-adapter sums usage reported by each inference response and returns `null` if a
-response omits usage.
+`run_command` tools. Paths are confined to the API source tree, and managed
+`.local/stbench` and `.local/stcompare` state is hidden from file listing and
+write tools. `stbench init` uses `.local/stbench` by default, while an external
+state directory can be selected explicitly. The adapter sums usage reported by
+each inference response and returns `null` if a response omits usage.
 
 ## Coding-agent CLI adapter
 
 This is a first-class, supported path for research engineers doing local
 sanity checks, demos, or out-of-target comparisons. It invokes one installed
 CLI per stbench iteration; the CLI can use its own native file and command
-tools, but the adapter itself does not own the loop.
+tools, but the adapter itself does not own the loop. Keep the adapter
+implementation outside the API repository; the CLI runs from the API
+repository so the agent can modify its real source.
 
 Codex:
 
