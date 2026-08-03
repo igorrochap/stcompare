@@ -499,6 +499,7 @@ stbench:
   model: model-name
   hardware: hardware-name
   adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
+  adapter_timeout: 30m
   candidate_dir: ./candidate
   stcompare_binary: stcompare
   record_path: records/gpt5.6.json
@@ -507,6 +508,7 @@ stbench:
     reset: ./reset-candidate.sh
     build: ./build-candidate.sh
     start: ./start-candidate.sh
+    command_timeout: 30m
     health_url: http://localhost:8080/health
     health_timeout: 30s
     health_interval: 100ms
@@ -541,7 +543,12 @@ idempotent. `reset` is for runtime state only; it must not run commands such as
 `start` must launch a long-running candidate process. After `start` returns,
 `stbench` polls `health_url` until it receives a `2xx` response or the health
 timeout expires; `health_interval` controls the delay between polls. The
-adapter runs with `candidate_dir` as its working directory. It receives one
+`adapter_timeout` bounds each adapter invocation and
+`lifecycle.command_timeout` bounds each lifecycle hook; both default to 30
+minutes and can also be supplied as `--adapter-timeout` and
+`--command-timeout`. Timed-out commands are terminated as process groups and
+produce an adapter or lifecycle error. The adapter runs with `candidate_dir` as
+its working directory. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json

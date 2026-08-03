@@ -73,6 +73,7 @@ type StbenchConfig struct {
 	Model           string                 `yaml:"model"`
 	Hardware        string                 `yaml:"hardware"`
 	Adapter         string                 `yaml:"adapter"`
+	AdapterTimeout  string                 `yaml:"adapter_timeout"`
 	CandidateDir    string                 `yaml:"candidate_dir"`
 	StcompareBinary string                 `yaml:"stcompare_binary"`
 	RecordPath      string                 `yaml:"record_path"`
@@ -94,6 +95,7 @@ type StbenchLifecycleConfig struct {
 	Reset          string `yaml:"reset"`
 	Build          string `yaml:"build"`
 	Start          string `yaml:"start"`
+	CommandTimeout string `yaml:"command_timeout"`
 	HealthURL      string `yaml:"health_url"`
 	HealthTimeout  string `yaml:"health_timeout"`
 	HealthInterval string `yaml:"health_interval"`

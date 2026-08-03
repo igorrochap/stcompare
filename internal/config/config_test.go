@@ -21,10 +21,12 @@ campaigns:
 stbench:
   candidate: candidate
   adapter: python adapter.py
+  adapter_timeout: 3m
   lifecycle:
     stop: ./stop.sh
     build: ./build.sh
     start: ./start.sh
+    command_timeout: 2m
     health_url: http://localhost:8080/health
     health_timeout: 5s
 `
@@ -39,7 +41,8 @@ stbench:
 	if loaded.Stbench == nil {
 		t.Fatal("Stbench = nil, want parsed stbench section")
 	}
-	if loaded.Stbench.Candidate != "candidate" || loaded.Stbench.Adapter != "python adapter.py" {
+	if loaded.Stbench.Candidate != "candidate" || loaded.Stbench.Adapter != "python adapter.py" ||
+		loaded.Stbench.AdapterTimeout != "3m" || loaded.Stbench.Lifecycle.CommandTimeout != "2m" {
 		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {

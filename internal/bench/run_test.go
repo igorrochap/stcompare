@@ -499,6 +499,45 @@ func TestRunRecordsFailedCandidatePhase(t *testing.T) {
 	}
 }
 
+func TestRunTurnsLifecycleTimeoutIntoLifecycleError(t *testing.T) {
+	candidate := &CommandCandidate{
+		BuildCommand:   "sleep 1",
+		CommandTimeout: 10 * time.Millisecond,
+	}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: &fakeComparator{},
+		Candidate:  candidate,
+		Adapter:    &fakeAdapter{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Run error = %v, want lifecycle timeout", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateLifecycleError || record.LifecyclePhase != "build" {
+		t.Fatalf("record = %#v, want build lifecycle error", record)
+	}
+}
+
+func TestRunTurnsAdapterTimeoutIntoAdapterError(t *testing.T) {
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: &fakeComparator{results: []comparisonResult{{
+			view:     agentreport.View{Counts: agentreport.Counts{StillFailing: 1}},
+			exitCode: agentreport.ExitCodeNotConverged,
+		}}},
+		Candidate: &fakeCandidate{},
+		Adapter: &CommandAdapter{
+			Command:        "sleep 1",
+			CommandTimeout: 10 * time.Millisecond,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Run error = %v, want adapter timeout", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAdapterError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateAdapterError)
+	}
+}
+
 func TestRunMissingBaselineFailsBeforeCandidateLifecycle(t *testing.T) {
 	candidate := &fakeCandidate{}
 	comparator := &fakeComparator{}

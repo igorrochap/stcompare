@@ -57,6 +57,7 @@ type runCommandOptions struct {
 	model           string
 	hardware        string
 	adapter         string
+	adapterTimeout  string
 	candidateDir    string
 	stcompareBinary string
 	recordPath      string
@@ -65,6 +66,7 @@ type runCommandOptions struct {
 	reset           string
 	build           string
 	start           string
+	commandTimeout  string
 	healthURL       string
 	healthTimeout   string
 	healthInterval  string
@@ -97,6 +99,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded and passed to the adapter")
 	flags.StringVar(&options.adapter, "adapter", "", "adapter command")
 	flags.StringVar(&options.adapter, "adapter-command", "", "alias for --adapter")
+	flags.StringVar(&options.adapterTimeout, "adapter-timeout", "", "adapter command timeout")
 	flags.StringVar(&options.candidateDir, "candidate-dir", "", "candidate source directory")
 	flags.StringVar(&options.candidateDir, "source-dir", "", "alias for --candidate-dir")
 	flags.StringVar(&options.stcompareBinary, "stcompare-binary", "", "stcompare executable")
@@ -112,6 +115,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.StringVar(&options.build, "build-command", "", "alias for --build")
 	flags.StringVar(&options.start, "start", "", "candidate start command")
 	flags.StringVar(&options.start, "start-command", "", "alias for --start")
+	flags.StringVar(&options.commandTimeout, "command-timeout", "", "candidate lifecycle command timeout")
 	flags.StringVar(&options.healthURL, "health-url", "", "candidate health-check URL")
 	flags.StringVar(&options.healthTimeout, "health-timeout", "", "health-check timeout")
 	flags.StringVar(&options.healthInterval, "health-interval", "", "health-check polling interval")
@@ -157,6 +161,14 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	if err != nil {
 		return err
 	}
+	adapterTimeout, err := parseDuration("adapter timeout", settings.adapterTimeout)
+	if err != nil {
+		return err
+	}
+	commandTimeout, err := parseDuration("command timeout", settings.commandTimeout)
+	if err != nil {
+		return err
+	}
 
 	baselineName := findBaselineName(effective)
 	benchConfig := Config{
@@ -183,11 +195,13 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	candidate.ResetCommand = settings.reset
 	candidate.BuildCommand = settings.build
 	candidate.StartCommand = settings.start
+	candidate.CommandTimeout = commandTimeout
 	candidate.HealthURL = settings.healthURL
 	candidate.HealthTimeout = healthTimeout
 	candidate.HealthInterval = healthInterval
 	candidate.ErrorOutput = command.ErrOrStderr()
 	adapter := NewCommandAdapter(settings.adapter, workingDir)
+	adapter.CommandTimeout = adapterTimeout
 	adapter.Stderr = command.ErrOrStderr()
 
 	defer func() {
@@ -230,6 +244,7 @@ type runSettings struct {
 	model           string
 	hardware        string
 	adapter         string
+	adapterTimeout  string
 	candidateDir    string
 	stcompareBinary string
 	recordPath      string
@@ -237,6 +252,7 @@ type runSettings struct {
 	reset           string
 	build           string
 	start           string
+	commandTimeout  string
 	healthURL       string
 	healthTimeout   string
 	healthInterval  string
@@ -260,6 +276,7 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings.model = source.Model
 	settings.hardware = source.Hardware
 	settings.adapter = source.Adapter
+	settings.adapterTimeout = source.AdapterTimeout
 	if source.CandidateDir != "" {
 		settings.candidateDir = source.CandidateDir
 	}
@@ -273,6 +290,7 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings.reset = source.Lifecycle.Reset
 	settings.build = source.Lifecycle.Build
 	settings.start = source.Lifecycle.Start
+	settings.commandTimeout = source.Lifecycle.CommandTimeout
 	settings.healthURL = source.Lifecycle.HealthURL
 	settings.healthTimeout = source.Lifecycle.HealthTimeout
 	settings.healthInterval = source.Lifecycle.HealthInterval
@@ -299,6 +317,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	if command.Flags().Changed("adapter") || command.Flags().Changed("adapter-command") {
 		settings.adapter = options.adapter
 	}
+	if command.Flags().Changed("adapter-timeout") {
+		settings.adapterTimeout = options.adapterTimeout
+	}
 	if command.Flags().Changed("candidate-dir") || command.Flags().Changed("source-dir") {
 		settings.candidateDir = options.candidateDir
 	}
@@ -319,6 +340,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("start") || command.Flags().Changed("start-command") {
 		settings.start = options.start
+	}
+	if command.Flags().Changed("command-timeout") {
+		settings.commandTimeout = options.commandTimeout
 	}
 	if command.Flags().Changed("health-url") {
 		settings.healthURL = options.healthURL

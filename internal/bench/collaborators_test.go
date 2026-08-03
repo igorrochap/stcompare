@@ -146,6 +146,33 @@ func TestCommandAdapterMapsErrorStatusToAdapterError(t *testing.T) {
 	}
 }
 
+func TestCommandAdapterTimeoutKillsProcessGroup(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "child-started")
+	markerPath := filepath.Join(dir, "child-finished")
+	script := "(printf started > " + shellQuote(startedPath) + "; sleep 0.2; printf alive > " + shellQuote(markerPath) + ") &\nwait\n"
+	adapter := &CommandAdapter{
+		Command:        script,
+		WorkingDir:     dir,
+		CommandTimeout: 100 * time.Millisecond,
+	}
+
+	_, err := adapter.Fix("instruction", agentreport.View{}, AdapterMetadata{})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Fix() error = %v, want timeout error", err)
+	}
+	if _, err := os.Stat(startedPath); err != nil {
+		t.Fatalf("child start marker error = %v, want child process to have started", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("child process marker error = %v, want child process killed", err)
+	}
+}
+
 func TestCommandCandidateRunsLifecycleAndPollsHealth(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "lifecycle.log")
@@ -237,6 +264,18 @@ func TestCommandCandidateReportsImmediateStartFailure(t *testing.T) {
 	candidate := &CommandCandidate{StartCommand: "exit 1"}
 	if err := candidate.Start(); err == nil || !strings.Contains(err.Error(), "start command") {
 		t.Fatalf("Start() error = %v, want start-command error", err)
+	}
+}
+
+func TestCommandCandidateHookTimeoutIsReported(t *testing.T) {
+	candidate := &CommandCandidate{
+		BuildCommand:   "sleep 1",
+		CommandTimeout: 20 * time.Millisecond,
+	}
+
+	err := candidate.Build()
+	if err == nil || !strings.Contains(err.Error(), "build command") || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Build() error = %v, want named timeout error", err)
 	}
 }
 

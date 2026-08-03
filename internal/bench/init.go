@@ -62,6 +62,7 @@ stbench:
   model: model-name
   hardware: hardware-name
   adapter: ./adapter.sh
+  adapter_timeout: 30m
   candidate_dir: .
   stcompare_binary: stcompare
   record_path: benchmark-record.json
@@ -70,6 +71,7 @@ stbench:
     reset: ./reset.sh
     build: ./build.sh
     start: ./start.sh
+    command_timeout: 30m
     health_url: http://localhost:8080/health
     health_timeout: 30s
     health_interval: 100ms

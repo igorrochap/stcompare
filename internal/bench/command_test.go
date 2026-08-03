@@ -32,15 +32,18 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 			HealthURL:      "http://localhost:8080/health",
 			HealthTimeout:  "5s",
 			HealthInterval: "10ms",
+			CommandTimeout: "2m",
 		},
-		MaxIterations: 7,
-		StallWindow:   3,
+		AdapterTimeout: "3m",
+		MaxIterations:  7,
+		StallWindow:    3,
 	})
 
 	if settings.candidate != "candidate" || settings.adapter != "python adapter.py" || settings.candidateDir != "candidate-src" {
 		t.Fatalf("settings = %#v, want caller configuration", settings)
 	}
-	if settings.stop != "./stop.sh" || settings.reset != "./reset.sh" || settings.healthTimeout != "5s" {
+	if settings.stop != "./stop.sh" || settings.reset != "./reset.sh" || settings.healthTimeout != "5s" ||
+		settings.commandTimeout != "2m" || settings.adapterTimeout != "3m" {
 		t.Fatalf("lifecycle settings = %#v, want caller configuration", settings)
 	}
 	if settings.maxIterations != 7 || settings.stallWindow != 3 || settings.promptVersion != "2" {
@@ -53,6 +56,27 @@ func TestApplyRunSettingsAcceptsPositionalCandidate(t *testing.T) {
 	applyRunSettings(&settings, runCommandOptions{candidate: "candidate"}, &cobra.Command{})
 	if settings.candidate != "candidate" {
 		t.Fatalf("candidate = %q, want positional candidate", settings.candidate)
+	}
+}
+
+func TestApplyRunSettingsAcceptsTimeoutFlags(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("adapter-timeout", "", "")
+	command.Flags().String("command-timeout", "", "")
+	if err := command.Flags().Set("adapter-timeout", "2s"); err != nil {
+		t.Fatalf("set adapter timeout flag: %v", err)
+	}
+	if err := command.Flags().Set("command-timeout", "3s"); err != nil {
+		t.Fatalf("set command timeout flag: %v", err)
+	}
+
+	settings := defaultRunSettings(nil)
+	applyRunSettings(&settings, runCommandOptions{
+		adapterTimeout: "2s",
+		commandTimeout: "3s",
+	}, command)
+	if settings.adapterTimeout != "2s" || settings.commandTimeout != "3s" {
+		t.Fatalf("timeouts = %q and %q, want flag values", settings.adapterTimeout, settings.commandTimeout)
 	}
 }
 

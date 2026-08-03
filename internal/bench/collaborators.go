@@ -21,6 +21,7 @@ import (
 const (
 	defaultHealthTimeout  = 30 * time.Second
 	defaultHealthInterval = 100 * time.Millisecond
+	defaultCommandTimeout = 30 * time.Minute
 	startFailureGrace     = 10 * time.Millisecond
 )
 
@@ -131,10 +132,11 @@ type AdapterResult struct {
 
 // CommandAdapter invokes a language-agnostic adapter process.
 type CommandAdapter struct {
-	Command    string
-	WorkingDir string
-	Stderr     io.Writer
-	Env        []string
+	Command        string
+	WorkingDir     string
+	CommandTimeout time.Duration
+	Stderr         io.Writer
+	Env            []string
 }
 
 var _ Adapter = (*CommandAdapter)(nil)
@@ -167,7 +169,19 @@ func (adapter *CommandAdapter) Fix(
 		return nil, fmt.Errorf("encode adapter request: %w", err)
 	}
 
-	command := exec.Command("sh", "-c", adapter.Command)
+	timeout := adapter.CommandTimeout
+	if timeout <= 0 {
+		timeout = defaultCommandTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, "sh", "-c", adapter.Command)
+	configureProcessGroup(command)
+	command.Cancel = func() error {
+		return killProcessGroup(command.Process)
+	}
+	command.WaitDelay = time.Second
 	command.Dir = adapter.WorkingDir
 	command.Env = append(os.Environ(), adapter.Env...)
 	command.Stdin = bytes.NewReader(input)
@@ -181,6 +195,14 @@ func (adapter *CommandAdapter) Fix(
 	}
 
 	runErr := command.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf(
+			"adapter command timed out after %s: %w%s",
+			timeout,
+			ctx.Err(),
+			formatCommandStderr(stderr.Bytes()),
+		)
+	}
 	var response AdapterResponse
 	if err := decodeJSON(stdout.Bytes(), &response); err != nil {
 		if runErr != nil {
@@ -251,12 +273,10 @@ func NewCommandCandidate(workingDir string) *CommandCandidate {
 
 // Stop runs the configured stop hook and terminates a process started by Start.
 func (candidate *CommandCandidate) Stop() error {
-	if err := candidate.runHook("stop", candidate.StopCommand); err != nil {
-		return err
-	}
+	hookErr := candidate.runHook("stop", candidate.StopCommand)
 	candidate.terminateStartedProcess()
 	candidate.startedEver = false
-	return nil
+	return hookErr
 }
 
 // Reset runs the optional reset hook.
@@ -370,26 +390,32 @@ func (candidate *CommandCandidate) runHook(name string, hook string) error {
 		return nil
 	}
 
-	var command *exec.Cmd
-	var cancel context.CancelFunc
-	if candidate.CommandTimeout > 0 {
-		var ctx context.Context
-		ctx, cancel = context.WithTimeout(context.Background(), candidate.CommandTimeout)
-		command = exec.CommandContext(ctx, "sh", "-c", hook)
-	} else {
-		command = exec.Command("sh", "-c", hook)
+	timeout := candidate.CommandTimeout
+	if timeout <= 0 {
+		timeout = defaultCommandTimeout
 	}
-	if cancel != nil {
-		defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, "sh", "-c", hook)
+	configureProcessGroup(command)
+	command.Cancel = func() error {
+		return killProcessGroup(command.Process)
 	}
+	command.WaitDelay = time.Second
 	candidate.configureCommand(command)
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("%s command: %w", name, err)
+	runErr := command.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%s command timed out after %s: %w", name, timeout, ctx.Err())
+	}
+	if runErr != nil {
+		return fmt.Errorf("%s command: %w", name, runErr)
 	}
 	return nil
 }
 
 func (candidate *CommandCandidate) configureCommand(command *exec.Cmd) {
+	configureProcessGroup(command)
 	command.Dir = candidate.WorkingDir
 	command.Env = os.Environ()
 	command.Stdout = candidate.Output
@@ -400,7 +426,7 @@ func (candidate *CommandCandidate) terminateStartedProcess() {
 	if candidate.started == nil || candidate.started.Process == nil {
 		return
 	}
-	_ = candidate.started.Process.Kill()
+	_ = killProcessGroup(candidate.started.Process)
 	if candidate.startedDone != nil {
 		<-candidate.startedDone
 	}
