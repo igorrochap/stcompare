@@ -31,6 +31,38 @@ def read_request() -> tuple[dict[str, Any], str]:
     return request, instruction
 
 
+def request_metadata(request: dict[str, Any]) -> dict[str, str]:
+    """Return the stbench execution metadata from an adapter request."""
+
+    metadata: dict[str, str] = {}
+    for name in ("agent", "model", "hardware"):
+        value = request.get(name)
+        if not isinstance(value, str):
+            raise ValueError(f"adapter input {name} is required")
+        metadata[name] = value
+    return metadata
+
+
+def metadata_environment(metadata: dict[str, str]) -> dict[str, str]:
+    """Expose request metadata to an adapter's child process."""
+
+    return {
+        "STBENCH_AGENT": metadata["agent"],
+        "STBENCH_MODEL": metadata["model"],
+        "STBENCH_HARDWARE": metadata["hardware"],
+    }
+
+
+def metadata_headers(metadata: dict[str, str]) -> dict[str, str]:
+    """Expose request metadata to an adapter's HTTP-backed agent."""
+
+    return {
+        "X-Stbench-Agent": metadata["agent"],
+        "X-Stbench-Model": metadata["model"],
+        "X-Stbench-Hardware": metadata["hardware"],
+    }
+
+
 def emit_result(
     *,
     status: str,

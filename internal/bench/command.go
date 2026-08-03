@@ -92,9 +92,9 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 
 	flags := command.Flags()
 	flags.StringVar(&options.candidate, "candidate", "", "candidate campaign name")
-	flags.StringVar(&options.agent, "agent", "", "agent name recorded in the benchmark record")
-	flags.StringVar(&options.model, "model", "", "model metadata recorded verbatim")
-	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded verbatim")
+	flags.StringVar(&options.agent, "agent", "", "agent metadata recorded and passed to the adapter")
+	flags.StringVar(&options.model, "model", "", "model metadata recorded and passed to the adapter")
+	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded and passed to the adapter")
 	flags.StringVar(&options.adapter, "adapter", "", "adapter command")
 	flags.StringVar(&options.adapter, "adapter-command", "", "alias for --adapter")
 	flags.StringVar(&options.candidateDir, "candidate-dir", "", "candidate source directory")
@@ -160,9 +160,11 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 
 	baselineName := findBaselineName(effective)
 	benchConfig := Config{
-		Agent:         settings.agent,
-		Model:         settings.model,
-		Hardware:      settings.hardware,
+		AdapterMetadata: AdapterMetadata{
+			Agent:    settings.agent,
+			Model:    settings.model,
+			Hardware: settings.hardware,
+		},
 		Candidate:     settings.candidate,
 		Baseline:      baselineName,
 		Prompt:        benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},

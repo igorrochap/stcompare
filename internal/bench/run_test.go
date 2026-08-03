@@ -23,11 +23,11 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	adapter := &fakeAdapter{}
 
 	record, err := Run(Config{
-		Agent:          "agent",
-		Candidate:      "candidate",
-		Baseline:       "baseline",
-		BaselineExists: func() bool { return true },
-		MaxIterations:  3,
+		AdapterMetadata: AdapterMetadata{Agent: "agent"},
+		Candidate:       "candidate",
+		Baseline:        "baseline",
+		BaselineExists:  func() bool { return true },
+		MaxIterations:   3,
 	}, Dependencies{
 		Comparator: comparator,
 		Candidate:  candidate,
@@ -148,6 +148,37 @@ func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
 	}
 	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "raw model response" {
 		t.Fatalf("agent responses = %#v, want archived raw model response", record.AgentResponses)
+	}
+}
+
+func TestRunPassesRecordedMetadataToAdapter(t *testing.T) {
+	view := agentreport.View{Counts: agentreport.Counts{StillFailing: 1}}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	_, err := Run(Config{
+		AdapterMetadata: AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"},
+		BaselineExists:  func() bool { return true },
+		MaxIterations:   2,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(adapter.metadata) != 1 {
+		t.Fatalf("adapter metadata calls = %d, want 1", len(adapter.metadata))
+	}
+	want := AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"}
+	if adapter.metadata[0] != want {
+		t.Fatalf("adapter metadata = %#v, want %#v", adapter.metadata[0], want)
 	}
 }
 
@@ -568,13 +599,19 @@ func (f *fakeCandidate) fail(phase string) error {
 
 type fakeAdapter struct {
 	instructions []string
+	metadata     []AdapterMetadata
 	usages       []*benchrecord.TokenUsage
 	responses    []string
 	errs         []error
 }
 
-func (f *fakeAdapter) Fix(instruction string, _ agentreport.View) (*AdapterResult, error) {
+func (f *fakeAdapter) Fix(
+	instruction string,
+	_ agentreport.View,
+	metadata AdapterMetadata,
+) (*AdapterResult, error) {
 	f.instructions = append(f.instructions, instruction)
+	f.metadata = append(f.metadata, metadata)
 	var usage *benchrecord.TokenUsage
 	if len(f.usages) != 0 {
 		usage = f.usages[0]

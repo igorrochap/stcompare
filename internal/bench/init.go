@@ -59,6 +59,8 @@ const lifecycleConfigStanza = `# Add this stanza to stcompare.yaml and adjust th
 stbench:
   candidate: gpt5.6
   agent: local-agent
+  model: model-name
+  hardware: hardware-name
   adapter: ./adapter.sh
   candidate_dir: .
   stcompare_binary: stcompare

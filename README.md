@@ -498,7 +498,7 @@ stbench:
   agent: local-agent
   model: model-name
   hardware: hardware-name
-  adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --agent codex --timeout 1800
+  adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
   candidate_dir: ./candidate
   stcompare_binary: stcompare
   record_path: records/gpt5.6.json
@@ -545,8 +545,12 @@ adapter runs with `candidate_dir` as its working directory. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json
-{"instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+{"agent":"codex","model":"gpt-5","hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
 ```
+
+`agent`, `model`, and `hardware` come from the `stbench` configuration and are
+the adapter's execution metadata. Adapter-specific flags are optional explicit
+overrides; do not duplicate these values in the adapter command by default.
 
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
@@ -569,16 +573,18 @@ Three reference adapters are provided in
 - `local_model_adapter.py` is the first-class on-prem path. It talks to an
   OpenAI-compatible local inference server and gives the model confined
   read/write/command tools, so source is edited in place without a cloud
-  dependency or repository snapshot. Pass its URL, model, timeout, and turn
-  limit as flags on the `adapter:` command; keep only an optional API key in
-  `STBENCH_LOCAL_MODEL_API_KEY`.
+  dependency or repository snapshot. Put its URL, model, hardware, timeout,
+  and turn limit in the `stbench` configuration; keep only an optional API key
+  in `STBENCH_LOCAL_MODEL_API_KEY`.
 - `coding_agent_adapter.py` is the first-class engineering path for an
-  installed Codex or Claude Code CLI. Pass `--agent codex` or `--agent claude`
-  and the timeout on the `adapter:` command; no runner code changes are needed.
+  installed Codex or Claude Code CLI. Set `agent`, `model`, and `hardware` in
+  the `stbench` configuration and pass only the timeout on the `adapter:`
+  command; no runner code changes are needed.
 - `adapter.py` is the explicit cloud fallback. It snapshots tracked source,
   requests a unified diff, validates it with `git apply --check`, and applies
-  it. Pass its model, endpoint, timeout, and snapshot limit as flags on the
-  `adapter:` command; keep `OPENAI_API_KEY` as an environment credential. The
+  it. Put its model and hardware in the `stbench` configuration and pass the
+  endpoint, timeout, and snapshot limit on the `adapter:` command; keep
+  `OPENAI_API_KEY` as an environment credential. The
   example documents its cloud, repository-size, and patch-format limitations
   up front; it is not the recommended on-prem path.
 

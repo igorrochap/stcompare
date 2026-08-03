@@ -22,7 +22,9 @@ from _protocol import (
     cap_text,
     emit_error,
     emit_result,
+    metadata_headers,
     read_request,
+    request_metadata,
     usage_to_tokens,
 )
 
@@ -107,7 +109,10 @@ TOOLS = [
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=DEFAULT_URL, help="OpenAI-compatible chat completions URL")
-    parser.add_argument("--model", default="local-model", help="Model name sent to the inference server")
+    parser.add_argument(
+        "--model",
+        help="Explicit model override; defaults to the stbench request metadata",
+    )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout in seconds")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help="Maximum tool-use turns")
     return parser.parse_args(argv)
@@ -116,12 +121,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
-        _, instruction = read_request()
+        request, instruction = read_request()
+        metadata = request_metadata(request)
         response, usages = run_agent(
             instruction,
             Path.cwd(),
             url=settings.url,
-            model=settings.model,
+            model=settings.model or metadata["model"],
+            metadata=metadata,
             timeout=settings.timeout,
             max_turns=settings.max_turns,
         )
@@ -147,6 +154,7 @@ def run_agent(
     model: str,
     timeout: float,
     max_turns: int,
+    metadata: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, int] | None]]:
     if timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -169,7 +177,7 @@ def run_agent(
             "tools": TOOLS,
             "tool_choice": "auto",
         }
-        result = post_json(url, payload, timeout)
+        result = post_json(url, payload, timeout, metadata=metadata)
         usages.append(usage_to_tokens(result.get("usage")))
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -210,8 +218,16 @@ def run_agent(
     raise RuntimeError(f"local model reached the {max_turns}-turn limit")
 
 
-def post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    metadata: dict[str, str] | None = None,
+) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
+    if metadata is not None:
+        headers.update(metadata_headers(metadata))
     api_key = os.environ.get("STBENCH_LOCAL_MODEL_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

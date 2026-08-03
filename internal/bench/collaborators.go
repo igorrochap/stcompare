@@ -110,6 +110,7 @@ func (comparator *CommandComparator) Compare(config Config) (agentreport.View, i
 
 // AdapterRequest is the JSON request sent to an external adapter.
 type AdapterRequest struct {
+	AdapterMetadata
 	Instruction string           `json:"instruction"`
 	View        agentreport.View `json:"view"`
 }
@@ -146,13 +147,21 @@ func NewCommandAdapter(command string, workingDir string) *CommandAdapter {
 	}
 }
 
-// Fix sends the rendered instruction and compact view to the adapter.
-func (adapter *CommandAdapter) Fix(instruction string, view agentreport.View) (*AdapterResult, error) {
+// Fix sends execution metadata, the rendered instruction, and compact view to the adapter.
+func (adapter *CommandAdapter) Fix(
+	instruction string,
+	view agentreport.View,
+	metadata AdapterMetadata,
+) (*AdapterResult, error) {
 	if strings.TrimSpace(adapter.Command) == "" {
 		return nil, errors.New("adapter command is required")
 	}
 
-	request := AdapterRequest{Instruction: instruction, View: view}
+	request := AdapterRequest{
+		AdapterMetadata: metadata,
+		Instruction:     instruction,
+		View:            view,
+	}
 	input, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode adapter request: %w", err)

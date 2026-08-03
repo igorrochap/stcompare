@@ -3,8 +3,14 @@
 `stbench` owns the benchmark loop. An adapter is only the per-iteration
 delivery boundary:
 
-1. `stbench` sends one JSON request on stdin: the rendered, versioned task
+1. `stbench` sends one JSON request on stdin: the `agent`, `model`, and
+   `hardware` metadata from `stcompare.yml`, plus the rendered, versioned task
    instruction and the compact `agentreport.View`.
+
+   ```json
+   {"agent":"codex","model":"gpt-5","hardware":"local-machine","instruction":"...","view":{"actionable":[]}}
+   ```
+
 2. The adapter delivers that instruction in the selected agent's envelope and
    edits the candidate in its current working directory.
 3. The adapter writes one JSON result on stdout:
@@ -23,6 +29,8 @@ delivery boundary:
 The adapter must not run the compare/fix loop, replace the task with its own
 prompt, or read `junit.xml`/HAR/VCR/NDJSON files. The instruction already
 contains the fixed stbench task and compact view from `compare --format agent`.
+The request metadata is the source of truth for the executed agent and model;
+use adapter flags only for deliberate overrides.
 
 ## Which example to use
 
@@ -39,13 +47,15 @@ copied adapter.
 
 Start an on-prem inference server that exposes a compatible
 `/v1/chat/completions` endpoint with tool-call support, then configure the
-adapter command. Keep the server URL, model, timeout, and turn limit directly
-in the adapter command so the complete configuration stays in `stcompare.yaml`:
+adapter command. Keep the server URL, model, hardware, timeout, and turn limit
+in the `stbench` configuration:
 
 ```yaml
 stbench:
   agent: local-model
-  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --model my-local-code-model --timeout 300 --max-turns 20
+  model: my-local-code-model
+  hardware: local-machine
+  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 300 --max-turns 20
 ```
 
 Use an absolute script path when `candidate_dir` is not the repository root.
@@ -69,7 +79,9 @@ Codex:
 ```yaml
 stbench:
   agent: codex
-  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --agent codex --timeout 1800
+  model: gpt-5
+  hardware: local-machine
+  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --timeout 1800
 ```
 
 Claude Code:
@@ -77,7 +89,9 @@ Claude Code:
 ```yaml
 stbench:
   agent: claude
-  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --agent claude --timeout 1800
+  model: claude-model
+  hardware: local-machine
+  adapter: python /absolute/path/to/stcompare/examples/stbench/coding_agent_adapter.py --timeout 1800
 ```
 
 The adapter uses Codex's non-interactive `codex exec --json` mode with
@@ -85,7 +99,8 @@ The adapter uses Codex's non-interactive `codex exec --json` mode with
 json` mode. The selected CLI must be available on `PATH`. The CLI adapter
 reports usage when the CLI emits it and otherwise returns `tokens: null`. For
 an alternate launcher, pass `--command` with the command and arguments to
-invoke, and use `--agent` to select the matching output format.
+invoke; the request's `agent` metadata selects the matching output format.
+Use `--agent` only as an explicit override.
 
 The Codex CLI details are documented in [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/), and the Claude Code
 flags are documented in the [Claude Code CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage).
@@ -106,7 +121,9 @@ Configure it without changing the runner:
 ```yaml
 stbench:
   agent: cloud-fallback
-  adapter: python /absolute/path/to/stcompare/examples/stbench/adapter.py --model gpt-5.6 --responses-url https://api.openai.com/v1/responses --timeout 600 --max-snapshot-bytes 1000000
+  model: gpt-5
+  hardware: cloud-runner
+  adapter: python /absolute/path/to/stcompare/examples/stbench/adapter.py --responses-url https://api.openai.com/v1/responses --timeout 600 --max-snapshot-bytes 1000000
 ```
 
 Before using this fallback, account for its limitations:

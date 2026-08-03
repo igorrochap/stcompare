@@ -34,11 +34,16 @@ const (
 	DefaultStallWindow = 2
 )
 
+// AdapterMetadata identifies the execution configuration supplied to an adapter.
+type AdapterMetadata struct {
+	Agent    string `json:"agent"`
+	Model    string `json:"model"`
+	Hardware string `json:"hardware"`
+}
+
 // Config describes one benchmark run.
 type Config struct {
-	Agent     string
-	Model     string
-	Hardware  string
+	AdapterMetadata
 	Candidate string
 	Baseline  string
 
@@ -84,7 +89,7 @@ type Candidate interface {
 
 // Adapter applies one rendered task instruction and reports the adapter result.
 type Adapter interface {
-	Fix(instruction string, view agentreport.View) (*AdapterResult, error)
+	Fix(instruction string, view agentreport.View, metadata AdapterMetadata) (*AdapterResult, error)
 }
 
 // Run drives a candidate until convergence or a terminal condition.
@@ -229,6 +234,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 			runner.dependencies.Adapter,
 			runner.config.Prompt,
 			view,
+			runner.config.AdapterMetadata,
 			runner.record.Tokens,
 			&runner.tokensKnown,
 		)
@@ -331,6 +337,7 @@ func runAgentFix(
 	adapter Adapter,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
 	tokensKnown *bool,
 ) (agentFixResult, error) {
@@ -343,7 +350,7 @@ func runAgentFix(
 		Hash:        hashContent(instruction),
 		Rendered:    true,
 	}
-	result, err := adapter.Fix(instruction, view)
+	result, err := adapter.Fix(instruction, view, metadata)
 	if result == nil || result.Tokens == nil {
 		*tokensKnown = false
 	} else if *tokensKnown {

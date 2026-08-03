@@ -20,11 +20,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from _protocol import cap_text, emit_error, emit_result, read_request, usage_to_tokens
+from _protocol import (
+    cap_text,
+    emit_error,
+    emit_result,
+    metadata_headers,
+    read_request,
+    request_metadata,
+    usage_to_tokens,
+)
 
 
 DEFAULT_RESPONSES_URL = "https://api.openai.com/v1/responses"
-DEFAULT_MODEL = "gpt-5.6"
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_SNAPSHOT_BYTES = 1_000_000
 
@@ -37,7 +44,10 @@ directory and must be applicable with git apply. Do not change the task scope.
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model name")
+    parser.add_argument(
+        "--model",
+        help="Explicit model override; defaults to the stbench request metadata",
+    )
     parser.add_argument(
         "--responses-url",
         default=DEFAULT_RESPONSES_URL,
@@ -57,13 +67,15 @@ def main(argv: list[str] | None = None) -> int:
     raw_response = ""
     try:
         settings = parse_args(argv)
-        _, instruction = read_request()
+        request, instruction = read_request()
+        metadata = request_metadata(request)
         root = Path.cwd()
         snapshot = tracked_snapshot(root, settings.max_snapshot_bytes)
         raw_response, tokens = request_patch(
             instruction,
             snapshot,
-            model=settings.model,
+            model=settings.model or metadata["model"],
+            metadata=metadata,
             responses_url=settings.responses_url,
             timeout=settings.timeout,
         )
@@ -128,6 +140,7 @@ def request_patch(
     model: str,
     responses_url: str,
     timeout: float,
+    metadata: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, int] | None]:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -149,13 +162,16 @@ def request_patch(
             },
         ],
     }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if metadata is not None:
+        headers.update(metadata_headers(metadata))
     request = urllib.request.Request(
         responses_url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:

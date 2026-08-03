@@ -25,6 +25,8 @@ class AdapterExamplesTest(unittest.TestCase):
             fake_cli.write_text(
                 "#!/bin/sh\n"
                 "cat > received-instruction.txt\n"
+                "printf '%s\\n' \"$@\" > received-args.txt\n"
+                "printf '%s\\n' \"$STBENCH_HARDWARE\" > received-hardware.txt\n"
                 "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"edited candidate\"}}'\n"
                 "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":7,\"total_tokens\":12}}'\n",
                 encoding="utf-8",
@@ -34,9 +36,17 @@ class AdapterExamplesTest(unittest.TestCase):
             environment["PATH"] = fake_bin + os.pathsep + environment["PATH"]
 
             completed = subprocess.run(
-                [sys.executable, str(CLI_ADAPTER), "--agent", "codex", "--timeout", "5"],
+                [sys.executable, str(CLI_ADAPTER), "--timeout", "5"],
                 cwd=candidate,
-                input=json.dumps({"instruction": "exact task", "view": {"actionable": []}}),
+                input=json.dumps(
+                    {
+                        "agent": "codex",
+                        "model": "gpt-5",
+                        "hardware": "m4-pro",
+                        "instruction": "exact task",
+                        "view": {"actionable": []},
+                    }
+                ),
                 text=True,
                 capture_output=True,
                 env=environment,
@@ -49,14 +59,24 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["response"], "edited candidate")
             self.assertEqual(result["tokens"], {"input": 5, "output": 7, "total": 12})
             self.assertEqual((candidate / "received-instruction.txt").read_text(), "exact task")
+            self.assertIn("--model\ngpt-5\n", (candidate / "received-args.txt").read_text())
+            self.assertEqual((candidate / "received-hardware.txt").read_text(), "m4-pro\n")
 
     def test_local_model_adapter_uses_tools_to_edit_candidate(self) -> None:
         calls: list[dict] = []
+        received_metadata: list[dict[str, str | None]] = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
                 length = int(self.headers["Content-Length"])
                 calls.append(json.loads(self.rfile.read(length)))
+                received_metadata.append(
+                    {
+                        "agent": self.headers.get("X-Stbench-Agent"),
+                        "model": self.headers.get("X-Stbench-Model"),
+                        "hardware": self.headers.get("X-Stbench-Hardware"),
+                    }
+                )
                 if len(calls) == 1:
                     response = {
                         "choices": [
@@ -109,15 +129,21 @@ class AdapterExamplesTest(unittest.TestCase):
                     str(LOCAL_ADAPTER),
                     "--url",
                     url,
-                    "--model",
-                    "local-code-model",
                     "--timeout",
                     "5",
                     "--max-turns",
                     "20",
                 ],
                 cwd=directory,
-                input=json.dumps({"instruction": "exact task", "view": {"actionable": []}}),
+                input=json.dumps(
+                    {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "hardware": "m4-pro",
+                        "instruction": "exact task",
+                        "view": {"actionable": []},
+                    }
+                ),
                 text=True,
                 capture_output=True,
                 env=environment,
@@ -132,6 +158,11 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["response"], "done")
             self.assertEqual(result["tokens"], {"input": 8, "output": 6, "total": 14})
             self.assertEqual((Path(directory) / "fixed.txt").read_text(), "fixed\n")
+            self.assertEqual(calls[0]["model"], "local-code-model")
+            self.assertEqual(
+                received_metadata[0],
+                {"agent": "local-model", "model": "local-code-model", "hardware": "m4-pro"},
+            )
             self.assertEqual(calls[0]["messages"][1]["content"], "exact task")
             self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
 
@@ -141,6 +172,7 @@ class AdapterExamplesTest(unittest.TestCase):
             fake_cli.write_text(
                 "#!/bin/sh\n"
                 "cat >/dev/null\n"
+                "printf '%s\\n' \"$@\" > received-args.txt\n"
                 "printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"claude edited candidate\",\"usage\":{\"input_tokens\":11,\"output_tokens\":13,\"total_tokens\":24}}'\n",
                 encoding="utf-8",
             )
@@ -149,9 +181,17 @@ class AdapterExamplesTest(unittest.TestCase):
             environment["PATH"] = fake_bin + os.pathsep + environment["PATH"]
 
             completed = subprocess.run(
-                [sys.executable, str(CLI_ADAPTER), "--agent", "claude", "--timeout", "5"],
+                [sys.executable, str(CLI_ADAPTER), "--timeout", "5"],
                 cwd=directory,
-                input=json.dumps({"instruction": "exact task", "view": {}}),
+                input=json.dumps(
+                    {
+                        "agent": "claude",
+                        "model": "claude-model",
+                        "hardware": "m4-pro",
+                        "instruction": "exact task",
+                        "view": {},
+                    }
+                ),
                 text=True,
                 capture_output=True,
                 env=environment,
@@ -163,6 +203,7 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["response"], "claude edited candidate")
             self.assertEqual(result["tokens"], {"input": 11, "output": 13, "total": 24})
+            self.assertIn("--model\nclaude-model\n", (Path(directory) / "received-args.txt").read_text())
 
 
 if __name__ == "__main__":

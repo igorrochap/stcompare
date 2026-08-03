@@ -21,7 +21,9 @@ from _protocol import (
     cap_text,
     emit_error,
     emit_result,
+    metadata_environment,
     read_request,
+    request_metadata,
     usage_to_tokens,
 )
 
@@ -34,13 +36,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         choices=("codex", "claude", "claude-code"),
-        default="codex",
-        help="Coding-agent CLI to invoke",
+        help="Explicit agent override; defaults to the stbench request metadata",
+    )
+    parser.add_argument(
+        "--model",
+        help="Explicit model override; defaults to the stbench request metadata",
     )
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="CLI timeout in seconds")
     parser.add_argument(
         "--command",
-        help="Override the selected agent command; use --agent to select its output format",
+        help="Override the selected agent command",
     )
     return parser.parse_args(argv)
 
@@ -48,12 +53,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
-        _, instruction = read_request()
-        agent = settings.agent.strip().lower()
-        command = agent_command(agent, settings.command)
+        request, instruction = read_request()
+        metadata = request_metadata(request)
+        agent = (settings.agent or metadata["agent"]).strip().lower()
+        model = settings.model or metadata["model"] or None
+        command = agent_command(agent, settings.command, model)
         timeout = settings.timeout
         if timeout <= 0:
             raise ValueError("--timeout must be positive")
+        environment = os.environ.copy()
+        child_metadata = dict(metadata)
+        child_metadata["agent"] = agent
+        child_metadata["model"] = model or ""
+        environment.update(metadata_environment(child_metadata))
         completed = subprocess.run(
             command,
             input=instruction,
@@ -62,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             capture_output=True,
             timeout=timeout,
             check=False,
+            env=environment,
         )
         if completed.stderr:
             sys.stderr.write(completed.stderr)
@@ -94,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
 
-def agent_command(agent: str, override: str | None = None) -> list[str]:
+def agent_command(agent: str, override: str | None = None, model: str | None = None) -> list[str]:
     override = (override or "").strip()
     if override:
         command = shlex.split(override)
@@ -105,24 +118,25 @@ def agent_command(agent: str, override: str | None = None) -> list[str]:
     if agent == "codex":
         # `-` makes stdin the complete prompt. workspace-write is the least
         # permissive Codex mode that still lets the agent edit the candidate.
-        return [
-            "codex",
-            "exec",
-            "--json",
-            "--sandbox",
-            "workspace-write",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            "-",
-        ]
+        command = ["codex", "exec", "--json"]
+        if model is not None:
+            command.extend(["--model", model])
+        command.extend(
+            [
+                "--sandbox",
+                "workspace-write",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "-",
+            ]
+        )
+        return command
     if agent in {"claude", "claude-code"}:
-        return [
-            "claude",
-            "-p",
-            "--output-format",
-            "json",
-            "--dangerously-skip-permissions",
-        ]
+        command = ["claude", "-p", "--output-format", "json"]
+        if model is not None:
+            command.extend(["--model", model])
+        command.append("--dangerously-skip-permissions")
+        return command
     raise ValueError(
         f"unsupported agent {agent!r}; use codex, claude, or --command"
     )

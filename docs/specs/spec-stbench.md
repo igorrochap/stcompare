@@ -178,8 +178,11 @@ integration test.
 
 - `stbench` invokes the configured adapter command with the candidate source
   directory as its working directory.
-- The rendered task instruction **and** the compact `agentreport.View` (the
+- The `agent`, `model`, and `hardware` metadata from the stbench configuration,
+  the rendered task instruction, and the compact `agentreport.View` (the
   actionable list and counts) are passed to the adapter on **stdin** as JSON.
+  The request metadata is the source of truth for adapter execution; an
+  adapter may override it only through an explicit adapter option.
   This compact view is the agent's problem source on **every** iteration,
   including the first — never `junit.xml` or the raw VCR/HAR/NDJSON transcripts
   (those are internal evidence only; see Further Notes).

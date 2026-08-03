@@ -57,7 +57,7 @@ func TestCommandComparatorParsesAgentViewAndExitCode(t *testing.T) {
 	}
 }
 
-func TestCommandAdapterSendsInstructionAndViewAndReadsTokens(t *testing.T) {
+func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -81,7 +81,12 @@ func TestCommandAdapterSendsInstructionAndViewAndReadsTokens(t *testing.T) {
 		}},
 	}
 
-	result, err := adapter.Fix("fix the candidate", wantView)
+	metadata := AdapterMetadata{
+		Agent:    "codex",
+		Model:    "gpt-5",
+		Hardware: "m4-pro",
+	}
+	result, err := adapter.Fix("fix the candidate", wantView, metadata)
 	if err != nil {
 		t.Fatalf("Fix() error = %v", err)
 	}
@@ -103,7 +108,12 @@ func TestCommandAdapterSendsInstructionAndViewAndReadsTokens(t *testing.T) {
 	if request.Instruction != "fix the candidate" {
 		t.Fatalf("instruction = %q, want %q", request.Instruction, "fix the candidate")
 	}
-	if request.View.Counts != wantView.Counts || len(request.View.Actionable) != 1 || request.View.Actionable[0].ID != "problem-1" {
+	if request.Agent != metadata.Agent || request.Model != metadata.Model ||
+		request.Hardware != metadata.Hardware {
+		t.Fatalf("metadata = %#v, want %#v", request, metadata)
+	}
+	if request.View.Counts != wantView.Counts || len(request.View.Actionable) != 1 ||
+		request.View.Actionable[0].ID != "problem-1" {
 		t.Fatalf("view = %#v, want %#v", request.View, wantView)
 	}
 	pwd, err := os.ReadFile(pwdPath)
@@ -127,7 +137,7 @@ func TestCommandAdapterMapsErrorStatusToAdapterError(t *testing.T) {
 		"printf '%s' '{\"status\":\"error\",\"message\":\"cannot edit\",\"tokens\":null}'\n")
 	adapter := &CommandAdapter{Command: script, WorkingDir: dir}
 
-	result, err := adapter.Fix("instruction", agentreport.View{})
+	result, err := adapter.Fix("instruction", agentreport.View{}, AdapterMetadata{})
 	if err == nil || !strings.Contains(err.Error(), "cannot edit") {
 		t.Fatalf("Fix() error = %v, want adapter message", err)
 	}
