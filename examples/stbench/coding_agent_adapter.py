@@ -21,6 +21,7 @@ from _protocol import (
     cap_text,
     emit_error,
     emit_result,
+    handle_preflight,
     metadata_environment,
     read_request,
     request_metadata,
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
         request, instruction = read_request()
+        if handle_preflight(request):
+            return 0
         metadata = request_metadata(request)
         agent = (settings.agent or metadata["agent"]).strip().lower()
         model = settings.model or metadata["model"] or None

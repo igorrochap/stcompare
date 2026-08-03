@@ -116,6 +116,20 @@ type AdapterRequest struct {
 	View        agentreport.View `json:"view"`
 }
 
+// AdapterPreflightRequest is the no-op request sent before the first comparison.
+type AdapterPreflightRequest struct {
+	AdapterMetadata
+	Preflight bool `json:"preflight"`
+}
+
+type adapterRequest interface {
+	isAdapterRequest()
+}
+
+func (AdapterRequest) isAdapterRequest() {}
+
+func (AdapterPreflightRequest) isAdapterRequest() {}
+
 // AdapterResponse is the JSON result expected from an external adapter.
 type AdapterResponse struct {
 	Tokens   *benchrecord.TokenUsage `json:"tokens"`
@@ -149,21 +163,33 @@ func NewCommandAdapter(command string, workingDir string) *CommandAdapter {
 	}
 }
 
+// Preflight verifies that the adapter command accepts a no-op request.
+func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
+	_, err := adapter.runRequest(AdapterPreflightRequest{
+		AdapterMetadata: metadata,
+		Preflight:       true,
+	})
+	return err
+}
+
 // Fix sends execution metadata, the rendered instruction, and compact view to the adapter.
 func (adapter *CommandAdapter) Fix(
 	instruction string,
 	view agentreport.View,
 	metadata AdapterMetadata,
 ) (*AdapterResult, error) {
+	return adapter.runRequest(AdapterRequest{
+		AdapterMetadata: metadata,
+		Instruction:     instruction,
+		View:            view,
+	})
+}
+
+func (adapter *CommandAdapter) runRequest(request adapterRequest) (*AdapterResult, error) {
 	if strings.TrimSpace(adapter.Command) == "" {
 		return nil, errors.New("adapter command is required")
 	}
 
-	request := AdapterRequest{
-		AdapterMetadata: metadata,
-		Instruction:     instruction,
-		View:            view,
-	}
 	input, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("encode adapter request: %w", err)

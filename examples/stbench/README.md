@@ -26,6 +26,11 @@ delivery boundary:
 
    Report `"tokens": null` when the agent does not expose token usage.
 
+Before the first comparison, `stbench` sends `{"preflight": true}`. The
+adapter must return an `ok` result for this no-op request without invoking the
+model or editing the candidate. This lets `stbench` verify that the configured
+adapter command is runnable before spending model time.
+
 The adapter must not run the compare/fix loop, replace the task with its own
 prompt, or read `junit.xml`/HAR/VCR/NDJSON files. The instruction already
 contains the fixed stbench task and compact view from `compare --format agent`.

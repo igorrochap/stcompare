@@ -191,6 +191,10 @@ integration test.
   "response": "<raw model response>", "status": "ok" | "error",
   "message": "…" }`. A non-zero adapter exit or `status: "error"` ends the
   run as `adapter_error`; the response text is retained for audit.
+- Before the first comparison, `stbench` sends a no-op preflight request with
+  `"preflight": true`. The adapter must execute its command, return an `ok`
+  result, and exit without invoking a model or editing the candidate. The
+  request does not include an instruction or compact view.
 - The adapter — not `stbench` — is responsible for capturing tokens from its
   agent (provider `usage` for cloud/API agents; inference-server counts or a
   local tokenizer for local models). Unknown → `tokens: null`.

@@ -89,6 +89,7 @@ type Candidate interface {
 
 // Adapter applies one rendered task instruction and reports the adapter result.
 type Adapter interface {
+	Preflight(metadata AdapterMetadata) error
 	Fix(instruction string, view agentreport.View, metadata AdapterMetadata) (*AdapterResult, error)
 }
 
@@ -136,6 +137,10 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 		record.LifecyclePhase = benchrecord.LifecyclePhaseBaselinePrecondition
 		return finish(record, dependencies.Now(), benchrecord.TerminalStateLifecycleError),
 			fmt.Errorf("baseline precondition: campaign %q is missing", config.Baseline)
+	}
+
+	if state, err := runPreflight(config, dependencies, &record.LifecyclePhase); err != nil {
+		return finish(record, dependencies.Now(), state), err
 	}
 
 	return runIterations(config, dependencies, record, startedAt)
@@ -299,6 +304,24 @@ func runCandidateLifecycle(candidate Candidate, failedPhase *benchrecord.Lifecyc
 		}
 	}
 	return nil
+}
+
+func runPreflight(
+	config Config,
+	dependencies Dependencies,
+	failedPhase *benchrecord.LifecyclePhase,
+) (benchrecord.TerminalState, error) {
+	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase); err != nil {
+		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
+	}
+	if err := dependencies.Candidate.Stop(); err != nil {
+		*failedPhase = benchrecord.LifecyclePhaseStop
+		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight stop: %w", err)
+	}
+	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
+		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+	}
+	return "", nil
 }
 
 type promptTemplateData struct {

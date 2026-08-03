@@ -559,6 +559,13 @@ JSON object on stdin and must write one JSON object to stdout:
 the adapter's execution metadata. Adapter-specific flags are optional explicit
 overrides; do not duplicate these values in the adapter command by default.
 
+Before the first comparison, `stbench` automatically runs a preflight smoke
+test: stop, optional reset, build, start, health check, and stop again. It then
+sends the adapter a no-op request with `"preflight": true`; a compatible
+adapter returns an `ok` result without invoking its model or editing the
+candidate. Any failed preflight phase is reported before iteration 1 or a
+comparison begins.
+
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
 null }`. The adapter edits the candidate in place; unknown token usage must be

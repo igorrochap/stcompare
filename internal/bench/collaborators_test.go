@@ -129,6 +129,51 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	}
 }
 
+func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "preflight.json")
+	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
+		"cat > \"$STBENCH_PREFLIGHT\"\n"+
+		"printf '%s' '{\"status\":\"ok\",\"tokens\":null}'\n")
+	adapter := &CommandAdapter{
+		Command:    script,
+		WorkingDir: dir,
+		Env:        []string{"STBENCH_PREFLIGHT=" + inputPath},
+	}
+	metadata := AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"}
+
+	if err := adapter.Preflight(metadata); err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+
+	contents, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Fatalf("read preflight input: %v", err)
+	}
+	var request AdapterPreflightRequest
+	if err := json.Unmarshal(contents, &request); err != nil {
+		t.Fatalf("decode preflight input: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(contents, &fields); err != nil {
+		t.Fatalf("decode preflight fields: %v", err)
+	}
+	if !request.Preflight {
+		t.Fatal("preflight request flag = false, want true")
+	}
+	if _, ok := fields["instruction"]; ok {
+		t.Fatal("preflight request contains an instruction")
+	}
+	if _, ok := fields["view"]; ok {
+		t.Fatal("preflight request contains a view")
+	}
+	if request.Agent != metadata.Agent || request.Model != metadata.Model || request.Hardware != metadata.Hardware {
+		t.Fatalf("preflight metadata = %#v, want %#v", request, metadata)
+	}
+}
+
 func TestCommandAdapterMapsErrorStatusToAdapterError(t *testing.T) {
 	t.Parallel()
 

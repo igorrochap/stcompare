@@ -11,6 +11,12 @@ import sys
 from typing import Any
 
 
+def is_preflight_request(request: dict[str, Any]) -> bool:
+    """Return whether stbench sent the no-op adapter preflight request."""
+
+    return request.get("preflight") is True
+
+
 def read_request() -> tuple[dict[str, Any], str]:
     """Decode the one JSON request written by stbench."""
 
@@ -21,6 +27,9 @@ def read_request() -> tuple[dict[str, Any], str]:
     request = json.loads(raw)
     if not isinstance(request, dict):
         raise ValueError("adapter input must be a JSON object")
+
+    if is_preflight_request(request):
+        return request, ""
 
     instruction = request.get("instruction")
     if not isinstance(instruction, str) or not instruction.strip():
@@ -83,6 +92,15 @@ def emit_result(
 
 def emit_error(message: str, *, response: str = "") -> None:
     emit_result(status="error", response=response, message=message)
+
+
+def handle_preflight(request: dict[str, Any]) -> bool:
+    """Emit the successful no-op response when handling a preflight request."""
+
+    if not is_preflight_request(request):
+        return False
+    emit_result(status="ok")
+    return True
 
 
 def usage_to_tokens(usage: Any) -> dict[str, int] | None:

@@ -49,11 +49,91 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	if len(record.RemainingActionable) != 0 {
 		t.Fatalf("remaining actionable = %#v, want empty", record.RemainingActionable)
 	}
-	if got, want := candidate.calls, []string{"stop", "reset", "build", "start", "wait_healthy"}; !sameStrings(got, want) {
+	if got, want := candidate.calls, preflightAndFirstIterationCalls; !sameStrings(got, want) {
 		t.Fatalf("candidate calls = %#v, want %#v", got, want)
 	}
 	if len(comparator.configs) != 1 {
 		t.Fatalf("comparator calls = %d, want 1", len(comparator.configs))
+	}
+}
+
+func TestRunPreflightsLifecycleAndAdapterBeforeComparison(t *testing.T) {
+	view := agentreport.View{
+		Converged: true,
+		Counts:    agentreport.Counts{Fixed: 1},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{view: view, exitCode: agentreport.ExitCodeConverged}}}
+	candidate := &fakeCandidate{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  1,
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if len(adapter.preflightMetadata) != 1 {
+		t.Fatalf("adapter preflight calls = %d, want 1", len(adapter.preflightMetadata))
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter fix calls = %d, want 0 for a converged comparison", len(adapter.instructions))
+	}
+	if len(comparator.configs) != 1 {
+		t.Fatalf("comparator calls = %d, want 1 after preflight", len(comparator.configs))
+	}
+	if got, want := candidate.calls, preflightAndFirstIterationCalls; !sameStrings(got, want) {
+		t.Fatalf("candidate calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunReportsPreflightLifecycleFailureBeforeComparison(t *testing.T) {
+	candidate := &fakeCandidate{failPhase: "build", failErr: errors.New("compile failed")}
+	comparator := &fakeComparator{}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    &fakeAdapter{},
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "preflight") || !strings.Contains(err.Error(), "build") {
+		t.Fatalf("Run error = %v, want preflight build error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateLifecycleError || record.LifecyclePhase != benchrecord.LifecyclePhaseBuild {
+		t.Fatalf("record = %#v, want preflight build lifecycle error", record)
+	}
+	if record.Iterations != 0 || len(comparator.configs) != 0 {
+		t.Fatalf("preflight failure performed comparison work: iterations=%d comparisons=%d", record.Iterations, len(comparator.configs))
+	}
+}
+
+func TestRunReportsPreflightAdapterFailureBeforeComparison(t *testing.T) {
+	comparator := &fakeComparator{}
+	adapter := &fakeAdapter{preflightErr: errors.New("adapter command not found")}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "preflight adapter") {
+		t.Fatalf("Run error = %v, want preflight adapter error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAdapterError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateAdapterError)
+	}
+	if record.Iterations != 0 || len(comparator.configs) != 0 || len(adapter.instructions) != 0 {
+		t.Fatalf("preflight failure performed real work: iterations=%d comparisons=%d fixes=%d", record.Iterations, len(comparator.configs), len(adapter.instructions))
 	}
 }
 
@@ -637,11 +717,18 @@ func (f *fakeCandidate) fail(phase string) error {
 }
 
 type fakeAdapter struct {
-	instructions []string
-	metadata     []AdapterMetadata
-	usages       []*benchrecord.TokenUsage
-	responses    []string
-	errs         []error
+	preflightMetadata []AdapterMetadata
+	preflightErr      error
+	instructions      []string
+	metadata          []AdapterMetadata
+	usages            []*benchrecord.TokenUsage
+	responses         []string
+	errs              []error
+}
+
+func (f *fakeAdapter) Preflight(metadata AdapterMetadata) error {
+	f.preflightMetadata = append(f.preflightMetadata, metadata)
+	return f.preflightErr
 }
 
 func (f *fakeAdapter) Fix(
@@ -671,6 +758,11 @@ func (f *fakeAdapter) Fix(
 
 func testConfig() Config {
 	return Config{BaselineExists: func() bool { return true }, MaxIterations: 5, StallWindow: 3}
+}
+
+var preflightAndFirstIterationCalls = []string{
+	"stop", "reset", "build", "start", "wait_healthy", "stop",
+	"stop", "reset", "build", "start", "wait_healthy",
 }
 
 func fixedNow(now time.Time) func() time.Time {

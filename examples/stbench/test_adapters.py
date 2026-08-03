@@ -15,9 +15,27 @@ from pathlib import Path
 EXAMPLES = Path(__file__).parent
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
 CLI_ADAPTER = EXAMPLES / "coding_agent_adapter.py"
+FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def test_adapter_examples_accept_no_op_preflight_without_running_agent(self) -> None:
+        request = json.dumps({"preflight": True})
+        with tempfile.TemporaryDirectory() as directory:
+            for adapter in (LOCAL_ADAPTER, CLI_ADAPTER, FALLBACK_ADAPTER):
+                with self.subTest(adapter=adapter.name):
+                    completed = subprocess.run(
+                        [sys.executable, str(adapter)],
+                        cwd=directory,
+                        input=request,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(json.loads(completed.stdout)["status"], "ok")
+
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
             candidate = Path(directory)

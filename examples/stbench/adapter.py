@@ -24,6 +24,7 @@ from _protocol import (
     cap_text,
     emit_error,
     emit_result,
+    handle_preflight,
     metadata_headers,
     read_request,
     request_metadata,
@@ -68,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
         request, instruction = read_request()
+        if handle_preflight(request):
+            return 0
         metadata = request_metadata(request)
         root = Path.cwd()
         snapshot = tracked_snapshot(root, settings.max_snapshot_bytes)
