@@ -31,8 +31,7 @@
 - Validator version: `v0.145.0`
 - Supported OpenAPI versions: `3.0, 3.1, 3.2`
 - Status code conformance: explicit status codes and range codes such as 2XX count as documented; default responses do not document every status
-- Contract limitation: `schema_contract_unreadable`
-- Contract limitation message: open openapi.json: no such file or directory
+- Contract limitation: `schema_contract_unavailable`
 
 ## Findings
 

@@ -28,6 +28,7 @@ type report struct {
 	Baseline                  reportCampaign              `json:"baseline"`
 	Candidate                 reportCandidate             `json:"candidate"`
 	ComparisonPolicy          PreconditionPolicy          `json:"comparison"`
+	BaselineSchemaValidation  *schemaValidationProvenance `json:"baseline_schema_validation,omitempty"`
 	SchemaValidation          schemaValidationProvenance  `json:"schema_validation"`
 	Explanations              reportExplanations          `json:"explanations"`
 	Summary                   reportSummary               `json:"summary"`
@@ -139,6 +140,7 @@ type reportResponse struct {
 
 type reportInput struct {
 	BaselineCampaign           string
+	BaselineSchemaValidation   *OpenAPIContract
 	BaselineProblemCount       *int
 	BaselineProblemCountSource *string
 	BaselineProblemEvidence    baselineProblemEvidence
@@ -209,6 +211,11 @@ func newReport(input reportInput) report {
 	)
 	problemCount := input.BaselineProblemCount
 	problemCountSource := input.BaselineProblemCountSource
+	var baselineSchemaValidation *schemaValidationProvenance
+	if input.BaselineSchemaValidation != nil {
+		provenance := input.BaselineSchemaValidation.Provenance()
+		baselineSchemaValidation = &provenance
+	}
 
 	return report{
 		SchemaVersion: reportSchemaVersion,
@@ -226,6 +233,7 @@ func newReport(input reportInput) report {
 			BaseURL:  input.CandidateBaseURL,
 		},
 		ComparisonPolicy:          policy,
+		BaselineSchemaValidation:  baselineSchemaValidation,
 		SchemaValidation:          input.SchemaValidation.Provenance(),
 		Explanations:              newReportExplanations(problemCount, problemState),
 		Summary:                   newReportSummary(input.Interactions, interactions, classification),

@@ -32,6 +32,7 @@ stbench:
     command_timeout: 2m
     health_url: http://localhost:8080/health
     health_timeout: 5s
+candidate_spec: /openapi.json
 `
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -51,6 +52,9 @@ stbench:
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
 		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
+	}
+	if loaded.CandidateSpec != "/openapi.json" {
+		t.Fatalf("candidate spec = %q, want %q", loaded.CandidateSpec, "/openapi.json")
 	}
 }
 

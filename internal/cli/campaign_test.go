@@ -134,6 +134,40 @@ func TestCampaignRunBaselineWritesReportsAndMetadata(t *testing.T) {
 	}
 }
 
+func TestCampaignRunBaselineSnapshotsSchema(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	const schema = "openapi: 3.0.3\ninfo:\n  title: frozen\n  version: \"1.0\"\npaths: {}\n"
+	if err := os.WriteFile("openapi.json", []byte(schema), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	runner := &recordingCampaignRunner{schemathesisVersion: "Schemathesis 4.0.0"}
+	if err := executeCampaignRunWithRunner(runner, "campaign", "run", "baseline"); err != nil {
+		t.Fatalf("campaign run error = %v", err)
+	}
+	if err := os.WriteFile("openapi.json", []byte("mutated"), 0o644); err != nil {
+		t.Fatalf("mutate schema: %v", err)
+	}
+
+	snapshot, err := os.ReadFile(filepath.Join("reports", "baseline", "schema.snapshot"))
+	if err != nil {
+		t.Fatalf("read schema snapshot: %v", err)
+	}
+	if string(snapshot) != schema {
+		t.Fatalf("schema snapshot = %q, want %q", snapshot, schema)
+	}
+	metadataContents, err := os.ReadFile(filepath.Join("reports", "baseline", "metadata.yaml"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	metadata := decodeConfig(t, metadataContents)
+	if metadata["schema_snapshot"] != filepath.Join("reports", "baseline", "schema.snapshot") {
+		t.Fatalf("schema snapshot metadata = %#v", metadata["schema_snapshot"])
+	}
+}
+
 func TestCampaignRunRefusesToOverwriteExistingBaselineReports(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
 	t.Chdir(t.TempDir())

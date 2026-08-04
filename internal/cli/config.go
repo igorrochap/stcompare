@@ -44,11 +44,12 @@ func runConfigInit(configPath string, options configInitOptions) error {
 }
 
 type configOverrideOptions struct {
-	schema     string
-	baseURL    string
-	reportsDir string
-	seed       int
-	workers    int
+	schema        string
+	candidateSpec string
+	baseURL       string
+	reportsDir    string
+	seed          int
+	workers       int
 }
 
 func newConfigShowCommand(rootOpts *rootOptions) *cobra.Command {
@@ -85,6 +86,7 @@ func runConfigShow(cmd *cobra.Command, configPath string, options configOverride
 
 func addConfigOverrideFlags(command *cobra.Command, options *configOverrideOptions) {
 	command.Flags().StringVar(&options.schema, "schema", "", "")
+	command.Flags().StringVar(&options.candidateSpec, "candidate-spec", "", "")
 	command.Flags().StringVar(&options.baseURL, "base-url", "", "")
 	command.Flags().StringVar(&options.reportsDir, "reports-dir", "", "")
 	command.Flags().IntVar(&options.seed, "seed", 0, "")
@@ -94,6 +96,9 @@ func addConfigOverrideFlags(command *cobra.Command, options *configOverrideOptio
 func applyConfigOverrides(cmd *cobra.Command, effective *config.Config, options configOverrideOptions) {
 	if cmd.Flags().Changed("schema") {
 		effective.Schema = options.schema
+	}
+	if cmd.Flags().Changed("candidate-spec") {
+		effective.CandidateSpec = options.candidateSpec
 	}
 	if cmd.Flags().Changed("base-url") {
 		effective.BaseURL = options.baseURL

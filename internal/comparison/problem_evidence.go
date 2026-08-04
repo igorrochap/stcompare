@@ -88,6 +88,7 @@ const (
 	problemOutcomeReasonSchemaResponseBodyUnavailable     problemOutcomeReason = "schema_response_body_unavailable"
 	problemOutcomeReasonSchemaResponseBodyUnparseable     problemOutcomeReason = "schema_response_body_unparseable"
 	problemOutcomeReasonStatusCodeDocumented              problemOutcomeReason = "status_code_documented"
+	problemOutcomeReasonStatusCodeChanged                 problemOutcomeReason = "status_code_changed"
 	problemOutcomeReasonStatusCodeUndocumented            problemOutcomeReason = "status_code_undocumented"
 	problemOutcomeReasonUncorrelatedEvidence              problemOutcomeReason = "uncorrelated_evidence"
 	problemOutcomeReasonAmbiguousCorrelation              problemOutcomeReason = "ambiguous_correlation"

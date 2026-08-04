@@ -161,7 +161,8 @@ func campaignComparisonInput(
 
 	return comparison.Input{
 		BaselineCampaign:   baselineName,
-		SchemaPath:         effective.Schema,
+		BaselineSchemaPath: filepath.Join(baselineReportDir, baselineSchemaSnapshotFilename),
+		CandidateSpec:      effective.CandidateSpec,
 		BaselineHARPath:    filepath.Join(baselineReportDir, "campaign.har.json"),
 		BaselineVCRPath:    filepath.Join(baselineReportDir, "campaign.vcr.yaml"),
 		BaselineNDJSONPath: filepath.Join(baselineReportDir, "campaign.ndjson"),

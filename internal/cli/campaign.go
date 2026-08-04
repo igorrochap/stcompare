@@ -117,6 +117,8 @@ func campaignReportDir(effective config.Config, campaignName string) string {
 	return filepath.Join(effective.ReportsDir, campaignName)
 }
 
+const baselineSchemaSnapshotFilename = "schema.snapshot"
+
 func validateSchemathesisExtraArgs(extraArgs []string) error {
 	toolOwnedReportOptions := []string{
 		"--report",

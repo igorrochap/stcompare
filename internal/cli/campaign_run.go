@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,18 @@ func runCampaignRun(cmd *cobra.Command, rootOpts *rootOptions, campaignName stri
 		return err
 	}
 
+	var (
+		baselineSchema          []byte
+		baselineSchemaAvailable bool
+	)
+	if campaign.Kind == "baseline" {
+		baselineSchema, err = os.ReadFile(effective.Schema)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("snapshot baseline schema: %w", err)
+		}
+		baselineSchemaAvailable = err == nil
+	}
+
 	schemathesisVersion, err := rootOpts.deps.CampaignRunner.SchemathesisVersion()
 	if err != nil {
 		return fmt.Errorf("get Schemathesis version: %w", err)
@@ -75,6 +88,13 @@ func runCampaignRun(cmd *cobra.Command, rootOpts *rootOptions, campaignName stri
 		ToolVersion:         rootOpts.deps.ToolVersion,
 		SchemathesisVersion: schemathesisVersion,
 		Timestamp:           rootOpts.deps.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	if baselineSchemaAvailable {
+		snapshotPath := filepath.Join(reportDir, baselineSchemaSnapshotFilename)
+		if err := os.WriteFile(snapshotPath, baselineSchema, 0o644); err != nil {
+			return fmt.Errorf("write baseline schema snapshot: %w", err)
+		}
+		metadata.SchemaSnapshot = snapshotPath
 	}
 	if err := writeCampaignMetadata(filepath.Join(reportDir, "metadata.yaml"), metadata); err != nil {
 		return err

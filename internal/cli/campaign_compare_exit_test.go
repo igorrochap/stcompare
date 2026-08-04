@@ -69,6 +69,73 @@ func TestCampaignCompareReturnsNotConvergedExitCodeAndWritesArtifacts(t *testing
 	}
 }
 
+func TestCampaignCompareUsesCandidateOwnedSpecForStatusCodeConformance(t *testing.T) {
+	defaultConfig := loadDefaultConfig(t)
+	defaultConfig["candidate_spec"] = "/openapi.json"
+	t.Chdir(t.TempDir())
+	writeConfig(t, "stcompare.yaml", defaultConfig)
+	writeBaselineHAR(t, filepath.Join("reports", "baseline", "campaign.har.json"), []harRequestFixture{
+		{
+			Method: "POST",
+			URL:    "http://baseline.invalid/widgets?dryRun=true",
+			Headers: []harHeaderFixture{
+				{Name: "X-Schemathesis-TestCaseId", Value: "case-42"},
+			},
+			ResponseStatus: http.StatusTeapot,
+		},
+	})
+	writeBaselineVCR(t, filepath.Join("reports", "baseline", "campaign.vcr.yaml"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/openapi.json" {
+			response.Header().Set("Content-Type", "application/yaml")
+			_, _ = response.Write([]byte(`
+openapi: 3.0.3
+info:
+  title: Candidate API
+  version: "1.0"
+paths:
+  /widgets:
+    post:
+      responses:
+        "418":
+          description: documented teapot
+`))
+			return
+		}
+		response.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+
+	root := cli.NewRootCommand()
+	root.SetArgs([]string{
+		"campaign", "compare", "gpt5.6",
+		"--base-url", server.URL,
+		"--format", "agent",
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("campaign compare error = %v", err)
+	}
+
+	contents, err := os.ReadFile(filepath.Join("reports", "gpt5.6", "comparison.json"))
+	if err != nil {
+		t.Fatalf("read comparison report: %v", err)
+	}
+	var report struct {
+		Problems []struct {
+			Outcome       string `json:"outcome"`
+			OutcomeReason string `json:"outcome_reason"`
+		} `json:"problems"`
+	}
+	if err := json.Unmarshal(contents, &report); err != nil {
+		t.Fatalf("decode comparison report: %v", err)
+	}
+	if len(report.Problems) != 1 || report.Problems[0].Outcome != "fixed" ||
+		report.Problems[0].OutcomeReason != "status_code_documented" {
+		t.Fatalf("candidate status-code outcome = %#v, want documented fixed", report.Problems)
+	}
+}
+
 func TestCampaignCompareAgentFormatWritesJSONToStdoutOnConvergence(t *testing.T) {
 	defaultConfig := loadDefaultConfig(t)
 	t.Chdir(t.TempDir())

@@ -15,13 +15,14 @@ import (
 const DefaultFilename = "stcompare.yaml"
 
 type Config struct {
-	Schema       string              `yaml:"schema"`
-	BaseURL      string              `yaml:"base_url"`
-	ReportsDir   string              `yaml:"reports_dir"`
-	Schemathesis SchemathesisConfig  `yaml:"schemathesis"`
-	Comparison   ComparisonConfig    `yaml:"comparison,omitempty"`
-	Campaigns    map[string]Campaign `yaml:"campaigns"`
-	Stbench      *StbenchConfig      `yaml:"stbench,omitempty"`
+	Schema        string              `yaml:"schema"`
+	CandidateSpec string              `yaml:"candidate_spec,omitempty"`
+	BaseURL       string              `yaml:"base_url"`
+	ReportsDir    string              `yaml:"reports_dir"`
+	Schemathesis  SchemathesisConfig  `yaml:"schemathesis"`
+	Comparison    ComparisonConfig    `yaml:"comparison,omitempty"`
+	Campaigns     map[string]Campaign `yaml:"campaigns"`
+	Stbench       *StbenchConfig      `yaml:"stbench,omitempty"`
 }
 
 type SchemathesisConfig struct {
