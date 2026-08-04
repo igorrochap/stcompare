@@ -52,29 +52,30 @@ type rootCommandOptions struct {
 }
 
 type runCommandOptions struct {
-	campaign        string
-	agent           string
-	model           string
-	hardware        string
-	adapter         string
-	adapterTimeout  string
-	reuseProcess    bool
-	sourceDir       string
-	stcompareBinary string
-	recordPath      string
-	baseURL         string
-	stop            string
-	reset           string
-	build           string
-	start           string
-	commandTimeout  string
-	healthURL       string
-	healthTimeout   string
-	healthInterval  string
-	maxIterations   int
-	stallWindow     int
-	promptID        string
-	promptVersion   string
+	campaign          string
+	agent             string
+	model             string
+	hardware          string
+	adapter           string
+	adapterTimeout    string
+	reuseProcess      bool
+	sourceDir         string
+	stcompareBinary   string
+	recordPath        string
+	baseURL           string
+	stop              string
+	reset             string
+	build             string
+	start             string
+	commandTimeout    string
+	healthURL         string
+	healthTimeout     string
+	healthInterval    string
+	heartbeatInterval string
+	maxIterations     int
+	stallWindow       int
+	promptID          string
+	promptVersion     string
 }
 
 func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
@@ -113,6 +114,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.StringVar(&options.healthURL, "health-url", "", "candidate health-check URL")
 	flags.StringVar(&options.healthTimeout, "health-timeout", "", "health-check timeout")
 	flags.StringVar(&options.healthInterval, "health-interval", "", "health-check polling interval")
+	flags.StringVar(&options.heartbeatInterval, "heartbeat-interval", "", "cadence of progress heartbeats while the agent is working (0 disables)")
 	flags.IntVar(&options.maxIterations, "max-iterations", 0, "maximum benchmark iterations")
 	flags.IntVar(&options.stallWindow, "stall-window", 0, "non-improving transitions before stalling")
 	flags.StringVar(&options.promptID, "prompt-id", "", "task prompt identity")
@@ -163,6 +165,10 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	if err != nil {
 		return err
 	}
+	heartbeatInterval, err := parseDuration("heartbeat interval", settings.heartbeatInterval)
+	if err != nil {
+		return err
+	}
 
 	baselineName := findBaselineName(effective)
 	benchConfig := Config{
@@ -171,12 +177,13 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 			Model:    settings.model,
 			Hardware: settings.hardware,
 		},
-		Candidate:     settings.campaign,
-		Baseline:      baselineName,
-		Prompt:        benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
-		ReuseProcess:  settings.reuseProcess,
-		MaxIterations: settings.maxIterations,
-		StallWindow:   settings.stallWindow,
+		Candidate:         settings.campaign,
+		Baseline:          baselineName,
+		Prompt:            benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
+		ReuseProcess:      settings.reuseProcess,
+		MaxIterations:     settings.maxIterations,
+		StallWindow:       settings.stallWindow,
+		HeartbeatInterval: heartbeatInterval,
 		BaselineExists: func() bool {
 			_, statErr := os.Stat(filepath.Join(effective.ReportsDir, baselineName, "campaign.har.json"))
 			return statErr == nil
@@ -210,9 +217,11 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	}()
 
 	record, runErr := Run(benchConfig, Dependencies{
-		Comparator: comparator,
-		Candidate:  candidate,
-		Adapter:    adapter,
+		Comparator:      comparator,
+		Candidate:       candidate,
+		Adapter:         adapter,
+		Reporter:        NewTextReporter(command.OutOrStdout()),
+		ChangeInspector: NewGitChangeInspector(workingDir),
 	})
 	if err := writeRecord(settings.recordPath, record); err != nil {
 		if runErr != nil {
@@ -235,35 +244,41 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 }
 
 type runSettings struct {
-	campaign        string
-	agent           string
-	model           string
-	hardware        string
-	adapter         string
-	adapterTimeout  string
-	reuseProcess    bool
-	sourceDir       string
-	stcompareBinary string
-	recordPath      string
-	stop            string
-	reset           string
-	build           string
-	start           string
-	commandTimeout  string
-	healthURL       string
-	healthTimeout   string
-	healthInterval  string
-	maxIterations   int
-	stallWindow     int
-	promptID        string
-	promptVersion   string
+	campaign          string
+	agent             string
+	model             string
+	hardware          string
+	adapter           string
+	adapterTimeout    string
+	reuseProcess      bool
+	sourceDir         string
+	stcompareBinary   string
+	recordPath        string
+	stop              string
+	reset             string
+	build             string
+	start             string
+	commandTimeout    string
+	healthURL         string
+	healthTimeout     string
+	healthInterval    string
+	heartbeatInterval string
+	maxIterations     int
+	stallWindow       int
+	promptID          string
+	promptVersion     string
 }
+
+// defaultHeartbeatInterval keeps the terminal visibly alive during long agent
+// fixes without flooding it. A run may override or disable it via the flag.
+const defaultHeartbeatInterval = "10s"
 
 func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings := runSettings{
-		sourceDir:       ".",
-		stcompareBinary: "stcompare",
-		recordPath:      defaultRecordPath,
+		sourceDir:         ".",
+		stcompareBinary:   "stcompare",
+		recordPath:        defaultRecordPath,
+		heartbeatInterval: defaultHeartbeatInterval,
 	}
 	if source == nil {
 		return settings
@@ -353,6 +368,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("health-interval") {
 		settings.healthInterval = options.healthInterval
+	}
+	if command.Flags().Changed("heartbeat-interval") {
+		settings.heartbeatInterval = options.heartbeatInterval
 	}
 	if command.Flags().Changed("max-iterations") {
 		settings.maxIterations = options.maxIterations
