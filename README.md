@@ -1,24 +1,90 @@
 # stcompare
 
-`stcompare` is a command-line tool for defining repeatable Schemathesis baseline
-and candidate campaigns. Its goal is to make API comparison runs auditable by
-keeping schemas, targets, deterministic generation settings, reports, and named
-campaigns in a version-controlled YAML file.
+`stcompare` runs repeatable Schemathesis campaigns and compares a candidate API
+with a recorded baseline. Schemas, targets, deterministic generation settings,
+reports, and named campaigns live in a version-controlled YAML file, making each
+comparison reproducible and auditable.
 
-The current implementation provides the configuration foundation, campaign
-execution flow, and first comparison replay: initialize, load, validate,
-override, inspect an effective configuration, print the Schemathesis command for
-a named campaign, run a named campaign with isolated reports plus metadata, and
-replay a baseline HAR transcript against a candidate API while recording
-candidate responses.
+The repository also includes `stbench`, an optional runner that repeatedly asks
+a coding agent to address comparison findings until the candidate converges or
+the run reaches a stopping condition.
 
-## Requirements
+## Table of contents
 
-- Go 1.25 or later
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Usage guide](#usage-guide)
+  - [1. Initialize the configuration](#1-initialize-the-configuration)
+  - [2. Configure the campaigns](#2-configure-the-campaigns)
+  - [3. Inspect the effective configuration](#3-inspect-the-effective-configuration)
+  - [4. Preview a campaign command](#4-preview-a-campaign-command)
+  - [5. Record the baseline](#5-record-the-baseline)
+  - [6. Compare a candidate](#6-compare-a-candidate)
+- [Configuration reference](#configuration-reference)
+- [Comparison behavior and reports](#comparison-behavior-and-reports)
+- [Benchmark loops with stbench](#benchmark-loops-with-stbench)
+- [Caveats and troubleshooting](#caveats-and-troubleshooting)
+- [Development](#development)
 
-## Build
+## How it works
 
-Build a local binary from the repository root:
+```text
+baseline API + OpenAPI schema
+        |
+        | stcompare campaign run baseline
+        v
+Schemathesis reports + frozen schema + HAR transcript
+        |
+        | start the candidate API
+        | stcompare campaign compare <candidate>
+        v
+replayed responses + JSON/Markdown/HTML comparison reports
+```
+
+A campaign name is an artifact identity, not a process definition. You are
+responsible for starting the baseline or candidate API at `base_url` before the
+corresponding command runs. `stcompare` records the baseline with Schemathesis,
+then replays its ordered HAR requests against the candidate and grades the
+result using the recorded problem evidence.
+
+## Quick start
+
+This example assumes the baseline API is already running at
+`http://localhost:8080` and exposes a local `openapi.json` schema.
+
+```sh
+# Build and initialize.
+go build -o stcompare ./cmd/stcompare
+./stcompare config init
+
+# Check the generated settings and the underlying Schemathesis command.
+./stcompare config show
+./stcompare campaign command baseline
+
+# Record the running baseline API.
+./stcompare campaign run baseline
+
+# Stop the baseline, start the candidate on the same URL, then compare it.
+./stcompare campaign compare gpt5.6
+```
+
+Review `reports/gpt5.6/comparison.html` for the scorecard,
+`comparison.md` for a portable review, or `comparison.json` for automation.
+A comparison that found actionable failures still writes all reports and exits
+with status `2`; this is a comparison result, not a tool failure.
+
+## Installation
+
+### Requirements
+
+- Go 1.25 or later.
+- Schemathesis available as `st`, or `uvx` available so `stcompare` can fall
+  back to `uvx schemathesis` when running a campaign.
+- A reachable baseline or candidate API for commands that generate or replay
+  traffic.
+
+Build local binaries from the repository root:
 
 ```sh
 go build -o stcompare ./cmd/stcompare
@@ -44,7 +110,9 @@ Commands can also be run without keeping a binary:
 go run ./cmd/stcompare --help
 ```
 
-## Configuration
+## Usage guide
+
+### 1. Initialize the configuration
 
 By default, `stcompare` reads and writes `stcompare.yaml` in the current working
 directory. Use the global `--config` flag to select another path.
@@ -55,8 +123,7 @@ Initialize the default configuration:
 stcompare config init
 ```
 
-Initialization refuses to replace an existing file. Use `--force` only when an
-existing configuration should be overwritten:
+Use `--force` only when the existing configuration should be overwritten:
 
 ```sh
 stcompare config init --force
@@ -68,7 +135,15 @@ Initialize a configuration at an explicit path:
 stcompare --config config/benchmark.yaml config init
 ```
 
-The generated configuration is:
+Initialization refuses to replace an existing file. `--force` overwrites it, so
+use that option only when losing the current configuration is intentional.
+
+### 2. Configure the campaigns
+
+Edit `stcompare.yaml` so `schema` identifies the schema used to generate the
+baseline, `base_url` points at the currently running API, and the `campaigns`
+mapping contains exactly one baseline plus one or more candidates. The generated
+file is a complete starting point:
 
 ```yaml
 schema: openapi.json
@@ -107,10 +182,154 @@ campaigns:
     kind: candidate
 ```
 
-The `campaigns` mapping declares named report identities. A `baseline` campaign
-represents reference artifacts, while `candidate` campaigns represent isolated
-implementations to compare with that reference. The sample campaign names can
-be replaced with names appropriate to the project.
+Replace the sample candidate names with stable identifiers for the
+implementations being compared. Names may contain letters, numbers, dots,
+underscores, and hyphens.
+
+If the candidate publishes its own OpenAPI document, set `candidate_spec` to an
+HTTP(S) URL, an absolute workspace path, or an endpoint path such as
+`/openapi.json`. Candidate contract evidence is optional, but improves
+status-code grading.
+
+### 3. Inspect the effective configuration
+
+Load, validate, and print the settings that a command will use:
+
+```sh
+stcompare config show
+```
+
+Configuration flags are temporary overrides; they do not modify the YAML file:
+
+```sh
+stcompare --config config/benchmark.yaml config show \
+  --schema api/openapi.yaml \
+  --candidate-spec /openapi.json \
+  --base-url http://localhost:9090 \
+  --reports-dir comparison-reports \
+  --seed 4242 \
+  --workers 1
+```
+
+The same overrides are available to campaign commands. Validation happens
+after the overrides are applied.
+
+### 4. Preview a campaign command
+
+Inspect the exact Schemathesis invocation without generating traffic:
+
+```sh
+stcompare campaign command baseline
+```
+
+With the default configuration, this prints a command equivalent to:
+
+```sh
+st run openapi.json \
+  --url http://localhost:8080 \
+  --workers 1 \
+  --seed 12345 \
+  --generation-deterministic \
+  --report junit,vcr,har,ndjson \
+  --report-junit-path reports/baseline/junit.xml \
+  --report-vcr-path reports/baseline/campaign.vcr.yaml \
+  --report-har-path reports/baseline/campaign.har.json \
+  --report-ndjson-path reports/baseline/campaign.ndjson \
+  --output-sanitize false \
+  --output-truncate false
+```
+
+Arguments in `schemathesis.extra_args` are appended. Report formats and output
+paths belong to `stcompare`, so extra arguments cannot override `--report` or
+any `--report-*-path` option.
+
+### 5. Record the baseline
+
+Start the baseline API at `base_url`, then run:
+
+```sh
+stcompare campaign run baseline
+```
+
+On completion, the baseline directory contains:
+
+```text
+reports/baseline/
+  campaign.har.json
+  campaign.ndjson
+  campaign.vcr.yaml
+  junit.xml
+  metadata.yaml
+  schema.snapshot
+```
+
+Existing campaign directories are protected. To deliberately replace a
+baseline, pass `--force`:
+
+```sh
+stcompare campaign run baseline --force
+```
+
+By default, artifacts from an aborted Schemathesis run are removed. Preserve
+partial output for debugging with `--keep-failed`; it must not be treated as a
+completed campaign:
+
+```sh
+stcompare campaign run baseline --keep-failed
+```
+
+`stcompare` executes `st` directly when available and otherwise tries
+`uvx schemathesis`. Shell aliases are not visible to it. To select an explicit
+command:
+
+```sh
+STCOMPARE_SCHEMATHESIS_COMMAND="uvx schemathesis" \
+  stcompare campaign run baseline
+```
+
+### 6. Compare a candidate
+
+Stop the baseline, start the candidate API at the configured `base_url`, and
+replay the baseline transcript:
+
+```sh
+stcompare campaign compare gpt5.6
+```
+
+To compare against a temporary target without editing the file:
+
+```sh
+stcompare campaign compare gpt5.6 --base-url http://localhost:9090
+```
+
+The candidate directory receives the raw replay and three report formats:
+
+```text
+reports/gpt5.6/
+  replay.har.json
+  comparison.json
+  comparison.md
+  comparison.html
+```
+
+For agent or CI integrations, request the compact machine-readable view on
+standard output:
+
+```sh
+stcompare campaign compare gpt5.6 --format agent
+```
+
+Comparison exit statuses are part of the public automation contract:
+
+| Status | Meaning |
+| ---: | --- |
+| `0` | Converged: no actionable remaining failure or regression. |
+| `1` | Tool or setup error, such as invalid configuration or malformed input. |
+| `2` | Valid comparison completed, but the candidate did not converge. |
+
+## Configuration reference
+
+### Baseline and candidate contracts
 
 When a baseline campaign runs successfully, `stcompare` stores the exact
 generation schema as `reports/<baseline>/schema.snapshot`. Comparisons never
@@ -125,33 +344,9 @@ produced during that baseline run; the snapshot is loaded and recorded in
 comparison provenance for the frozen baseline contract and is never used as
 the candidate contract.
 
-## Inspect Effective Configuration
+### Validation rules
 
-Load, validate, and print the effective configuration:
-
-```sh
-stcompare config show
-```
-
-Inspect another configuration file:
-
-```sh
-stcompare --config config/benchmark.yaml config show
-```
-
-Common settings can be overridden for inspection without modifying the YAML
-file:
-
-```sh
-stcompare config show \
-  --schema api/openapi.yaml \
-  --base-url http://localhost:9090 \
-  --reports-dir comparison-reports \
-  --seed 4242 \
-  --workers 1
-```
-
-Omitted Schemathesis and comparison settings inherit the defaults shown above.
+Omitted Schemathesis and comparison settings inherit the generated defaults.
 Required values are validated after command-line overrides are applied. The
 effective configuration must have:
 
@@ -174,110 +369,16 @@ effective configuration must have:
 - At least one campaign.
 - A `baseline` or `candidate` kind for every campaign.
 
-## Preview Campaign Commands
-
-Print the Schemathesis command for a configured campaign without running it:
-
-```sh
-stcompare campaign command baseline
-```
-
-With the default configuration, the generated command is:
-
-```sh
-st run openapi.json \
-  --url http://localhost:8080 \
-  --workers 1 \
-  --seed 12345 \
-  --generation-deterministic \
-  --report junit,vcr,har,ndjson \
-  --report-junit-path reports/baseline/junit.xml \
-  --report-vcr-path reports/baseline/campaign.vcr.yaml \
-  --report-har-path reports/baseline/campaign.har.json \
-  --report-ndjson-path reports/baseline/campaign.ndjson \
-  --output-sanitize false \
-  --output-truncate false
-```
-
-The campaign name must exist in the configuration and must be a safe path
+There must be exactly one baseline campaign. A campaign name must be a safe path
 segment made from letters, numbers, dots, underscores, or hyphens.
 
-Common settings can be overridden for preview without editing the YAML file:
+`metadata.yaml` records the effective command, `stcompare` and Schemathesis
+versions, timestamp, configuration path, campaign identity, effective settings,
+and command-line overrides.
 
-```sh
-stcompare campaign command baseline \
-  --schema api/openapi.yaml \
-  --base-url http://localhost:9090 \
-  --reports-dir comparison-reports \
-  --seed 4242 \
-  --workers 1
-```
+## Comparison behavior and reports
 
-Additional Schemathesis arguments from `schemathesis.extra_args` are appended to
-the generated command. Report format and report path options are owned by
-`stcompare`; extra arguments cannot override `--report`,
-`--report-junit-path`, `--report-vcr-path`, `--report-har-path`, or
-`--report-ndjson-path`.
-
-## Run Campaigns
-
-Execute a configured campaign:
-
-```sh
-stcompare campaign run baseline
-```
-
-The command runs the same generated `st run ...` argv shown by
-`stcompare campaign command <campaign>`. Reports are written under the isolated
-campaign directory:
-
-```text
-reports/baseline/
-  junit.xml
-  campaign.vcr.yaml
-  campaign.har.json
-  campaign.ndjson
-  metadata.yaml
-```
-
-By default, `stcompare` executes `st` directly. Shell aliases are not visible to
-non-interactive processes. If `st` is not installed but `uvx` is available,
-`stcompare` falls back to `uvx schemathesis`. To use another executable, set:
-
-```sh
-STCOMPARE_SCHEMATHESIS_COMMAND="uvx schemathesis" stcompare campaign run baseline
-```
-
-`metadata.yaml` records the effective command, `stcompare` version,
-Schemathesis version, timestamp, config path, campaign name and kind, effective
-settings, and command-line overrides.
-
-Existing campaign report directories are protected by default:
-
-```sh
-stcompare campaign run baseline
-# campaign report directory reports/baseline already exists; use --force to overwrite
-```
-
-Use `--force` only when replacing the outputs for that named campaign is
-intentional:
-
-```sh
-stcompare campaign run baseline --force
-```
-
-When Schemathesis fails, newly-created campaign report directories are removed
-and `metadata.yaml` is not written. To inspect partial Schemathesis output after
-a failed run, opt in explicitly:
-
-```sh
-stcompare campaign run baseline --keep-failed
-```
-
-Preserved failed-run artifacts are partial debug output, not a completed
-auditable campaign.
-
-## Compare Campaigns
+### Replay behavior
 
 Replay the baseline HAR transcript against a candidate API:
 
@@ -293,16 +394,9 @@ its transcript from:
 ```
 
 Requests are replayed sequentially in HAR entry order against the effective
-`base_url`. Common configuration overrides are supported, so a temporary
-candidate target can be selected without editing the YAML file:
-
-```sh
-stcompare campaign compare gpt5.6 --base-url http://localhost:9090
-```
-
-Replay rewrites only the target base URL. The original request path, query
-string, and percent encoding are preserved. Semantic request headers are copied,
-while stale transport-managed headers such as `Host`, `Content-Length`,
+`base_url`. Replay rewrites only the target base URL. The original request path,
+query string, and percent encoding are preserved. Semantic request headers are
+copied, while stale transport-managed headers such as `Host`, `Content-Length`,
 `Transfer-Encoding`, `Connection`, and `Accept-Encoding` are dropped or
 recomputed. Plain HAR `postData.text` request bodies are sent as recorded.
 Unsupported `postData.encoding` values fail during baseline setup before any
@@ -377,6 +471,8 @@ objects or arrays. Empty bodies and absent bodies remain distinct. Bodies that
 do not parse as JSON are left unchanged and disclosed as unparseable rather
 than treated as equivalent opaque text.
 
+### Report contents
+
 Candidate responses and comparison reports are written under the candidate
 campaign directory:
 
@@ -384,10 +480,12 @@ campaign directory:
 reports/gpt5.6/replay.har.json
 reports/gpt5.6/comparison.json
 reports/gpt5.6/comparison.md
+reports/gpt5.6/comparison.html
 ```
 
 `comparison.json` uses a versioned, stable schema for automation, while
-`comparison.md` presents the same evidence for review. Schema version 5 adds
+`comparison.md` and `comparison.html` present the same evidence for review.
+Schema version 5 adds
 exercise-evidence-backed fixed outcomes for server-error problems and records
 normalization policy in the comparison provenance while keeping Schemathesis
 problem outcomes separate from replay traffic classifications. The reports
@@ -470,6 +568,8 @@ include:
   Schemathesis problem is likewise omitted, because that problem carries the
   finding and its outcome; the interaction remains in `replay.har.json`.
 
+### Evidence and correlation
+
 HAR remains the mandatory ordered replay transcript and the correlation anchor.
 Problems are matched to HAR entries only through the recorded
 `X-Schemathesis-TestCaseId`; method, URL, and operation name are never treated
@@ -511,7 +611,7 @@ removes a newly-created campaign directory and does not write success metadata.
 Forced runs against an existing directory leave existing files in place if
 Schemathesis aborts.
 
-## Run Benchmark Loops
+## Benchmark loops with stbench
 
 `stbench` owns the neutral fix loop and invokes `stcompare` through its public
 CLI contract. Add a `stbench` section to `stcompare.yaml`, or provide the same
@@ -678,6 +778,46 @@ Three reference adapters are provided in
 Point `stbench.adapter` at any of these commands without changing the
 loop or lifecycle configuration. The examples use only Python's standard
 library.
+
+## Caveats and troubleshooting
+
+- **Replay does not recreate baseline state.** Requests are sent in recorded
+  order, but databases, generated identifiers, authentication sessions, clocks,
+  and external services may differ. Configure precondition heuristics and
+  normalization rules for known sources of nondeterminism; treat
+  `inconclusive` as unverified, not fixed.
+- **The candidate process is external.** `campaign compare` does not build,
+  start, stop, or health-check the candidate. Start it yourself at `base_url`,
+  or use `stbench` when lifecycle automation is required.
+- **A candidate campaign run is not required for comparison.** The candidate
+  name selects an output identity. Comparison consumes the baseline artifacts
+  and talks directly to the running candidate.
+- **Reports may contain sensitive data.** HAR, VCR, NDJSON, metadata, request
+  headers, and bodies can contain credentials or customer data. The generated
+  configuration disables Schemathesis output sanitization and truncation for
+  audit fidelity. Protect `reports_dir`, review artifacts before sharing, and
+  do not commit them unless that is intentional.
+- **Exit code `2` is expected for findings.** CI wrappers should distinguish a
+  completed non-converged comparison (`2`) from a tool failure (`1`).
+  Schemathesis status `1` likewise means it found API failures; `stcompare`
+  retains that completed campaign.
+- **`--force` can destroy a good baseline.** Campaign runs protect existing
+  directories by default. If a forced rerun aborts, pre-existing files remain
+  and may be mixed with partial output. Prefer a new campaign identity or back
+  up the report directory before replacing important evidence.
+- **Comparison outputs are replaceable.** Repeating `campaign compare` for the
+  same candidate writes to the same `replay.har.json` and `comparison.*` paths.
+  Copy or rename a result before another run when historical reports matter.
+- **Configured candidate specs must be usable.** A missing or invalid
+  `candidate_spec` produces an inconclusive contract limitation; it never falls
+  back to the baseline generation schema as if that were the candidate's
+  contract.
+- **Baseline artifacts are validated together.** A malformed present HAR, VCR,
+  NDJSON, or JUnit file stops comparison before candidate traffic is sent.
+  Optional evidence files may be absent, but `campaign.har.json` is mandatory.
+- **Shell aliases do not select Schemathesis.** Install `st`, make `uvx`
+  available, or set `STCOMPARE_SCHEMATHESIS_COMMAND` to an executable command.
+  Use `stcompare campaign command <name>` to inspect the generated invocation.
 
 ## Development
 
