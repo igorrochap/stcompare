@@ -28,6 +28,16 @@ go build -o stbench ./cmd/stbench
 The examples below assume the binary is available as `stcompare`; use
 `./stcompare` when running the local build directly.
 
+To build both binaries and install them onto your `PATH` (so `stcompare` and
+`stbench` are runnable from any repository), run:
+
+```sh
+./scripts/install.sh
+```
+
+By default this installs to `$GOBIN` (or `$(go env GOPATH)/bin` if `GOBIN` is
+unset); pass `--dir <path>` to install elsewhere.
+
 Commands can also be run without keeping a binary:
 
 ```sh
@@ -62,6 +72,8 @@ The generated configuration is:
 
 ```yaml
 schema: openapi.json
+# Optional: a candidate-owned spec URL or workspace path used during compare.
+# candidate_spec: /openapi.json
 base_url: http://localhost:8080
 reports_dir: reports
 schemathesis:
@@ -99,6 +111,19 @@ The `campaigns` mapping declares named report identities. A `baseline` campaign
 represents reference artifacts, while `candidate` campaigns represent isolated
 implementations to compare with that reference. The sample campaign names can
 be replaced with names appropriate to the project.
+
+When a baseline campaign runs successfully, `stcompare` stores the exact
+generation schema as `reports/<baseline>/schema.snapshot`. Comparisons never
+use the mutable top-level `schema` as the candidate contract. Set the optional
+`candidate_spec` to an HTTP(S) URL, an absolute workspace file, or an endpoint
+path such as `/openapi.json`; when it is omitted, status-code grading uses the
+candidate's observed behavior only. If an explicitly configured candidate spec
+cannot be fetched or parsed, the comparison reports an inconclusive contract
+limitation rather than falling back to the shared generation schema.
+Baseline problem identities remain pinned to the VCR/NDJSON/JUnit artifacts
+produced during that baseline run; the snapshot is loaded and recorded in
+comparison provenance for the frozen baseline contract and is never used as
+the candidate contract.
 
 ## Inspect Effective Configuration
 
