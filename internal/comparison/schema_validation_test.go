@@ -2,6 +2,7 @@ package comparison
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -191,14 +192,14 @@ func TestNewReportClassifiesStatusCodeConformanceProblemWithContract(t *testing.
 			},
 		},
 		{
-			name:            "missing contract inconclusive",
+			name:            "missing contract uses behavior",
 			contract:        nil,
 			requestURL:      "https://baseline.example.test/widgets/123",
 			candidateStatus: 201,
 			want: schemaProblemOutcome{
-				Outcome:      problemOutcomeInconclusive,
-				Reason:       problemOutcomeReasonSchemaContractUnavailable,
-				Inconclusive: 1,
+				Outcome: problemOutcomeFixed,
+				Reason:  problemOutcomeReasonStatusCodeChanged,
+				Fixed:   1,
 			},
 		},
 		{
@@ -244,6 +245,73 @@ func TestNewReportClassifiesStatusCodeConformanceProblemWithContract(t *testing.
 				t.Fatalf("status code conformance outcome = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestNewReportClassifiesStatusCodeConformanceWithoutCandidateContractByBehavior(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+	}{
+		{
+			name:            "candidate stops returning baseline status",
+			candidateStatus: 200,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonStatusCodeChanged,
+		},
+		{
+			name:            "candidate changes to another status",
+			candidateStatus: 401,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonStatusCodeChanged,
+		},
+		{
+			name:            "candidate repeats baseline status",
+			candidateStatus: 418,
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonStatusCodeUndocumented,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newStatusCodeConformanceReport(t, statusCodeConformanceReportInput{
+				RequestURL:      "https://baseline.example.test/widgets/123",
+				CandidateStatus: test.candidateStatus,
+			})
+
+			gotOutcome := document.Problems[0].Outcome
+			gotReason := document.Problems[0].OutcomeReason
+			if gotOutcome != test.wantOutcome || gotReason != test.wantReason {
+				t.Fatalf("behavior-only status outcome = %q/%q, want %q/%q", gotOutcome, gotReason, test.wantOutcome, test.wantReason)
+			}
+		})
+	}
+}
+
+func TestNewReportNeverFixesServerErrorByCandidateDocumentation(t *testing.T) {
+	contract := mustLoadOpenAPIContract(t, []byte(`
+openapi: 3.0.3
+info:
+  title: Server errors
+  version: "1.0"
+paths:
+  /widgets/{widget_id}:
+    get:
+      responses:
+        "500":
+          description: documented server error
+`))
+	document := newStatusCodeConformanceReport(t, statusCodeConformanceReportInput{
+		Contract:        contract,
+		RequestURL:      "https://baseline.example.test/widgets/123",
+		CandidateStatus: 500,
+	})
+
+	if document.Problems[0].Outcome == problemOutcomeFixed {
+		t.Fatal("server error was fixed by candidate documentation")
 	}
 }
 
@@ -440,6 +508,40 @@ func TestLoadOpenAPIContractReportsUnreadableContract(t *testing.T) {
 	}
 }
 
+func TestLoadCandidateOpenAPIContractSupportsWorkspacePathAndOptionalAbsence(t *testing.T) {
+	contents := []byte(`
+openapi: 3.0.3
+info:
+  title: Candidate API
+  version: "1.0"
+paths:
+  /widgets:
+    get:
+      responses:
+        "200":
+          description: response
+`)
+	path := filepath.Join(t.TempDir(), "openapi.yaml")
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write candidate spec: %v", err)
+	}
+
+	pathContract := LoadCandidateOpenAPIContract(path, "")
+	if documented, reason := pathContract.StatusCodeDocumented(schemaValidationRequest{
+		Method: "GET",
+		URL:    "http://candidate.example.test/widgets",
+		Response: reportResponse{
+			Status: 200,
+		},
+	}); reason != "" || !documented {
+		t.Fatalf("workspace candidate contract status = %t/%q, want true/empty", documented, reason)
+	}
+
+	if LoadCandidateOpenAPIContract("", "http://candidate.example.test") != nil {
+		t.Fatal("empty candidate spec source returned a contract")
+	}
+}
+
 func TestNewReportIncludesSchemaValidationProvenanceInJSON(t *testing.T) {
 	document := newReport(reportInput{
 		SchemaValidation: schemaValidationTestContract(t),
@@ -469,6 +571,29 @@ func TestNewReportIncludesSchemaValidationProvenanceInJSON(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.SchemaValidation, want) {
 		t.Fatalf("schema validation provenance = %#v, want %#v", got.SchemaValidation, want)
+	}
+}
+
+func TestNewReportIncludesFrozenBaselineSchemaProvenanceInJSON(t *testing.T) {
+	contract := schemaValidationTestContract(t)
+	contract.source = "reports/baseline/schema.snapshot"
+	document := newReport(reportInput{BaselineSchemaValidation: contract})
+
+	contents, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("encode report: %v", err)
+	}
+	var got struct {
+		BaselineSchemaValidation *schemaValidationProvenance `json:"baseline_schema_validation"`
+	}
+	if err := json.Unmarshal(contents, &got); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if got.BaselineSchemaValidation == nil {
+		t.Fatal("baseline schema validation = nil, want provenance")
+	}
+	if got.BaselineSchemaValidation.ContractSource != contract.source {
+		t.Fatalf("baseline schema source = %q, want %q", got.BaselineSchemaValidation.ContractSource, contract.source)
 	}
 }
 
@@ -547,7 +672,7 @@ paths:
 
 func TestPrepareComparisonLoadsConfiguredOpenAPIContract(t *testing.T) {
 	prepared, err := prepareComparison(Input{
-		SchemaPath:       filepath.Join("testdata", "widgets-openapi.yaml"),
+		CandidateSpec:    filepath.Join("testdata", "widgets-openapi.yaml"),
 		BaselineHARPath:  filepath.Join("testdata", "schemathesis-matched-real.har.json"),
 		BaselineVCRPath:  filepath.Join(t.TempDir(), "missing.vcr.yaml"),
 		CandidateBaseURL: "https://candidate.example.test",
@@ -574,6 +699,37 @@ func TestPrepareComparisonLoadsConfiguredOpenAPIContract(t *testing.T) {
 	}
 	if len(result.Errors) == 0 {
 		t.Fatal("real OpenAPI schema validation did not record validation errors")
+	}
+}
+
+func TestPrepareComparisonLoadsFrozenBaselineSchemaSnapshot(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "schema.snapshot")
+	contents := []byte(`
+openapi: 3.0.3
+info:
+  title: Frozen baseline
+  version: "1.0"
+paths: {}
+`)
+	if err := os.WriteFile(schemaPath, contents, 0o644); err != nil {
+		t.Fatalf("write baseline schema snapshot: %v", err)
+	}
+
+	prepared, err := prepareComparison(Input{
+		BaselineSchemaPath: schemaPath,
+		BaselineHARPath:    filepath.Join("testdata", "schemathesis-matched-real.har.json"),
+		BaselineVCRPath:    filepath.Join(t.TempDir(), "missing.vcr.yaml"),
+		BaselineJUnitPath:  filepath.Join(t.TempDir(), "missing.junit.xml"),
+		CandidateBaseURL:   "https://candidate.example.test",
+	})
+	if err != nil {
+		t.Fatalf("prepareComparison returned error: %v", err)
+	}
+	if prepared.baselineSchemaValidation == nil {
+		t.Fatal("baseline schema validation = nil, want frozen snapshot contract")
+	}
+	if got := prepared.baselineSchemaValidation.Provenance().ContractSource; got != schemaPath {
+		t.Fatalf("baseline schema source = %q, want %q", got, schemaPath)
 	}
 }
 

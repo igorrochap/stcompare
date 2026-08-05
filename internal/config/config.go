@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -14,12 +15,14 @@ import (
 const DefaultFilename = "stcompare.yaml"
 
 type Config struct {
-	Schema       string              `yaml:"schema"`
-	BaseURL      string              `yaml:"base_url"`
-	ReportsDir   string              `yaml:"reports_dir"`
-	Schemathesis SchemathesisConfig  `yaml:"schemathesis"`
-	Comparison   ComparisonConfig    `yaml:"comparison,omitempty"`
-	Campaigns    map[string]Campaign `yaml:"campaigns"`
+	Schema        string              `yaml:"schema"`
+	CandidateSpec string              `yaml:"candidate_spec,omitempty"`
+	BaseURL       string              `yaml:"base_url"`
+	ReportsDir    string              `yaml:"reports_dir"`
+	Schemathesis  SchemathesisConfig  `yaml:"schemathesis"`
+	Comparison    ComparisonConfig    `yaml:"comparison,omitempty"`
+	Campaigns     map[string]Campaign `yaml:"campaigns"`
+	Stbench       *StbenchConfig      `yaml:"stbench,omitempty"`
 }
 
 type SchemathesisConfig struct {
@@ -65,14 +68,75 @@ type Campaign struct {
 	Kind string `yaml:"kind"`
 }
 
+// StbenchConfig contains optional settings for the benchmark runner.
+type StbenchConfig struct {
+	Campaign        string                 `yaml:"campaign"`
+	Agent           string                 `yaml:"agent"`
+	Model           string                 `yaml:"model"`
+	Hardware        string                 `yaml:"hardware"`
+	Adapter         string                 `yaml:"adapter"`
+	AdapterTimeout  string                 `yaml:"adapter_timeout"`
+	ReuseProcess    bool                   `yaml:"reuse_process"`
+	SourceDir       string                 `yaml:"source_dir"`
+	StcompareBinary string                 `yaml:"stcompare_binary"`
+	RecordPath      string                 `yaml:"record_path"`
+	Prompt          StbenchPromptConfig    `yaml:"prompt,omitempty"`
+	Lifecycle       StbenchLifecycleConfig `yaml:"lifecycle,omitempty"`
+	MaxIterations   int                    `yaml:"max_iterations"`
+	StallWindow     int                    `yaml:"stall_window"`
+}
+
+// UnmarshalYAML rejects the old candidate names with an actionable migration
+// message instead of silently ignoring them as unknown YAML fields.
+func (c *StbenchConfig) UnmarshalYAML(node *yaml.Node) error {
+	type stbenchConfig StbenchConfig
+	var decoded stbenchConfig
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		switch node.Content[index].Value {
+		case "candidate":
+			return errors.New("stbench.candidate is deprecated; use stbench.campaign")
+		case "candidate_dir":
+			return errors.New("stbench.candidate_dir is deprecated; use stbench.source_dir")
+		}
+	}
+
+	*c = StbenchConfig(decoded)
+	return nil
+}
+
+// StbenchPromptConfig identifies the fixed task prompt used by a run.
+type StbenchPromptConfig struct {
+	ID      string `yaml:"id"`
+	Version string `yaml:"version"`
+}
+
+// StbenchLifecycleConfig contains candidate process and health-check hooks.
+type StbenchLifecycleConfig struct {
+	Stop           string `yaml:"stop"`
+	Reset          string `yaml:"reset"`
+	Build          string `yaml:"build"`
+	Start          string `yaml:"start"`
+	CommandTimeout string `yaml:"command_timeout"`
+	HealthURL      string `yaml:"health_url"`
+	HealthTimeout  string `yaml:"health_timeout"`
+	HealthInterval string `yaml:"health_interval"`
+}
+
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.Schema) == "" {
 		return errors.New("schema is required")
 	}
-	baseURL, err := url.Parse(c.BaseURL)
-	if err != nil || !baseURL.IsAbs() || baseURL.Host == "" ||
-		(!strings.EqualFold(baseURL.Scheme, "http") && !strings.EqualFold(baseURL.Scheme, "https")) {
+	baseURL, err := parseHTTPURL(c.BaseURL)
+	if err != nil {
 		return errors.New("base_url must be an absolute HTTP(S) URL")
+	}
+	if c.Stbench != nil {
+		if err := validateStbenchHealthURL(baseURL, c.Stbench.Lifecycle.HealthURL); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(c.ReportsDir) == "" {
 		return errors.New("reports_dir is required")
@@ -176,6 +240,53 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func parseHTTPURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return nil, errors.New("URL must be an absolute HTTP(S) URL")
+	}
+
+	return parsed, nil
+}
+
+func validateStbenchHealthURL(baseURL *url.URL, rawHealthURL string) error {
+	if strings.TrimSpace(rawHealthURL) == "" {
+		return nil
+	}
+
+	healthURL, err := parseHTTPURL(rawHealthURL)
+	if err != nil {
+		return errors.New("stbench.lifecycle.health_url must be an absolute HTTP(S) URL")
+	}
+
+	baseHostPort := normalizedHostPort(baseURL)
+	healthHostPort := normalizedHostPort(healthURL)
+	if baseHostPort != healthHostPort {
+		return fmt.Errorf(
+			"stbench.lifecycle.health_url host/port must match base_url: got %q, want %q",
+			healthHostPort,
+			baseHostPort,
+		)
+	}
+
+	return nil
+}
+
+func normalizedHostPort(parsed *url.URL) string {
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port == "" {
+		if strings.EqualFold(parsed.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+
+	return net.JoinHostPort(host, port)
 }
 
 func isAllowedMissingResourceStatus(status int) bool {

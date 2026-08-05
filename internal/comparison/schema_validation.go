@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -22,12 +23,14 @@ const (
 	openAPIValidatorSupportedOpenAPI     = "3.0, 3.1, 3.2"
 	openAPIValidatorSupportedJSONSchemas = "OpenAPI 3.0 Schema Object; JSON Schema 2020-12 for OpenAPI 3.1+"
 	statusCodeConformanceDefinition      = "explicit status codes and range codes such as 2XX count as documented; default responses do not document every status"
+	candidateSpecFetchTimeout            = 30 * time.Second
 )
 
 type OpenAPIContract struct {
 	document    *openapi3.T
 	limitation  problemOutcomeReason
 	loadMessage string
+	source      string
 }
 
 type schemaValidationRequest struct {
@@ -51,6 +54,7 @@ type schemaValidationProvenance struct {
 	JSONSchemaDialect               string               `json:"json_schema_dialect,omitempty"`
 	ContractLimitation              problemOutcomeReason `json:"contract_limitation,omitempty"`
 	ContractLimitationMessage       string               `json:"contract_limitation_message,omitempty"`
+	ContractSource                  string               `json:"contract_source,omitempty"`
 	ResponseValidationUsesRawBody   bool                 `json:"response_validation_uses_raw_body"`
 	ResponseMediaTypeSource         string               `json:"response_media_type_source"`
 	OperationResolutionTieBehavior  string               `json:"operation_resolution_tie_behavior"`
@@ -65,31 +69,119 @@ func LoadOpenAPIContract(path string) *OpenAPIContract {
 
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return &OpenAPIContract{
-			limitation:  problemOutcomeReasonSchemaContractUnreadable,
-			loadMessage: err.Error(),
-		}
+		return unreadableContract(path, err.Error())
 	}
 
-	return loadOpenAPIContract(contents)
+	return loadOpenAPIContractWithSource(contents, path)
+}
+
+func loadOptionalOpenAPIContract(path string) *OpenAPIContract {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return unreadableContract(path, err.Error())
+	}
+
+	return loadOpenAPIContractWithSource(contents, path)
 }
 
 func loadOpenAPIContract(contents []byte) *OpenAPIContract {
+	return loadOpenAPIContractWithSource(contents, "")
+}
+
+// LoadCandidateOpenAPIContract loads a candidate-owned contract from a file,
+// an HTTP(S) URL, or an endpoint path relative to baseURL.
+func LoadCandidateOpenAPIContract(source, baseURL string) *OpenAPIContract {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(source)
+	isHTTPSource := err == nil &&
+		(strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
+	if isHTTPSource {
+		return loadOpenAPIContractURL(source)
+	}
+
+	if !strings.HasPrefix(source, "/") {
+		return LoadOpenAPIContract(source)
+	}
+	if _, err := os.Stat(source); err == nil {
+		return LoadOpenAPIContract(source)
+	}
+
+	base, err := url.Parse(baseURL)
+	if err != nil || !base.IsAbs() || base.Host == "" {
+		return unreadableContract(
+			source,
+			fmt.Sprintf("resolve candidate spec path %q against base URL %q", source, baseURL),
+		)
+	}
+	base.Path = source
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+
+	return loadOpenAPIContractURL(base.String())
+}
+
+func loadOpenAPIContractURL(rawURL string) *OpenAPIContract {
+	client := http.Client{Timeout: candidateSpecFetchTimeout}
+	response, err := client.Get(rawURL)
+	if err != nil {
+		return unreadableContract(rawURL, err.Error())
+	}
+	contents, err := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if err != nil {
+		return unreadableContract(rawURL, err.Error())
+	}
+	if closeErr != nil {
+		return unreadableContract(rawURL, closeErr.Error())
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return unreadableContract(
+			rawURL,
+			fmt.Sprintf("candidate spec returned HTTP status %d", response.StatusCode),
+		)
+	}
+
+	return loadOpenAPIContractWithSource(contents, rawURL)
+}
+
+func unreadableContract(source string, message string) *OpenAPIContract {
+	return &OpenAPIContract{
+		limitation:  problemOutcomeReasonSchemaContractUnreadable,
+		loadMessage: message,
+		source:      source,
+	}
+}
+
+func loadOpenAPIContractWithSource(contents []byte, source string) *OpenAPIContract {
 	loader := openapi3.NewLoader()
 	document, err := loader.LoadFromData(contents)
 	if err != nil {
 		return &OpenAPIContract{
 			limitation:  problemOutcomeReasonSchemaReferenceUnresolved,
 			loadMessage: err.Error(),
+			source:      source,
 		}
 	}
 	if !supportedOpenAPIVersion(document) {
 		return &OpenAPIContract{
 			document:   document,
 			limitation: problemOutcomeReasonSchemaOpenAPIVersionUnsupported,
+			source:     source,
 		}
 	}
-	return &OpenAPIContract{document: document}
+	return &OpenAPIContract{document: document, source: source}
 }
 
 func supportedOpenAPIVersion(document *openapi3.T) bool {
@@ -114,6 +206,7 @@ func (c *OpenAPIContract) Provenance() schemaValidationProvenance {
 	}
 	provenance.ContractLimitation = c.limitation
 	provenance.ContractLimitationMessage = c.loadMessage
+	provenance.ContractSource = c.source
 	if c.document != nil {
 		provenance.OpenAPIVersion = c.document.OpenAPI
 		provenance.JSONSchemaDialect = c.document.JSONSchemaDialect

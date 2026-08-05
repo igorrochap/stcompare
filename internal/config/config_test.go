@@ -1,6 +1,97 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadParsesOptionalStbenchConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stcompare.yaml")
+	contents := `schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  workers: 1
+campaigns:
+  baseline:
+    kind: baseline
+  candidate:
+    kind: candidate
+stbench:
+  campaign: candidate
+  reuse_process: true
+  source_dir: candidate-src
+  adapter: python adapter.py
+  adapter_timeout: 3m
+  lifecycle:
+    stop: ./stop.sh
+    build: ./build.sh
+    start: ./start.sh
+    command_timeout: 2m
+    health_url: http://localhost:8080/health
+    health_timeout: 5s
+candidate_spec: /openapi.json
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Stbench == nil {
+		t.Fatal("Stbench = nil, want parsed stbench section")
+	}
+	if loaded.Stbench.Campaign != "candidate" || !loaded.Stbench.ReuseProcess || loaded.Stbench.SourceDir != "candidate-src" ||
+		loaded.Stbench.Adapter != "python adapter.py" ||
+		loaded.Stbench.AdapterTimeout != "3m" || loaded.Stbench.Lifecycle.CommandTimeout != "2m" {
+		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)
+	}
+	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
+		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
+	}
+	if loaded.CandidateSpec != "/openapi.json" {
+		t.Fatalf("candidate spec = %q, want %q", loaded.CandidateSpec, "/openapi.json")
+	}
+}
+
+func TestLoadRejectsDeprecatedStbenchCandidateNames(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		key         string
+		wantMessage string
+	}{
+		{
+			name:        "campaign",
+			key:         "candidate",
+			wantMessage: "stbench.candidate is deprecated; use stbench.campaign",
+		},
+		{
+			name:        "source directory",
+			key:         "candidate_dir",
+			wantMessage: "stbench.candidate_dir is deprecated; use stbench.source_dir",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "CONFIG")
+			contents := "stbench:\n  " + test.key + ": value\n"
+			if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load() error = nil, want deprecated-name error")
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("Load() error = %q, want message %q", err.Error(), test.wantMessage)
+			}
+		})
+	}
+}
 
 func TestConfigValidateRejectsTrimmedDuplicatePreconditionHeuristicNames(t *testing.T) {
 	config := Default()
@@ -139,6 +230,75 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 			}
 			if err.Error() != test.wantError {
 				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigValidateRejectsStbenchHealthURLHostPortMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		healthURL string
+		wantError string
+	}{
+		{
+			name:      "port mismatch",
+			healthURL: "http://localhost:9090/health",
+			wantError: `stbench.lifecycle.health_url host/port must match base_url: got "localhost:9090", want "localhost:8080"`,
+		},
+		{
+			name:      "host mismatch",
+			healthURL: "http://candidate.test:8080/health",
+			wantError: `stbench.lifecycle.health_url host/port must match base_url: got "candidate.test:8080", want "localhost:8080"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Default()
+			config.Stbench = &StbenchConfig{
+				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
+			}
+
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want host/port mismatch error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAcceptsStbenchHealthURLWithMatchingHostPort(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseURL   string
+		healthURL string
+	}{
+		{
+			name:      "default HTTP port",
+			baseURL:   "http://localhost",
+			healthURL: "http://localhost/health",
+		},
+		{
+			name:      "default HTTPS port",
+			baseURL:   "https://localhost",
+			healthURL: "https://localhost/health",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := Default()
+			config.BaseURL = test.baseURL
+			config.Stbench = &StbenchConfig{
+				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
+			}
+
+			if err := config.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v, want nil for matching default port", err)
 			}
 		})
 	}

@@ -15,20 +15,26 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
 			Version: "2026-01-01",
+			Hash:    "template-hash",
 		},
-		Candidate:     "candidate",
-		Baseline:      "baseline",
-		StartedAt:     "2026-01-01T00:00:00Z",
-		EndedAt:       "2026-01-01T00:01:00Z",
-		Iterations:    2,
-		TerminalState: TerminalStateConverged,
+		PromptInstructions:   []string{"Task prompt stbench-default@2026-01-01"},
+		RenderedPromptHashes: []string{"rendered-prompt-hash"},
+		AgentResponses:       []string{"raw model response"},
+		ProcessReuse:         true,
+		Candidate:            "candidate",
+		Baseline:             "baseline",
+		StartedAt:            "2026-01-01T00:00:00Z",
+		EndedAt:              "2026-01-01T00:01:00Z",
+		Iterations:           2,
+		TerminalState:        TerminalStateConverged,
 		TimeMS: TimeBreakdown{
 			Total:          60000,
 			AgentFix:       20000,
 			CandidateReset: 10000,
 			Compare:        30000,
 		},
-		Tokens: &TokenUsage{Input: 10, Output: 20, Total: 30},
+		Tokens:                 &TokenUsage{Input: 10, Output: 20, Total: 30},
+		UnknownTokenIterations: 1,
 		Final: FinalSummary{
 			Converged:    true,
 			StillFailing: 0,
@@ -62,6 +68,9 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	}
 	if string(fields["schema_version"]) != `"1"` {
 		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "1")
+	}
+	if string(fields["unknown_token_iterations"]) != `1` {
+		t.Fatalf("unknown_token_iterations = %s, want 1", fields["unknown_token_iterations"])
 	}
 }
 

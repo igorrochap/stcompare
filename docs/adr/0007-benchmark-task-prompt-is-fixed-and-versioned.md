@@ -34,8 +34,9 @@ the *same task* in whatever format each needs.
   recorded prompt identity matches. An override exists for deliberate ablation.
 - `stbench` renders the prompt from the versioned template plus the compact view
   and passes the rendered instruction to the adapter alongside the view.
-- The benchmark record carries the prompt identity, so any run's fairness is
-  auditable after the fact.
+- The benchmark record carries the template identity, each rendered-instruction
+  hash and text, and the raw adapter response, so any run's fairness and agent
+  output are auditable after the fact.
 - The agent's problem source on every iteration — including the first — is the
   compact `--format agent` view from `compare`, never `junit.xml` or the raw
   VCR/HAR/NDJSON transcripts. See ADR-0004 (compare-first) and the `stbench`

@@ -60,7 +60,8 @@ func NewPreconditionHeuristic(name, method, pathPattern string) PreconditionHeur
 // for one comparison.
 type Input struct {
 	BaselineCampaign   string
-	SchemaPath         string
+	BaselineSchemaPath string
+	CandidateSpec      string
 	BaselineHARPath    string
 	BaselineVCRPath    string
 	BaselineNDJSONPath string
@@ -89,6 +90,7 @@ type Result struct {
 
 type preparedComparison struct {
 	baselineEntries            []harEntry
+	baselineSchemaValidation   *OpenAPIContract
 	baselineProblemCount       *int
 	baselineProblemCountSource *string
 	baselineProblemEvidence    baselineProblemEvidence
@@ -150,7 +152,8 @@ func prepareComparison(input Input) (preparedComparison, error) {
 			baselineEntries,
 		)
 	}
-	schemaValidation := LoadOpenAPIContract(input.SchemaPath)
+	baselineSchemaValidation := loadOptionalOpenAPIContract(input.BaselineSchemaPath)
+	schemaValidation := LoadCandidateOpenAPIContract(input.CandidateSpec, input.CandidateBaseURL)
 
 	requests := make([]harRequest, 0, len(baselineEntries))
 	for _, entry := range baselineEntries {
@@ -163,6 +166,7 @@ func prepareComparison(input Input) (preparedComparison, error) {
 
 	return preparedComparison{
 		baselineEntries:            baselineEntries,
+		baselineSchemaValidation:   baselineSchemaValidation,
 		baselineProblemCount:       problemCount,
 		baselineProblemCountSource: problemCountSource,
 		baselineProblemEvidence:    problemEvidence,
@@ -196,6 +200,7 @@ func persistComparisonArtifacts(
 
 	report := newReport(reportInput{
 		BaselineCampaign:           input.BaselineCampaign,
+		BaselineSchemaValidation:   prepared.baselineSchemaValidation,
 		BaselineProblemCount:       prepared.baselineProblemCount,
 		BaselineProblemCountSource: prepared.baselineProblemCountSource,
 		BaselineProblemEvidence:    prepared.baselineProblemEvidence,

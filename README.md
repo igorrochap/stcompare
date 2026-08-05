@@ -22,6 +22,7 @@ Build a local binary from the repository root:
 
 ```sh
 go build -o stcompare ./cmd/stcompare
+go build -o stbench ./cmd/stbench
 ```
 
 The examples below assume the binary is available as `stcompare`; use
@@ -484,6 +485,174 @@ metadata. When Schemathesis aborts before completing the campaign, `stcompare`
 removes a newly-created campaign directory and does not write success metadata.
 Forced runs against an existing directory leave existing files in place if
 Schemathesis aborts.
+
+## Run Benchmark Loops
+
+`stbench` owns the neutral fix loop and invokes `stcompare` through its public
+CLI contract. Add a `stbench` section to `stcompare.yaml`, or provide the same
+values as flags:
+
+```yaml
+stbench:
+  campaign: gpt5.6
+  agent: local-agent
+  model: model-name
+  hardware: hardware-name
+  adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
+  adapter_timeout: 30m
+  # reuse_process: true
+  source_dir: .
+  stcompare_binary: stcompare
+  record_path: .local/stbench/records/gpt5.6.json
+  lifecycle:
+    stop: .local/stbench/stop.sh
+    reset: .local/stbench/reset.sh
+    build: .local/stbench/build.sh
+    start: .local/stbench/start.sh
+    command_timeout: 30m
+    health_url: http://localhost:8080/health
+    health_timeout: 30s
+    health_interval: 100ms
+  max_iterations: 100
+  stall_window: 2
+```
+
+Run the loop with:
+
+```sh
+stbench run --config stcompare.yaml
+```
+
+The canonical `stbench run` flags use the same names as the settings they
+override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
+`--adapter`, `--adapter-timeout`,
+`--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
+`--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
+`--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
+`--stall-window`, `--prompt-id`, `--prompt-version`, and `--reuse-process`. The old short and
+duplicate aliases are not accepted. Effective values follow this precedence:
+explicit run flags override the `stbench` YAML section, which overrides the
+documented defaults. The `--base-url` override is applied before configuration
+validation.
+
+To scaffold the lifecycle hooks from the API repository root, run:
+
+```sh
+stbench init
+```
+
+This creates executable `stop.sh`, `reset.sh`, `build.sh`, and `start.sh`
+stubs in the repository-local `.local/stbench/` directory, then prints a
+matching `stbench:` configuration stanza with absolute paths. Each API keeps
+its own adapter lifecycle setup. Set `STBENCH_STATE_DIR` to choose an external
+state directory for a deliberate override; repository-local overrides must use
+`.local/stbench`.
+`stbench init` also adds `.local/stbench/` to `.gitignore` if it is not already
+covered. Add the printed stanza to `stcompare.yaml` and replace the no-op
+commands with the API's commands. Keep adapter support files outside the API
+repository. The generated `stop` hook is safe to run before the first
+iteration, when no API process exists. The `reset` hook must clean per-iteration
+runtime state without reverting source files, because source changes are the
+agent's progress.
+
+Before each comparison, `stbench` runs stop, optional reset, build, start, and
+health polling. `stop` may be called when nothing is running and should be
+idempotent. `reset` is for runtime state only; it must not run commands such as
+`git checkout .` that erase source changes. `build` prepares the candidate, and
+`start` must launch a long-running candidate process. After `start` returns,
+`stbench` polls `health_url` until it receives a `2xx` response or the health
+timeout expires; `health_interval` controls the delay between polls. The
+candidate must listen on the host and effective port declared by `base_url`,
+and `lifecycle.health_url` must use that same host and port. An omitted port
+means 80 for HTTP or 443 for HTTPS. Configuration validation reports a mismatch
+before the benchmark starts; the health URL may use a different path.
+`adapter_timeout` bounds each adapter invocation and
+`lifecycle.command_timeout` bounds each lifecycle hook; both default to 30
+minutes and can also be supplied as `--adapter-timeout` and
+`--command-timeout`. Timed-out commands are terminated as process groups and
+produce an adapter or lifecycle error. The adapter runs with `source_dir` as
+its working directory, while its own adapter files and lifecycle harness stay
+outside that tree. It receives one
+JSON object on stdin and must write one JSON object to stdout:
+
+```json
+{"agent":"codex","model":"gpt-5","hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+```
+
+`agent`, `model`, and `hardware` come from the `stbench` configuration and are
+the adapter's execution metadata. Adapter-specific flags are optional explicit
+overrides; do not duplicate these values in the adapter command by default.
+
+`reuse_process` is opt-in and off by default. When enabled, stbench asks the
+adapter during preflight whether it supports a line-delimited request/response
+session. A supporting adapter keeps its process alive and returns one JSON
+result per request; an adapter that does not advertise support automatically
+falls back to the cold one-shot invocation. Every reused turn receives the
+same fresh metadata, rendered instruction, and compact view as the cold path.
+This is process reuse, not context carry: stbench never sends prior prompts,
+reasoning, tool transcripts, or session history. Context carry is intentionally
+out of scope because it would confound agent comparisons and can overflow the
+small context windows targeted by local-model studies. Each request is still
+bounded by `adapter_timeout`, and the benchmark record's `process_reuse`
+field reports whether reuse was actually negotiated.
+
+Before the first comparison, `stbench` automatically runs a preflight smoke
+test: stop, optional reset, build, start, health check, and stop again. It then
+sends the adapter a no-op request with `"preflight": true`; a compatible
+adapter returns an `ok` result without invoking its model or editing the
+candidate. Any failed preflight phase is reported before iteration 1 or a
+comparison begins.
+
+Reusable adapters set `reuse_process: true` in their successful preflight
+result and read one newline-delimited JSON request at a time. The reference
+adapters remain stateless by default and therefore return `reuse_process:
+false`; enabling the runner option is a verified no-op for those adapters.
+
+The result is `{ "status": "ok"|"error", "message": "...", "response":
+"<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
+null, "reuse_process": false }`. The adapter edits the candidate in place;
+unknown token usage must be reported as `null`. The command writes the versioned benchmark record to
+`record_path`; its `tokens` field sums known usage, while
+`unknown_token_iterations` counts fix iterations that reported `null`. If no
+iteration reports token usage, `tokens` remains `null`. The command exits `0`
+on convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
+lifecycle errors.
+
+### Adapter examples
+
+The adapter is a delivery boundary, not the benchmark loop. `stbench` renders
+one fixed task instruction and compact `--format agent` view per iteration; the
+adapter passes that instruction through its agent-specific envelope, edits the
+candidate in place, and returns the protocol result. It does not read raw
+campaign artifacts, rewrite the task, or decide when to iterate.
+
+Three reference adapters are provided in
+[`examples/stbench/README.md`](examples/stbench/README.md):
+
+- `local_model_adapter.py` is the first-class on-prem path. It talks to an
+  OpenAI-compatible local inference server and gives the model confined
+  read/write/command tools, so source is edited in place without a cloud
+  dependency or repository snapshot. Put its URL, model, hardware, timeout,
+  and turn limit in the `stbench` configuration; keep only an optional API key
+  in `STBENCH_LOCAL_MODEL_API_KEY`.
+- `coding_agent_adapter.py` is the first-class engineering path for an
+  installed Codex or Claude Code CLI. Set `agent`, `model`, and `hardware` in
+  the `stbench` configuration and pass only the timeout on the `adapter:`
+  command; no runner code changes are needed.
+- `adapter.py` is the explicit cloud fallback. It snapshots tracked source
+  below `source_dir`; it excludes the repository-local `.local/stbench`
+  and `.local/stcompare` control-plane paths from snapshots and patches. It
+  requests a unified diff, validates it with `git apply --check`, and applies
+  it. Keep the adapter and `_protocol.py` outside the API
+  repository; put its model and hardware in the `stbench` configuration and
+  pass the endpoint, timeout, and snapshot limit on the `adapter:` command;
+  keep `OPENAI_API_KEY` as an environment credential. The
+  example documents its cloud, repository-size, and patch-format limitations
+  up front; it is not the recommended on-prem path.
+
+Point `stbench.adapter` at any of these commands without changing the
+loop or lifecycle configuration. The examples use only Python's standard
+library.
 
 ## Development
 

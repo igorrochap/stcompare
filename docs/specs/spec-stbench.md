@@ -39,8 +39,9 @@ see ADR-0004, ADR-0006). For each run it:
 3. Terminates the loop on convergence, on a **stall** (the actionable count
    stops dropping), or on a **max-iteration** cap.
 4. Emits one **benchmark record** per `(agent, candidate, run)` capturing
-   terminal state, iteration count, a per-phase time breakdown, token totals
-   (`null` when the agent cannot report them), and the final convergence counts.
+   terminal state, iteration count, a per-phase time breakdown, known token
+   totals plus the number of iterations with unknown usage, and the final
+   convergence counts.
 
 The candidate lifecycle (reset/build/start/health) is uniform and therefore
 owned by `stbench` via configuration; only the "work the fixes" step varies per
@@ -81,9 +82,10 @@ across agents so the benchmark measures the model, not its harness.
 12. As a researcher, I want the record to include the iteration count and the
     terminal state (converged, stalled, max-iterations, tool error, adapter
     error), so that I know how and why each run ended.
-13. As a researcher, I want token usage recorded as `{input, output, total}`
-    and as explicit `null` when the agent cannot report it, so that "unknown"
-    never collapses into "zero" and corrupts averages.
+13. As a researcher, I want known token usage recorded as `{input, output,
+    total}` while unknown iterations are counted explicitly, so that partial
+    data is retained without collapsing "unknown" into "zero" or overstating
+    an aggregate.
 14. As a researcher, I want the record to carry model and hardware metadata I
     provide, so that I can read latency and token numbers fairly across cloud
     and local runs.
@@ -155,6 +157,10 @@ integration test.
   record captures which phase failed.
 - The candidate base URL is taken from the existing `stcompare` config /
   `--base-url` override and passed through to `compare`.
+- `base_url` and `lifecycle.health_url` must use the same candidate host and
+  effective port. An omitted port means 80 for HTTP or 443 for HTTPS. Config
+  validation reports a mismatch before the benchmark starts; the health URL may
+  use a different path.
 
 **Task prompt (fixed, versioned, owned by `stbench`; see ADR-0007):**
 
@@ -171,24 +177,61 @@ integration test.
 - The prompt is fixed by default and overridable via config **only** for
   deliberate prompt-ablation experiments. The prompt identity (version or content
   hash) is recorded in the benchmark record, and two runs are comparable only
-  when their recorded prompt identity matches.
+  when their recorded prompt identity matches. The record also stores a hash of
+  each exact rendered instruction sent to the adapter.
 
 **Adapter protocol (language-agnostic, per-agent):**
 
 - `stbench` invokes the configured adapter command with the candidate source
   directory as its working directory.
-- The rendered task instruction **and** the compact `agentreport.View` (the
+- The adapter implementation and lifecycle harness are control-plane files,
+  not candidate source. `stbench init` stores generated lifecycle scripts and
+  the benchmark record in the repository-local `.local/stbench` control-plane
+  directory by default, and prints configuration paths for that directory.
+  Adapters exclude `.local/stbench` and `.local/stcompare` from source views and
+  edits; reference adapter implementations should remain outside the source
+  tree.
+- The `agent`, `model`, and `hardware` metadata from the stbench configuration,
+  the rendered task instruction, and the compact `agentreport.View` (the
   actionable list and counts) are passed to the adapter on **stdin** as JSON.
+  The request metadata is the source of truth for adapter execution; an
+  adapter may override it only through an explicit adapter option.
   This compact view is the agent's problem source on **every** iteration,
   including the first — never `junit.xml` or the raw VCR/HAR/NDJSON transcripts
   (those are internal evidence only; see Further Notes).
 - The adapter edits the candidate source **in place** and writes a small result
   JSON to **stdout**: `{ "tokens": {"input": N, "output": N, "total": N} | null,
-  "status": "ok" | "error", "message": "…" }`. A non-zero adapter exit or
-  `status: "error"` ends the run as `adapter_error`.
+  "response": "<raw model response>", "status": "ok" | "error",
+  "message": "…" }`. A non-zero adapter exit or `status: "error"` ends the
+  run as `adapter_error`; the response text is retained for audit.
+- Before the first comparison, `stbench` sends a no-op preflight request with
+  `"preflight": true`. The adapter must execute its command, return an `ok`
+  result, and exit without invoking a model or editing the candidate. The
+  request does not include an instruction or compact view.
 - The adapter — not `stbench` — is responsible for capturing tokens from its
   agent (provider `usage` for cloud/API agents; inference-server counts or a
   local tokenizer for local models). Unknown → `tokens: null`.
+
+**Optional adapter-process reuse:**
+
+- `reuse_process` is opt-in and false by default. The cold one-shot adapter
+  invocation remains the baseline behavior.
+- When enabled, `stbench` asks for reuse during preflight. An adapter opts in
+  by returning `reuse_process: true` and keeping its process alive with one
+  newline-delimited JSON response for each newline-delimited request. Adapters
+  that do not opt in use cold invocations automatically, making the option a
+  no-op for stateless calls.
+- Every reused request contains the same metadata, rendered task instruction,
+  and compact comparison view as the cold request. `stbench` never injects
+  prior prompts, reasoning, tool transcripts, or session history. This is
+  process reuse, not context carry; context carry is out of scope because it
+  would reintroduce the agent-plus-harness confound and can exceed small local
+  model context windows.
+- Each response is bounded by the per-request adapter timeout. A crashed or
+  wedged reused process ends the run as an adapter error, and the process is
+  closed on convergence, stall, max-iterations, adapter/lifecycle/tool error,
+  and final CLI cleanup. `process_reuse` in the benchmark record reports the
+  negotiated execution mode.
 
 **Termination and stall detection:**
 
@@ -208,7 +251,12 @@ integration test.
 {
   "schema_version": "...",
   "agent": "...", "model": "...", "hardware": "...",   // provided by the caller
-  "prompt": { "id": "...", "version": "..." },          // task-prompt identity (ADR-0007)
+  "process_reuse": bool,                                // negotiated adapter mode
+  "prompt": { "id": "...", "version": "...", "hash": "..." },
+                                                        // task-prompt identity (ADR-0007)
+  "prompt_instructions": ["..."],                     // rendered instruction per agent fix
+  "rendered_prompt_hashes": ["..."],                   // hash of each exact instruction
+  "agent_responses": ["..."],                          // raw adapter/model response per fix
   "candidate": "...", "baseline": "...",
   "started_at": "...", "ended_at": "...",
   "iterations": N,
@@ -216,6 +264,7 @@ integration test.
                     | "tool_error" | "adapter_error" | "lifecycle_error",
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
+  "unknown_token_iterations": N,
   "final": {
     "converged": bool,
     "still_failing": N, "regressed": N,
@@ -226,9 +275,13 @@ integration test.
 }
 ```
 
-- `tokens` at the record level is the sum over iterations; `null` if any
-  iteration's tokens were unknown (unknown is contagious, so aggregates are
-  never silently understated).
+The three per-fix arrays use the same index: instruction, rendered-instruction
+hash, and raw agent response.
+
+- `tokens` at the record level is the sum of iterations with known usage.
+  `unknown_token_iterations` counts fix iterations whose usage was unknown.
+  `tokens` is `null` only when no iteration reported known usage, which
+  distinguishes an all-unknown run from a run with a retained partial sum.
 - `remaining_actionable` is empty on a converged run.
 
 **Configuration/CLI:** `stbench run` takes the candidate name, the agent/adapter
@@ -259,8 +312,11 @@ real subprocesses, services, or agents.
   - Lifecycle failure (fake `Candidate` fails a phase) → `lifecycle_error` with
     the failing phase recorded.
   - Time breakdown sums correctly from the injected clock across phases.
-  - Token aggregation: numeric usages sum; any `null` iteration makes the record
-    total `null`.
+  - Token aggregation: numeric usages sum, mixed numeric/`null` iterations
+    retain the known sum and count the unknown iterations, and an all-`null`
+    run keeps the record total `null`.
+  - The embedded prompt template is identified by a content hash, and each
+    rendered instruction is archived in the benchmark record.
 - **Benchmark record schema (`benchrecord`).** Pure marshal/round-trip tests of
   the record shape and `schema_version`, mirroring `report_test.go`'s JSON
   assertions.
@@ -277,9 +333,10 @@ real subprocesses, services, or agents.
 - Any change to `stcompare`'s evaluation, replay, reporting, or the agent
   contract itself — that is the separate agent-contract spec and is a dependency
   of this one.
-- Shipping concrete production adapters for specific agents. This spec defines
-  the adapter *protocol* and a test stub; real adapters (Claude Code, a local
-  model scaffold, etc.) are separate work.
+- Shipping concrete production integrations for specific agents. The repository
+  does provide reference examples for an on-prem local-model scaffold, a
+  Codex/Claude Code CLI, and a cloud API fallback; these examples do not change
+  the protocol or claim to be production integrations.
 - Cost ($) computation and cross-run aggregation/plotting — downstream analysis
   over the emitted records, not `stbench`'s job.
 - Parallelism across multiple candidates/agents in one invocation — one run per

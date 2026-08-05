@@ -42,28 +42,36 @@ const (
 
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
-	SchemaVersion       string           `json:"schema_version"`
-	Agent               string           `json:"agent"`
-	Model               string           `json:"model"`
-	Hardware            string           `json:"hardware"`
-	Prompt              PromptIdentity   `json:"prompt"`
-	Candidate           string           `json:"candidate"`
-	Baseline            string           `json:"baseline"`
-	StartedAt           string           `json:"started_at"`
-	EndedAt             string           `json:"ended_at"`
-	Iterations          int              `json:"iterations"`
-	TerminalState       TerminalState    `json:"terminal_state"`
-	LifecyclePhase      LifecyclePhase   `json:"lifecycle_phase,omitempty"`
-	TimeMS              TimeBreakdown    `json:"time_ms"`
-	Tokens              *TokenUsage      `json:"tokens"`
-	Final               FinalSummary     `json:"final"`
-	RemainingActionable []ActionableItem `json:"remaining_actionable"`
+	SchemaVersion        string         `json:"schema_version"`
+	Agent                string         `json:"agent"`
+	Model                string         `json:"model"`
+	Hardware             string         `json:"hardware"`
+	Prompt               PromptIdentity `json:"prompt"`
+	PromptInstructions   []string       `json:"prompt_instructions"`
+	RenderedPromptHashes []string       `json:"rendered_prompt_hashes"`
+	AgentResponses       []string       `json:"agent_responses"`
+	// ProcessReuse reports whether the adapter negotiated a reusable process.
+	ProcessReuse   bool           `json:"process_reuse"`
+	Candidate      string         `json:"candidate"`
+	Baseline       string         `json:"baseline"`
+	StartedAt      string         `json:"started_at"`
+	EndedAt        string         `json:"ended_at"`
+	Iterations     int            `json:"iterations"`
+	TerminalState  TerminalState  `json:"terminal_state"`
+	LifecyclePhase LifecyclePhase `json:"lifecycle_phase,omitempty"`
+	TimeMS         TimeBreakdown  `json:"time_ms"`
+	Tokens         *TokenUsage    `json:"tokens"`
+	// UnknownTokenIterations counts fix iterations without reported token usage.
+	UnknownTokenIterations int              `json:"unknown_token_iterations"`
+	Final                  FinalSummary     `json:"final"`
+	RemainingActionable    []ActionableItem `json:"remaining_actionable"`
 }
 
 // PromptIdentity identifies the fixed task prompt used by a run.
 type PromptIdentity struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
+	Hash    string `json:"hash"` // SHA-256 of the embedded prompt template.
 }
 
 // TimeBreakdown contains wall-clock duration measurements in milliseconds.

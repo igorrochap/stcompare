@@ -1,0 +1,224 @@
+package bench
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"stcompare/benchrecord"
+	"stcompare/internal/config"
+)
+
+func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
+	settings := defaultRunSettings(&config.StbenchConfig{
+		Campaign:        "campaign",
+		Agent:           "local-agent",
+		Model:           "model-name",
+		Hardware:        "hardware-name",
+		Adapter:         "python adapter.py",
+		ReuseProcess:    true,
+		SourceDir:       "candidate-src",
+		StcompareBinary: "./stcompare",
+		RecordPath:      "records/run.json",
+		Prompt:          config.StbenchPromptConfig{ID: "prompt", Version: "2"},
+		Lifecycle: config.StbenchLifecycleConfig{
+			Stop:           "./stop.sh",
+			Reset:          "./reset.sh",
+			Build:          "./build.sh",
+			Start:          "./start.sh",
+			HealthURL:      "http://localhost:8080/health",
+			HealthTimeout:  "5s",
+			HealthInterval: "10ms",
+			CommandTimeout: "2m",
+		},
+		AdapterTimeout: "3m",
+		MaxIterations:  7,
+		StallWindow:    3,
+	})
+
+	if settings.campaign != "campaign" || settings.adapter != "python adapter.py" || !settings.reuseProcess || settings.sourceDir != "candidate-src" {
+		t.Fatalf("settings = %#v, want caller configuration", settings)
+	}
+	if settings.stop != "./stop.sh" || settings.reset != "./reset.sh" || settings.healthTimeout != "5s" ||
+		settings.commandTimeout != "2m" || settings.adapterTimeout != "3m" {
+		t.Fatalf("lifecycle settings = %#v, want caller configuration", settings)
+	}
+	if settings.maxIterations != 7 || settings.stallWindow != 3 || settings.promptVersion != "2" {
+		t.Fatalf("run limits/prompt = %#v, want caller configuration", settings)
+	}
+}
+
+func TestApplyRunSettingsAcceptsPositionalCampaign(t *testing.T) {
+	settings := defaultRunSettings(nil)
+	applyRunSettings(&settings, runCommandOptions{campaign: "campaign"}, &cobra.Command{})
+	if settings.campaign != "campaign" {
+		t.Fatalf("campaign = %q, want positional campaign", settings.campaign)
+	}
+}
+
+func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
+	root := NewRootCommand()
+	run, _, err := root.Find([]string{"run"})
+	if err != nil {
+		t.Fatalf("find run command: %v", err)
+	}
+
+	canonical := []string{
+		"campaign", "agent", "model", "hardware", "adapter", "adapter-timeout", "reuse-process",
+		"source-dir", "stcompare-binary", "record-path", "base-url",
+		"stop-command", "reset-command", "build-command", "start-command",
+		"command-timeout", "health-url", "health-timeout", "health-interval",
+		"max-iterations", "stall-window", "prompt-id", "prompt-version",
+	}
+	for _, name := range canonical {
+		if run.Flags().Lookup(name) == nil {
+			t.Errorf("canonical flag --%s is not registered", name)
+		}
+	}
+
+	aliases := []string{
+		"candidate", "adapter-command", "candidate-dir", "stcompare", "record",
+		"stop", "reset", "build", "start",
+	}
+	for _, name := range aliases {
+		if run.Flags().Lookup(name) != nil {
+			t.Errorf("legacy alias --%s is still registered", name)
+		}
+	}
+}
+
+func TestApplyRunSettingsFlagsOverrideConfiguration(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("campaign", "", "")
+	command.Flags().String("source-dir", "", "")
+	command.Flags().String("adapter", "", "")
+	command.Flags().String("record-path", "", "")
+	command.Flags().String("stop-command", "", "")
+	for name, value := range map[string]string{
+		"campaign":     "flag-campaign",
+		"source-dir":   "flag-source",
+		"adapter":      "flag-adapter",
+		"record-path":  "flag-record.json",
+		"stop-command": "flag-stop",
+	} {
+		if err := command.Flags().Set(name, value); err != nil {
+			t.Fatalf("set --%s: %v", name, err)
+		}
+	}
+
+	settings := runSettings{
+		campaign:   "config-campaign",
+		sourceDir:  "config-source",
+		adapter:    "config-adapter",
+		recordPath: "config-record.json",
+		stop:       "config-stop",
+	}
+	applyRunSettings(&settings, runCommandOptions{
+		campaign:   "flag-campaign",
+		sourceDir:  "flag-source",
+		adapter:    "flag-adapter",
+		recordPath: "flag-record.json",
+		stop:       "flag-stop",
+	}, command)
+
+	if settings.campaign != "flag-campaign" || settings.sourceDir != "flag-source" ||
+		settings.adapter != "flag-adapter" || settings.recordPath != "flag-record.json" ||
+		settings.stop != "flag-stop" {
+		t.Fatalf("settings = %#v, want explicit flag values to override config", settings)
+	}
+}
+
+func TestApplyRunOverridesBaseURLFlag(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("base-url", "", "")
+	if err := command.Flags().Set("base-url", "http://flag.example.test:9090"); err != nil {
+		t.Fatalf("set --base-url: %v", err)
+	}
+
+	effective := config.Default()
+	effective.BaseURL = "http://config.example.test:8080"
+	applyRunOverrides(command, &effective, &runCommandOptions{baseURL: "http://flag.example.test:9090"})
+
+	if effective.BaseURL != "http://flag.example.test:9090" {
+		t.Fatalf("base URL = %q, want explicit flag value", effective.BaseURL)
+	}
+}
+
+func TestApplyRunSettingsAcceptsTimeoutFlags(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().String("adapter-timeout", "", "")
+	command.Flags().String("command-timeout", "", "")
+	if err := command.Flags().Set("adapter-timeout", "2s"); err != nil {
+		t.Fatalf("set adapter timeout flag: %v", err)
+	}
+	if err := command.Flags().Set("command-timeout", "3s"); err != nil {
+		t.Fatalf("set command timeout flag: %v", err)
+	}
+
+	settings := defaultRunSettings(nil)
+	applyRunSettings(&settings, runCommandOptions{
+		adapterTimeout: "2s",
+		commandTimeout: "3s",
+	}, command)
+	if settings.adapterTimeout != "2s" || settings.commandTimeout != "3s" {
+		t.Fatalf("timeouts = %q and %q, want flag values", settings.adapterTimeout, settings.commandTimeout)
+	}
+}
+
+func TestParseDurationAcceptsGoDurationAndRejectsInvalidValues(t *testing.T) {
+	got, err := parseDuration("health timeout", "250ms")
+	if err != nil {
+		t.Fatalf("parseDuration() error = %v", err)
+	}
+	if got != 250*time.Millisecond {
+		t.Fatalf("duration = %s, want 250ms", got)
+	}
+
+	if _, err := parseDuration("health timeout", "not-a-duration"); err == nil || !strings.Contains(err.Error(), "health timeout") {
+		t.Fatalf("parseDuration() error = %v, want named duration error", err)
+	}
+	if _, err := parseDuration("health timeout", "-1s"); err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("parseDuration() error = %v, want negative-duration error", err)
+	}
+}
+
+func TestExitCodeForBenchmarkTerminalState(t *testing.T) {
+	for _, test := range []struct {
+		state benchrecord.TerminalState
+		want  int
+	}{
+		{state: benchrecord.TerminalStateConverged, want: 0},
+		{state: benchrecord.TerminalStateStalled, want: 2},
+		{state: benchrecord.TerminalStateMaxIterations, want: 2},
+		{state: benchrecord.TerminalStateToolError, want: 1},
+		{state: benchrecord.TerminalStateAdapterError, want: 1},
+		{state: benchrecord.TerminalStateLifecycleError, want: 1},
+	} {
+		if got := exitCodeForState(test.state); got != test.want {
+			t.Errorf("exitCodeForState(%q) = %d, want %d", test.state, got, test.want)
+		}
+	}
+}
+
+func TestWriteRecordCreatesParentDirectoryAndJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "record.json")
+	record := benchrecord.Record{
+		SchemaVersion: benchrecord.SchemaVersion,
+		TerminalState: benchrecord.TerminalStateConverged,
+		Tokens:        nil,
+	}
+	if err := writeRecord(path, record); err != nil {
+		t.Fatalf("writeRecord() error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if !strings.Contains(string(contents), `"terminal_state": "converged"`) || !strings.Contains(string(contents), `"tokens": null`) {
+		t.Fatalf("record = %s, want terminal state and null tokens", contents)
+	}
+}

@@ -2,19 +2,32 @@
 package bench
 
 import (
+	"bytes"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"text/template"
 	"time"
 
 	"stcompare/agentreport"
 	"stcompare/benchrecord"
 )
 
+//go:embed prompt.md
+var promptTemplateText string
+
+var promptTemplate = template.Must(template.New("stbench-prompt").Parse(promptTemplateText))
+
+var promptTemplateHash = hashContent(promptTemplateText)
+
 const (
 	// DefaultPromptID identifies the canonical stbench task prompt.
 	DefaultPromptID = "stbench-default"
 	// DefaultPromptVersion identifies the current canonical task prompt.
-	DefaultPromptVersion = "1"
+	DefaultPromptVersion = "2"
 	// DefaultMaxIterations bounds runs that do not provide an explicit cap.
 	DefaultMaxIterations = 100
 	// DefaultStallWindow is the number of consecutive non-improving transitions
@@ -22,11 +35,16 @@ const (
 	DefaultStallWindow = 2
 )
 
+// AdapterMetadata identifies the execution configuration supplied to an adapter.
+type AdapterMetadata struct {
+	Agent    string `json:"agent"`
+	Model    string `json:"model"`
+	Hardware string `json:"hardware"`
+}
+
 // Config describes one benchmark run.
 type Config struct {
-	Agent     string
-	Model     string
-	Hardware  string
+	AdapterMetadata
 	Candidate string
 	Baseline  string
 
@@ -46,6 +64,15 @@ type Config struct {
 	// actionable-count decrease allowed before a run stalls. A zero value uses
 	// DefaultStallWindow.
 	StallWindow int
+
+	// ReuseProcess requests a negotiated long-lived adapter process. Adapters
+	// that do not support the protocol fall back to cold invocations.
+	ReuseProcess bool
+
+	// HeartbeatInterval is the cadence of ProgressWaiting events emitted while
+	// the agent fix is in flight. A zero value disables the heartbeat, keeping
+	// the loop silent between phase boundaries.
+	HeartbeatInterval time.Duration
 }
 
 // Dependencies contains the replaceable collaborators used by Run.
@@ -54,6 +81,14 @@ type Dependencies struct {
 	Candidate  Candidate
 	Adapter    Adapter
 	Now        func() time.Time
+
+	// Reporter, when set, is narrated at every loop phase boundary. A nil
+	// Reporter keeps Run silent, preserving its pure-library behavior.
+	Reporter Reporter
+
+	// ChangeInspector, when set, is polled on agent-fix heartbeat ticks to
+	// narrate the files edited so far. Optional and independent of Reporter.
+	ChangeInspector ChangeInspector
 }
 
 // Comparator runs one comparison and returns its compact view and exit code.
@@ -70,13 +105,83 @@ type Candidate interface {
 	WaitHealthy() error
 }
 
-// Adapter applies one rendered task instruction to the candidate.
+// Adapter applies one rendered task instruction and reports the adapter result.
 type Adapter interface {
-	Fix(instruction string, view agentreport.View) (*benchrecord.TokenUsage, error)
+	Preflight(metadata AdapterMetadata) error
+	Fix(instruction string, view agentreport.View, metadata AdapterMetadata) (*AdapterResult, error)
+}
+
+// AdapterCloser releases adapter resources after a benchmark run.
+type AdapterCloser interface {
+	Close() error
+}
+
+// Progress phase identifiers narrated to a Reporter. Lifecycle phases reuse the
+// benchrecord.LifecyclePhase values so record and narration stay aligned.
+const (
+	ProgressPhaseIteration = "iteration"
+	ProgressPhasePreflight = "preflight"
+	ProgressPhaseCompare   = "compare"
+	ProgressPhaseAgentFix  = "agent_fix"
+	ProgressPhaseTerminal  = "terminal"
+)
+
+// Progress state identifiers for a ProgressEvent.
+const (
+	ProgressStart = "start"
+	ProgressDone  = "done"
+	ProgressError = "error"
+	// ProgressWaiting is emitted periodically while a long phase (the agent
+	// fix) is still in flight, so the run is visibly alive rather than silent.
+	ProgressWaiting = "waiting"
+)
+
+// ProgressEvent describes one narrated transition in the fix loop. Compare
+// fields are populated only on a ProgressPhaseCompare done event; Terminal is
+// populated only on a ProgressPhaseTerminal event. Elapsed and ChangedFiles are
+// populated on ProgressWaiting heartbeat events.
+type ProgressEvent struct {
+	Iteration    int
+	Phase        string
+	State        string
+	Actionable   int
+	Converged    bool
+	StillFailing int
+	Terminal     benchrecord.TerminalState
+	Elapsed      time.Duration
+	ChangedFiles []string
+	Err          error
+}
+
+// Reporter observes loop progress. A heartbeat ticker may call Report from a
+// separate goroutine while the agent fix is in flight; between phases only the
+// loop goroutine calls it, and the two never overlap. Implementations must not
+// block.
+type Reporter interface {
+	Report(ProgressEvent)
+}
+
+// ChangeInspector reports the candidate source paths an agent has modified so
+// far. It is polled on heartbeat ticks during the agent fix so edits surface as
+// they land. A nil inspector omits file narration.
+type ChangeInspector interface {
+	Changed() ([]string, error)
+}
+
+func report(reporter Reporter, event ProgressEvent) {
+	if reporter == nil {
+		return
+	}
+	reporter.Report(event)
+}
+
+// ProcessReuseReporter reports whether the adapter negotiated process reuse.
+type ProcessReuseReporter interface {
+	ProcessReuseActive() bool
 }
 
 // Run drives a candidate until convergence or a terminal condition.
-func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+func Run(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
 	if err := validate(config, dependencies); err != nil {
 		return benchrecord.Record{}, err
 	}
@@ -96,25 +201,57 @@ func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
 	if config.Prompt.Version == "" {
 		config.Prompt.Version = DefaultPromptVersion
 	}
+	config.Prompt.Hash = promptTemplateHash
 
 	startedAt := dependencies.Now()
-	record := benchrecord.Record{
-		SchemaVersion: benchrecord.SchemaVersion,
-		Agent:         config.Agent,
-		Model:         config.Model,
-		Hardware:      config.Hardware,
-		Prompt:        config.Prompt,
-		Candidate:     config.Candidate,
-		Baseline:      config.Baseline,
-		StartedAt:     startedAt.Format(time.RFC3339Nano),
-		Tokens:        &benchrecord.TokenUsage{},
-		Final:         benchrecord.FinalSummary{},
+	record = benchrecord.Record{
+		SchemaVersion:        benchrecord.SchemaVersion,
+		Agent:                config.Agent,
+		Model:                config.Model,
+		Hardware:             config.Hardware,
+		Prompt:               config.Prompt,
+		Candidate:            config.Candidate,
+		Baseline:             config.Baseline,
+		StartedAt:            startedAt.Format(time.RFC3339Nano),
+		PromptInstructions:   []string{},
+		RenderedPromptHashes: []string{},
+		AgentResponses:       []string{},
+		ProcessReuse:         config.ReuseProcess,
+		Final:                benchrecord.FinalSummary{},
 	}
+	defer func() {
+		if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
+			record.ProcessReuse = reporter.ProcessReuseActive()
+		}
+		if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
+			if err := closer.Close(); err != nil {
+				closeErr := fmt.Errorf("close adapter: %w", err)
+				if runErr == nil {
+					if record.TerminalState != benchrecord.TerminalStateConverged {
+						record = finish(record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
+					}
+					runErr = closeErr
+				} else {
+					runErr = errors.Join(runErr, closeErr)
+				}
+			}
+		}
+	}()
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
 		record.LifecyclePhase = benchrecord.LifecyclePhaseBaselinePrecondition
 		return finish(record, dependencies.Now(), benchrecord.TerminalStateLifecycleError),
 			fmt.Errorf("baseline precondition: campaign %q is missing", config.Baseline)
+	}
+
+	report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressStart})
+	if state, err := runPreflight(config, dependencies, &record.LifecyclePhase); err != nil {
+		report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressError, Err: err})
+		return finish(record, dependencies.Now(), state), err
+	}
+	report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressDone})
+	if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
+		record.ProcessReuse = reporter.ProcessReuseActive()
 	}
 
 	return runIterations(config, dependencies, record, startedAt)
@@ -126,12 +263,12 @@ func runIterations(
 	record benchrecord.Record,
 	startedAt time.Time,
 ) (benchrecord.Record, error) {
+	record.Tokens = &benchrecord.TokenUsage{}
 	runner := iterationRunner{
 		config:       config,
 		dependencies: dependencies,
 		record:       &record,
 		timer:        &phaseTimer{now: dependencies.Now, cursor: startedAt},
-		tokensKnown:  true,
 	}
 	for iteration := 1; iteration <= config.MaxIterations; iteration++ {
 		runner.record.Iterations = iteration
@@ -145,18 +282,73 @@ func runIterations(
 }
 
 type iterationRunner struct {
-	config       Config
-	dependencies Dependencies
-	record       *benchrecord.Record
-	timer        *phaseTimer
-	lastView     agentreport.View
-	progress     progressTracker
-	tokensKnown  bool
+	config                 Config
+	dependencies           Dependencies
+	record                 *benchrecord.Record
+	timer                  *phaseTimer
+	lastView               agentreport.View
+	progress               progressTracker
+	unknownTokenIterations int
+	hasKnownTokens         bool
+}
+
+func (runner *iterationRunner) report(event ProgressEvent) {
+	event.Iteration = runner.record.Iterations
+	report(runner.dependencies.Reporter, event)
+}
+
+// withAgentFixHeartbeat runs fix while emitting ProgressWaiting events on the
+// configured cadence, so a long agent invocation is visibly alive. The ticker
+// goroutine is the only caller of report during fix; it is stopped and drained
+// before this returns, so it never overlaps the surrounding start/done events.
+func (runner *iterationRunner) withAgentFixHeartbeat(fix func() error) error {
+	interval := runner.config.HeartbeatInterval
+	if interval <= 0 || runner.dependencies.Reporter == nil {
+		return fix()
+	}
+
+	started := runner.dependencies.Now()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				var changed []string
+				if inspector := runner.dependencies.ChangeInspector; inspector != nil {
+					changed, _ = inspector.Changed()
+				}
+				runner.report(ProgressEvent{
+					Phase:        ProgressPhaseAgentFix,
+					State:        ProgressWaiting,
+					Elapsed:      runner.dependencies.Now().Sub(started),
+					ChangedFiles: changed,
+				})
+			}
+		}
+	}()
+
+	err := fix()
+	close(stop)
+	<-done
+	return err
 }
 
 func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
+	runner.report(ProgressEvent{Phase: ProgressPhaseIteration, State: ProgressStart})
 	if err := runner.timer.run(&runner.record.TimeMS.CandidateReset, func() error {
-		return runCandidateLifecycle(runner.dependencies.Candidate, &runner.record.LifecyclePhase)
+		return runCandidateLifecycle(
+			runner.dependencies.Candidate,
+			&runner.record.LifecyclePhase,
+			func(phase benchrecord.LifecyclePhase, state string, phaseErr error) {
+				runner.report(ProgressEvent{Phase: string(phase), State: state, Err: phaseErr})
+			},
+		)
 	}); err != nil {
 		runner.record.Final = finalSummary(runner.lastView)
 		return true, runner.bail(benchrecord.TerminalStateLifecycleError, err)
@@ -164,17 +356,26 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 
 	var view agentreport.View
 	var exitCode int
+	runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressStart})
 	if err := runner.timer.run(&runner.record.TimeMS.Compare, func() error {
 		var err error
 		view, exitCode, err = runner.dependencies.Comparator.Compare(runner.config)
 		return err
 	}); err != nil {
 		runner.record.Final = finalSummary(view)
+		runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressError, Err: err})
 		return true, runner.bail(
 			benchrecord.TerminalStateToolError,
 			fmt.Errorf("compare: %w", err),
 		)
 	}
+	runner.report(ProgressEvent{
+		Phase:        ProgressPhaseCompare,
+		State:        ProgressDone,
+		Actionable:   len(view.Actionable),
+		Converged:    view.Converged,
+		StillFailing: view.Counts.StillFailing,
+	})
 	runner.lastView = view
 	runner.record.Final = finalSummary(view)
 	stalled := runner.progress.observe(view, runner.config.StallWindow)
@@ -205,29 +406,49 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		)
 	}
 
-	if err := runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
-		return runAgentFix(
-			runner.dependencies.Adapter,
-			runner.config.Prompt,
-			view,
-			runner.record.Tokens,
-			&runner.tokensKnown,
-		)
-	}); err != nil {
+	// Keep the result outside the timed closure so rendered output survives adapter errors.
+	var fix agentFixResult
+	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressStart})
+	err := runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
+		return runner.withAgentFixHeartbeat(func() error {
+			var err error
+			fix, err = runAgentFix(
+				runner.dependencies.Adapter,
+				runner.config.Prompt,
+				view,
+				runner.config.AdapterMetadata,
+				runner.record.Tokens,
+				&runner.hasKnownTokens,
+				&runner.unknownTokenIterations,
+			)
+			return err
+		})
+	})
+	runner.record.UnknownTokenIterations = runner.unknownTokenIterations
+	if fix.Rendered {
+		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
+		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
+		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
+	}
+	if err != nil {
+		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
 		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
 	}
+	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressDone})
 	return false, nil
 }
 
 func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) error {
-	runner.record.Tokens = tokenRecord(runner.tokensKnown, runner.record.Tokens)
+	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
+	runner.report(ProgressEvent{Phase: ProgressPhaseTerminal, State: ProgressError, Terminal: state, Err: err})
 	return err
 }
 
 func (runner *iterationRunner) complete(state benchrecord.TerminalState) {
-	runner.record.Tokens = tokenRecord(runner.tokensKnown, runner.record.Tokens)
+	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
+	runner.report(ProgressEvent{Phase: ProgressPhaseTerminal, State: ProgressDone, Terminal: state})
 }
 
 func validate(config Config, dependencies Dependencies) error {
@@ -249,7 +470,15 @@ func validate(config Config, dependencies Dependencies) error {
 	return nil
 }
 
-func runCandidateLifecycle(candidate Candidate, failedPhase *benchrecord.LifecyclePhase) error {
+// lifecyclePhaseObserver is notified at the boundary of each candidate
+// lifecycle phase. A nil observer disables narration.
+type lifecyclePhaseObserver func(phase benchrecord.LifecyclePhase, state string, err error)
+
+func runCandidateLifecycle(
+	candidate Candidate,
+	failedPhase *benchrecord.LifecyclePhase,
+	observe lifecyclePhaseObserver,
+) error {
 	phases := []struct {
 		name benchrecord.LifecyclePhase
 		call func() error
@@ -261,12 +490,45 @@ func runCandidateLifecycle(candidate Candidate, failedPhase *benchrecord.Lifecyc
 		{name: benchrecord.LifecyclePhaseWaitHealthy, call: candidate.WaitHealthy},
 	}
 	for _, phase := range phases {
+		if observe != nil {
+			observe(phase.name, ProgressStart, nil)
+		}
 		if err := phase.call(); err != nil {
 			*failedPhase = phase.name
-			return fmt.Errorf("candidate %s: %w", phase.name, err)
+			wrapped := fmt.Errorf("candidate %s: %w", phase.name, err)
+			if observe != nil {
+				observe(phase.name, ProgressError, wrapped)
+			}
+			return wrapped
+		}
+		if observe != nil {
+			observe(phase.name, ProgressDone, nil)
 		}
 	}
 	return nil
+}
+
+func runPreflight(
+	config Config,
+	dependencies Dependencies,
+	failedPhase *benchrecord.LifecyclePhase,
+) (benchrecord.TerminalState, error) {
+	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil); err != nil {
+		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
+	}
+	if err := dependencies.Candidate.Stop(); err != nil {
+		*failedPhase = benchrecord.LifecyclePhaseStop
+		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight stop: %w", err)
+	}
+	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
+		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+	}
+	return "", nil
+}
+
+type promptTemplateData struct {
+	Prompt         benchrecord.PromptIdentity
+	ComparisonView string
 }
 
 func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (string, error) {
@@ -274,37 +536,62 @@ func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (str
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf(
-		"Task prompt %s@%s:\nUse the comparison result below to fix the candidate source. Apply the necessary fixes and preserve existing behavior outside the reported problems.\n\nComparison view:\n%s",
-		prompt.ID,
-		prompt.Version,
-		compactView,
-	), nil
+	var instruction bytes.Buffer
+	if err := promptTemplate.Execute(&instruction, promptTemplateData{
+		Prompt:         prompt,
+		ComparisonView: string(compactView),
+	}); err != nil {
+		return "", fmt.Errorf("render task prompt template: %w", err)
+	}
+	return instruction.String(), nil
+}
+
+func hashContent(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:])
+}
+
+type agentFixResult struct {
+	Instruction string
+	Hash        string
+	Response    string
+	Rendered    bool
 }
 
 func runAgentFix(
 	adapter Adapter,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
-	tokensKnown *bool,
-) error {
+	hasKnownTokens *bool,
+	unknownTokenIterations *int,
+) (agentFixResult, error) {
 	instruction, err := renderPrompt(prompt, view)
 	if err != nil {
-		return fmt.Errorf("render task prompt: %w", err)
+		return agentFixResult{}, fmt.Errorf("render task prompt: %w", err)
 	}
-	usage, err := adapter.Fix(instruction, view)
-	if usage == nil {
-		*tokensKnown = false
-	} else if *tokensKnown {
-		tokens.Input += usage.Input
-		tokens.Output += usage.Output
-		tokens.Total += usage.Total
+	fix := agentFixResult{
+		Instruction: instruction,
+		Hash:        hashContent(instruction),
+		Rendered:    true,
+	}
+	result, err := adapter.Fix(instruction, view, metadata)
+	if result == nil || result.Tokens == nil {
+		(*unknownTokenIterations)++
+	} else {
+		*hasKnownTokens = true
+		tokens.Input += result.Tokens.Input
+		tokens.Output += result.Tokens.Output
+		tokens.Total += result.Tokens.Total
+	}
+	if result != nil {
+		fix.Response = result.Response
 	}
 	if err != nil {
-		return fmt.Errorf("adapter fix: %w", err)
+		return fix, fmt.Errorf("adapter fix: %w", err)
 	}
-	return nil
+	return fix, nil
 }
 
 func finalSummary(view agentreport.View) benchrecord.FinalSummary {
@@ -393,8 +680,8 @@ func containsID(ids map[string]struct{}, id string) bool {
 	return ok
 }
 
-func tokenRecord(known bool, usage *benchrecord.TokenUsage) *benchrecord.TokenUsage {
-	if !known {
+func tokenRecord(hasKnownTokens bool, usage *benchrecord.TokenUsage) *benchrecord.TokenUsage {
+	if !hasKnownTokens {
 		return nil
 	}
 	return usage

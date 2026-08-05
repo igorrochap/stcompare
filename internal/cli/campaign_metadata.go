@@ -13,6 +13,7 @@ import (
 type campaignRunMetadata struct {
 	Campaign            campaignMetadata `yaml:"campaign"`
 	ConfigPath          string           `yaml:"config_path"`
+	SchemaSnapshot      string           `yaml:"schema_snapshot,omitempty"`
 	EffectiveCommand    []string         `yaml:"effective_command"`
 	Settings            campaignSettings `yaml:"settings"`
 	Overrides           map[string]any   `yaml:"overrides"`
@@ -60,6 +61,9 @@ func campaignOverrides(cmd *cobra.Command, options configOverrideOptions) map[st
 	overrides := map[string]any{}
 	if cmd.Flags().Changed("schema") {
 		overrides["schema"] = options.schema
+	}
+	if cmd.Flags().Changed("candidate-spec") {
+		overrides["candidate_spec"] = options.candidateSpec
 	}
 	if cmd.Flags().Changed("base-url") {
 		overrides["base_url"] = options.baseURL

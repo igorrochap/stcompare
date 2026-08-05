@@ -256,6 +256,10 @@ func classifyResponseSchemaProblem(input problemClassificationInput) problemClas
 func classifyStatusCodeConformanceProblem(
 	input problemClassificationInput,
 ) problemClassification {
+	if input.schemaValidation == nil {
+		return classifyStatusCodeByBehavior(input.interaction)
+	}
+
 	documented, reason := input.schemaValidation.StatusCodeDocumented(
 		schemaValidationRequest{
 			Method:   input.interaction.Request.Method,
@@ -273,6 +277,28 @@ func classifyStatusCodeConformanceProblem(
 		return problemClassification{
 			outcome:       problemOutcomeFixed,
 			outcomeReason: problemOutcomeReasonStatusCodeDocumented,
+		}
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeStillFailing,
+		outcomeReason: problemOutcomeReasonStatusCodeUndocumented,
+	}
+}
+
+func classifyStatusCodeByBehavior(
+	interaction reportInteractionEvidence,
+) problemClassification {
+	if interaction.StatusTransition.Baseline == nil {
+		return problemClassification{
+			outcome:       problemOutcomeInconclusive,
+			outcomeReason: problemOutcomeReasonSchemaContractUnavailable,
+		}
+	}
+	if *interaction.StatusTransition.Baseline != interaction.CandidateResponse.Status {
+		return problemClassification{
+			outcome:       problemOutcomeFixed,
+			outcomeReason: problemOutcomeReasonStatusCodeChanged,
 		}
 	}
 
