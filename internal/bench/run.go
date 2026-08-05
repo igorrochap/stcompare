@@ -27,7 +27,7 @@ const (
 	// DefaultPromptID identifies the canonical stbench task prompt.
 	DefaultPromptID = "stbench-default"
 	// DefaultPromptVersion identifies the current canonical task prompt.
-	DefaultPromptVersion = "1"
+	DefaultPromptVersion = "2"
 	// DefaultMaxIterations bounds runs that do not provide an explicit cap.
 	DefaultMaxIterations = 100
 	// DefaultStallWindow is the number of consecutive non-improving transitions

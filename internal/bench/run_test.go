@@ -245,7 +245,7 @@ func TestRunIteratesThenConvergesAndPassesRenderedPrompt(t *testing.T) {
 	if !strings.Contains(adapter.instructions[0], `"problem-1"`) {
 		t.Fatalf("rendered instruction does not contain the compact view: %q", adapter.instructions[0])
 	}
-	if !strings.Contains(adapter.instructions[0], "stbench-default@1") {
+	if !strings.Contains(adapter.instructions[0], "stbench-default@2") {
 		t.Fatalf("rendered instruction does not contain the prompt identity: %q", adapter.instructions[0])
 	}
 	if got, want := *record.Tokens, (benchrecord.TokenUsage{Input: 5, Output: 7, Total: 12}); got != want {
