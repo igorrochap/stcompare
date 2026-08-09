@@ -47,6 +47,7 @@ func NewRootCommandWithDependencies(deps Dependencies) *cobra.Command {
 	root.PersistentFlags().StringVar(&options.configPath, "config", config.DefaultFilename, "")
 	root.AddCommand(newConfigCommand(&options))
 	root.AddCommand(newCampaignCommand(&options))
+	root.AddCommand(newScorecardCommand())
 
 	return root
 }
