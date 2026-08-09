@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestCampaignReportDirJoinsConfiguredRootAndCampaign(t *testing.T) {
+	effective := Config{ReportsDir: filepath.Join("custom", "reports")}
+
+	got := CampaignReportDir(effective, "candidate")
+	want := filepath.Join("custom", "reports", "candidate")
+	if got != want {
+		t.Fatalf("CampaignReportDir() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadParsesOptionalStbenchConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stcompare.yaml")
 	contents := `schema: openapi.json

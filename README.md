@@ -655,8 +655,8 @@ override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
 `--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
 `--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
 `--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
-`--stall-window`, `--prompt-id`, `--prompt-version`, and `--reuse-process`. The old short and
-duplicate aliases are not accepted. Effective values follow this precedence:
+`--stall-window`, `--prompt-id`, `--prompt-version`, `--reuse-process`, and
+`--emit-scorecard`. The old short and duplicate aliases are not accepted. Effective values follow this precedence:
 explicit run flags override the `stbench` YAML section, which overrides the
 documented defaults. The `--base-url` override is applied before configuration
 validation.
@@ -783,7 +783,18 @@ library.
 ## Build a benchmark scorecard
 
 Join the final traffic comparison with the benchmark record produced by
-`stbench run`:
+`stbench run` automatically:
+
+```sh
+stbench run --config stcompare.yaml --emit-scorecard
+```
+
+This writes `scorecard.html` to the candidate's configured report directory.
+Scorecard generation is best-effort: a missing comparison or builder failure
+prints a warning without changing the benchmark's terminal state or exit code.
+Without `--emit-scorecard`, no scorecard subprocess runs.
+
+To build the same artifact manually:
 
 ```sh
 stcompare scorecard build \

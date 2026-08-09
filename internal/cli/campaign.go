@@ -71,7 +71,7 @@ func resolveCampaign(cmd *cobra.Command, configPath string, campaignName string,
 }
 
 func schemathesisRunCommand(effective config.Config, campaignName string) []string {
-	reportDir := campaignReportDir(effective, campaignName)
+	reportDir := config.CampaignReportDir(effective, campaignName)
 
 	argv := []string{
 		"st",
@@ -111,10 +111,6 @@ func schemathesisRunCommand(effective config.Config, campaignName string) []stri
 	argv = append(argv, effective.Schemathesis.ExtraArgs...)
 
 	return argv
-}
-
-func campaignReportDir(effective config.Config, campaignName string) string {
-	return filepath.Join(effective.ReportsDir, campaignName)
 }
 
 const baselineSchemaSnapshotFilename = "schema.snapshot"

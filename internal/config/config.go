@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -13,6 +14,11 @@ import (
 )
 
 const DefaultFilename = "stcompare.yaml"
+
+// CampaignReportDir returns the configured report directory for a campaign.
+func CampaignReportDir(effective Config, campaignName string) string {
+	return filepath.Join(effective.ReportsDir, campaignName)
+}
 
 type Config struct {
 	Schema        string              `yaml:"schema"`

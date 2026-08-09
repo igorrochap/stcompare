@@ -27,6 +27,58 @@ const (
 	startFailureGrace     = 10 * time.Millisecond
 )
 
+type scorecardBuildInput struct {
+	ComparisonPath string
+	RecordPath     string
+	OutputPath     string
+}
+
+type scorecardBuilder interface {
+	Build(scorecardBuildInput) error
+}
+
+type commandScorecardBuilder struct {
+	Binary     string
+	ConfigPath string
+	WorkingDir string
+	Env        []string
+	Stdout     io.Writer
+}
+
+var _ scorecardBuilder = (*commandScorecardBuilder)(nil)
+
+func newCommandScorecardBuilder(binary string, configPath string) *commandScorecardBuilder {
+	return &commandScorecardBuilder{Binary: binary, ConfigPath: configPath}
+}
+
+func (builder *commandScorecardBuilder) Build(input scorecardBuildInput) error {
+	if strings.TrimSpace(builder.Binary) == "" {
+		return errors.New("stcompare binary is required")
+	}
+
+	args := make([]string, 0, 10)
+	if builder.ConfigPath != "" {
+		args = append(args, "--config", builder.ConfigPath)
+	}
+	args = append(
+		args,
+		"scorecard", "build",
+		"--comparison", input.ComparisonPath,
+		"--record", input.RecordPath,
+		"--out", input.OutputPath,
+	)
+	stdout, stderr, err := runStcompare(builder.Binary, builder.WorkingDir, builder.Env, args, nil)
+	if err != nil {
+		return fmt.Errorf("run stcompare scorecard build: %w%s", err, formatCommandStderr(stderr))
+	}
+	if builder.Stdout != nil {
+		if _, err := builder.Stdout.Write(stdout); err != nil {
+			return fmt.Errorf("write stcompare scorecard output: %w", err)
+		}
+	}
+	return nil
+}
+
 // CommandComparator invokes the stcompare CLI and consumes its agent contract.
 type CommandComparator struct {
 	Binary     string
@@ -66,19 +118,13 @@ func (comparator *CommandComparator) Compare(config Config) (agentreport.View, i
 		args = append(args, "--base-url", comparator.BaseURL)
 	}
 
-	command := exec.Command(comparator.Binary, args...)
-	command.Dir = comparator.WorkingDir
-	command.Env = append(os.Environ(), comparator.Env...)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if comparator.Stderr != nil {
-		command.Stderr = io.MultiWriter(&stderr, comparator.Stderr)
-	}
-
-	runErr := command.Run()
+	stdout, stderr, runErr := runStcompare(
+		comparator.Binary,
+		comparator.WorkingDir,
+		comparator.Env,
+		args,
+		comparator.Stderr,
+	)
 	exitCode := 0
 	if runErr != nil {
 		var exitErr *exec.ExitError
@@ -89,11 +135,11 @@ func (comparator *CommandComparator) Compare(config Config) (agentreport.View, i
 	}
 
 	var view agentreport.View
-	if err := decodeJSON(stdout.Bytes(), &view); err != nil {
+	if err := decodeJSON(stdout, &view); err != nil {
 		return agentreport.View{}, exitCode, fmt.Errorf(
 			"decode stcompare agent view: %w%s",
 			err,
-			formatCommandStderr(stderr.Bytes()),
+			formatCommandStderr(stderr),
 		)
 	}
 
@@ -106,9 +152,31 @@ func (comparator *CommandComparator) Compare(config Config) (agentreport.View, i
 		return agentreport.View{}, exitCode, fmt.Errorf(
 			"stcompare exited with unexpected code %d%s",
 			exitCode,
-			formatCommandStderr(stderr.Bytes()),
+			formatCommandStderr(stderr),
 		)
 	}
+}
+
+func runStcompare(
+	binary string,
+	workingDir string,
+	env []string,
+	args []string,
+	stderrWriter io.Writer,
+) ([]byte, []byte, error) {
+	command := exec.Command(binary, args...)
+	command.Dir = workingDir
+	command.Env = append(os.Environ(), env...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if stderrWriter != nil {
+		command.Stderr = io.MultiWriter(&stderr, stderrWriter)
+	}
+	err := command.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
 }
 
 // AdapterRequest is the JSON request sent to an external adapter.
