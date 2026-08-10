@@ -7,6 +7,37 @@ import (
 	"testing"
 )
 
+func validCandidateIdentityConfig() Config {
+	config := Default()
+	config.Campaigns = map[string]Campaign{
+		"baseline": {Kind: "baseline"},
+		"sonnet5-high": {
+			Kind:    "candidate",
+			Agent:   "claude-code",
+			Model:   "sonnet-5",
+			Effort:  "high",
+			Adapter: "remote",
+		},
+	}
+	config.Stbench = &StbenchConfig{
+		Adapters: map[string]string{
+			"remote": "python adapters/anthropic_adapter.py",
+		},
+	}
+
+	return config
+}
+
+func validCandidateCampaign() Campaign {
+	return Campaign{
+		Kind:    "candidate",
+		Agent:   "claude-code",
+		Model:   "sonnet-5",
+		Effort:  "high",
+		Adapter: "remote",
+	}
+}
+
 func TestCampaignReportDirJoinsConfiguredRootAndCampaign(t *testing.T) {
 	effective := Config{ReportsDir: filepath.Join("custom", "reports")}
 
@@ -79,6 +110,40 @@ candidate_spec: /openapi.json
 	}
 }
 
+func TestLoadRejectsUnknownCandidateAdapter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stcompare.yaml")
+	contents := `schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  workers: 1
+campaigns:
+  baseline:
+    kind: baseline
+  sonnet5-high:
+    kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: high
+    adapter: remot
+stbench:
+  adapters:
+    remote: python adapters/anthropic_adapter.py
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unknown-adapter error")
+	}
+	want := `campaign "sonnet5-high": adapter "remot" is not defined in stbench.adapters`
+	if err.Error() != want {
+		t.Fatalf("Load() error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestLoadRejectsDeprecatedStbenchCandidateNames(t *testing.T) {
 	for _, test := range []struct {
 		name        string
@@ -115,7 +180,7 @@ func TestLoadRejectsDeprecatedStbenchCandidateNames(t *testing.T) {
 }
 
 func TestConfigValidateRejectsTrimmedDuplicatePreconditionHeuristicNames(t *testing.T) {
-	config := Default()
+	config := validCandidateIdentityConfig()
 	config.Comparison.PreconditionHeuristics = []PreconditionHeuristic{
 		{
 			Name:        "generated-widget",
@@ -186,7 +251,7 @@ func TestConfigValidateRejectsMalformedNormalizationRules(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config := Default()
+			config := validCandidateIdentityConfig()
 			test.mutate(&config)
 
 			err := config.Validate()
@@ -209,8 +274,8 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 		{
 			name: "zero baseline campaigns",
 			campaigns: map[string]Campaign{
-				"gpt5.6":  {Kind: "candidate"},
-				"sonnet5": {Kind: "candidate"},
+				"gpt5.6":  validCandidateCampaign(),
+				"sonnet5": validCandidateCampaign(),
 			},
 			wantError: "exactly one baseline campaign is required: found none",
 		},
@@ -218,7 +283,7 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 			name: "one baseline campaign",
 			campaigns: map[string]Campaign{
 				"reference": {Kind: "baseline"},
-				"gpt5.6":    {Kind: "candidate"},
+				"gpt5.6":    validCandidateCampaign(),
 			},
 		},
 		{
@@ -226,7 +291,7 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 			campaigns: map[string]Campaign{
 				"reference": {Kind: "baseline"},
 				"control":   {Kind: "baseline"},
-				"gpt5.6":    {Kind: "candidate"},
+				"gpt5.6":    validCandidateCampaign(),
 			},
 			wantError: "exactly one baseline campaign is required: found 2",
 		},
@@ -234,7 +299,7 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config := Default()
+			config := validCandidateIdentityConfig()
 			config.Campaigns = test.campaigns
 
 			err := config.Validate()
@@ -248,6 +313,122 @@ func TestConfigValidateRequiresExactlyOneBaselineCampaign(t *testing.T) {
 
 			if err == nil {
 				t.Fatal("Validate() error = nil, want baseline-count error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigValidateEnforcesCampaignIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*Config)
+		wantError string
+	}{
+		{
+			name: "candidate requires agent",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["sonnet5-high"]
+				campaign.Agent = " "
+				config.Campaigns["sonnet5-high"] = campaign
+			},
+			wantError: `campaign "sonnet5-high": agent is required for candidate campaigns`,
+		},
+		{
+			name: "candidate requires model",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["sonnet5-high"]
+				campaign.Model = ""
+				config.Campaigns["sonnet5-high"] = campaign
+			},
+			wantError: `campaign "sonnet5-high": model is required for candidate campaigns`,
+		},
+		{
+			name: "candidate requires effort",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["sonnet5-high"]
+				campaign.Effort = "\t"
+				config.Campaigns["sonnet5-high"] = campaign
+			},
+			wantError: `campaign "sonnet5-high": effort is required for candidate campaigns`,
+		},
+		{
+			name: "candidate requires adapter",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["sonnet5-high"]
+				campaign.Adapter = ""
+				config.Campaigns["sonnet5-high"] = campaign
+			},
+			wantError: `campaign "sonnet5-high": adapter is required for candidate campaigns`,
+		},
+		{
+			name: "candidate adapter must resolve",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["sonnet5-high"]
+				campaign.Adapter = "remot"
+				config.Campaigns["sonnet5-high"] = campaign
+			},
+			wantError: `campaign "sonnet5-high": adapter "remot" is not defined in stbench.adapters`,
+		},
+		{
+			name: "baseline forbids agent",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["baseline"]
+				campaign.Agent = "claude-code"
+				config.Campaigns["baseline"] = campaign
+			},
+			wantError: `campaign "baseline": agent must not be set on a baseline campaign`,
+		},
+		{
+			name: "baseline forbids model",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["baseline"]
+				campaign.Model = "sonnet-5"
+				config.Campaigns["baseline"] = campaign
+			},
+			wantError: `campaign "baseline": model must not be set on a baseline campaign`,
+		},
+		{
+			name: "baseline forbids effort",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["baseline"]
+				campaign.Effort = "high"
+				config.Campaigns["baseline"] = campaign
+			},
+			wantError: `campaign "baseline": effort must not be set on a baseline campaign`,
+		},
+		{
+			name: "baseline forbids adapter",
+			mutate: func(config *Config) {
+				campaign := config.Campaigns["baseline"]
+				campaign.Adapter = "remote"
+				config.Campaigns["baseline"] = campaign
+			},
+			wantError: `campaign "baseline": adapter must not be set on a baseline campaign`,
+		},
+		{
+			name:   "valid campaign identity",
+			mutate: func(*Config) {},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validCandidateIdentityConfig()
+			test.mutate(&config)
+
+			err := config.Validate()
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+
+				return
+			}
+			if err == nil {
+				t.Fatal("Validate() error = nil, want campaign identity error")
 			}
 			if err.Error() != test.wantError {
 				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
@@ -276,10 +457,8 @@ func TestConfigValidateRejectsStbenchHealthURLHostPortMismatch(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config := Default()
-			config.Stbench = &StbenchConfig{
-				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
-			}
+			config := validCandidateIdentityConfig()
+			config.Stbench.Lifecycle = StbenchLifecycleConfig{HealthURL: test.healthURL}
 
 			err := config.Validate()
 			if err == nil {
@@ -312,11 +491,9 @@ func TestConfigValidateAcceptsStbenchHealthURLWithMatchingHostPort(t *testing.T)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config := Default()
+			config := validCandidateIdentityConfig()
 			config.BaseURL = test.baseURL
-			config.Stbench = &StbenchConfig{
-				Lifecycle: StbenchLifecycleConfig{HealthURL: test.healthURL},
-			}
+			config.Stbench.Lifecycle = StbenchLifecycleConfig{HealthURL: test.healthURL}
 
 			if err := config.Validate(); err != nil {
 				t.Fatalf("Validate() error = %v, want nil for matching default port", err)

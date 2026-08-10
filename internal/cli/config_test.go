@@ -19,7 +19,17 @@ type configCommandOutcome struct {
 	Output string
 }
 
-func loadDefaultConfig(t *testing.T) configDocument {
+func candidateDocument(agent string, model string) map[string]any {
+	return map[string]any{
+		"kind":    "candidate",
+		"agent":   agent,
+		"model":   model,
+		"effort":  "high",
+		"adapter": "remote",
+	}
+}
+
+func loadGeneratedDefaultConfig(t *testing.T) configDocument {
 	t.Helper()
 
 	contents, err := os.ReadFile("testdata/default-config.yaml")
@@ -28,6 +38,61 @@ func loadDefaultConfig(t *testing.T) configDocument {
 	}
 
 	return decodeConfig(t, contents)
+}
+
+func loadValidConfig(t *testing.T) configDocument {
+	t.Helper()
+
+	document := loadGeneratedDefaultConfig(t)
+	document["campaigns"] = map[string]any{
+		"baseline": map[string]any{"kind": "baseline"},
+		"gpt5.6": map[string]any{
+			"kind":    "candidate",
+			"agent":   "codex",
+			"model":   "gpt-5.6",
+			"effort":  "high",
+			"adapter": "remote",
+		},
+		"sonnet5": map[string]any{
+			"kind":    "candidate",
+			"agent":   "claude-code",
+			"model":   "sonnet-5",
+			"effort":  "high",
+			"adapter": "remote",
+		},
+	}
+	document["stbench"] = map[string]any{
+		"hardware":         "fixture hardware",
+		"adapters":         map[string]any{"remote": "python adapter.py"},
+		"adapter_timeout":  "1m",
+		"reuse_process":    true,
+		"source_dir":       "candidate-src",
+		"stcompare_binary": "stcompare",
+		"prompt": map[string]any{
+			"id":      "fixture-prompt",
+			"version": "1",
+		},
+		"lifecycle": map[string]any{
+			"stop":            "./stop.sh",
+			"reset":           "./reset.sh",
+			"build":           "./build.sh",
+			"start":           "./start.sh",
+			"command_timeout": "1m",
+			"health_url":      "",
+			"health_timeout":  "5s",
+			"health_interval": "100ms",
+		},
+		"max_iterations": 5,
+		"stall_window":   2,
+	}
+
+	return document
+}
+
+func loadDefaultConfig(t *testing.T) configDocument {
+	t.Helper()
+
+	return loadValidConfig(t)
 }
 
 func decodeConfig(t *testing.T, contents []byte) configDocument {
@@ -78,7 +143,7 @@ func configSection(t *testing.T, document configDocument, name string) map[strin
 func assertConfigShowRejected(t *testing.T, mutate func(configDocument), wantError string) {
 	t.Helper()
 
-	document := loadDefaultConfig(t)
+	document := loadValidConfig(t)
 	mutate(document)
 	t.Chdir(t.TempDir())
 	writeConfig(t, "stcompare.yaml", document)
@@ -101,7 +166,7 @@ func assertConfigShowRejected(t *testing.T, mutate func(configDocument), wantErr
 }
 
 func TestConfigInitWritesDefaultConfig(t *testing.T) {
-	want := loadDefaultConfig(t)
+	want := loadGeneratedDefaultConfig(t)
 	t.Chdir(t.TempDir())
 
 	root := cli.NewRootCommand()
@@ -122,7 +187,7 @@ func TestConfigInitWritesDefaultConfig(t *testing.T) {
 }
 
 func TestConfigShowPrintsEffectiveConfig(t *testing.T) {
-	input := loadDefaultConfig(t)
+	input := loadValidConfig(t)
 	input["schema"] = "fixture-openapi.yaml"
 	input["base_url"] = "http://fixture.invalid:9000"
 	input["reports_dir"] = "fixture-reports"
@@ -137,7 +202,7 @@ func TestConfigShowPrintsEffectiveConfig(t *testing.T) {
 	schemathesis["extra_args"] = []any{"--checks", "all"}
 	input["campaigns"] = map[string]any{
 		"reference":  map[string]any{"kind": "baseline"},
-		"challenger": map[string]any{"kind": "candidate"},
+		"challenger": candidateDocument("fixture-agent", "fixture-model"),
 	}
 
 	want := cloneConfig(t, input)
@@ -179,14 +244,14 @@ func TestConfigShowRejectsMissingSchemaBeforeOutput(t *testing.T) {
 }
 
 func TestConfigShowLoadsExplicitConfigPath(t *testing.T) {
-	want := loadDefaultConfig(t)
+	want := loadValidConfig(t)
 	want["schema"] = "api/explicit-openapi.yaml"
 	want["base_url"] = "https://explicit.example.test"
 	want["reports_dir"] = "explicit-reports"
 	configSection(t, want, "schemathesis")["seed"] = 9876
 	want["campaigns"] = map[string]any{
 		"stable":     map[string]any{"kind": "baseline"},
-		"experiment": map[string]any{"kind": "candidate"},
+		"experiment": candidateDocument("fixture-agent", "fixture-model"),
 	}
 	configPath := filepath.Join(t.TempDir(), "custom.yaml")
 	writeConfig(t, configPath, want)
@@ -207,7 +272,7 @@ func TestConfigShowLoadsExplicitConfigPath(t *testing.T) {
 }
 
 func TestConfigInitWritesToExplicitConfigPath(t *testing.T) {
-	want := loadDefaultConfig(t)
+	want := loadGeneratedDefaultConfig(t)
 	configPath := filepath.Join(t.TempDir(), "custom.yaml")
 	t.Chdir(t.TempDir())
 
@@ -261,7 +326,7 @@ func TestConfigInitRefusesToOverwriteExistingConfig(t *testing.T) {
 }
 
 func TestConfigInitForceOverwritesExistingConfig(t *testing.T) {
-	want := loadDefaultConfig(t)
+	want := loadGeneratedDefaultConfig(t)
 	t.Chdir(t.TempDir())
 	if err := os.WriteFile("stcompare.yaml", []byte("sentinel: replace\n"), 0o644); err != nil {
 		t.Fatalf("write existing config: %v", err)
@@ -285,13 +350,13 @@ func TestConfigInitForceOverwritesExistingConfig(t *testing.T) {
 }
 
 func TestConfigShowAppliesOmittedSchemathesisDefaults(t *testing.T) {
-	input := loadDefaultConfig(t)
+	input := loadValidConfig(t)
 	input["schemathesis"] = map[string]any{"seed": 777}
 	input["campaigns"] = map[string]any{
 		"reference":  map[string]any{"kind": "baseline"},
-		"experiment": map[string]any{"kind": "candidate"},
+		"experiment": candidateDocument("fixture-agent", "fixture-model"),
 	}
-	want := loadDefaultConfig(t)
+	want := loadValidConfig(t)
 	configSection(t, want, "schemathesis")["seed"] = 777
 	want["campaigns"] = cloneConfig(t, input)["campaigns"]
 
@@ -313,7 +378,7 @@ func TestConfigShowAppliesOmittedSchemathesisDefaults(t *testing.T) {
 }
 
 func TestConfigShowAppliesOmittedComparisonDefaults(t *testing.T) {
-	input := loadDefaultConfig(t)
+	input := loadValidConfig(t)
 	delete(input, "comparison")
 	want := cloneConfig(t, input)
 	want["comparison"] = map[string]any{
@@ -547,7 +612,7 @@ func TestConfigShowAcceptsComparisonValidationBoundaries(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			want := loadDefaultConfig(t)
+			want := loadValidConfig(t)
 			want["comparison"] = test.comparison
 			t.Chdir(t.TempDir())
 			writeConfig(t, "stcompare.yaml", want)
@@ -580,4 +645,12 @@ func TestConfigShowRejectsInvalidCampaignKindBeforeOutput(t *testing.T) {
 			"experiment": map[string]any{"kind": "control"},
 		}
 	}, "campaign \"experiment\" has invalid kind \"control\": must be baseline or candidate")
+}
+
+func TestConfigShowRejectsUnknownCandidateAdapterBeforeOutput(t *testing.T) {
+	assertConfigShowRejected(t, func(document configDocument) {
+		campaigns := configSection(t, document, "campaigns")
+		candidate := configSection(t, campaigns, "sonnet5")
+		candidate["adapter"] = "remot"
+	}, `campaign "sonnet5": adapter "remot" is not defined in stbench.adapters`)
 }

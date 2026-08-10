@@ -232,7 +232,45 @@ func (c Config) Validate() error {
 		switch campaign.Kind {
 		case "baseline":
 			baselineCount++
+			if strings.TrimSpace(campaign.Agent) != "" {
+				return fmt.Errorf("campaign %q: agent must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Model) != "" {
+				return fmt.Errorf("campaign %q: model must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Effort) != "" {
+				return fmt.Errorf("campaign %q: effort must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Adapter) != "" {
+				return fmt.Errorf("campaign %q: adapter must not be set on a baseline campaign", name)
+			}
 		case "candidate":
+			if strings.TrimSpace(campaign.Agent) == "" {
+				return fmt.Errorf("campaign %q: agent is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Model) == "" {
+				return fmt.Errorf("campaign %q: model is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Effort) == "" {
+				return fmt.Errorf("campaign %q: effort is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Adapter) == "" {
+				return fmt.Errorf("campaign %q: adapter is required for candidate campaigns", name)
+			}
+			if c.Stbench == nil {
+				return fmt.Errorf(
+					"campaign %q: adapter %q is not defined in stbench.adapters",
+					name,
+					campaign.Adapter,
+				)
+			}
+			if _, exists := c.Stbench.Adapters[campaign.Adapter]; !exists {
+				return fmt.Errorf(
+					"campaign %q: adapter %q is not defined in stbench.adapters",
+					name,
+					campaign.Adapter,
+				)
+			}
 		default:
 			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
 		}
@@ -403,6 +441,9 @@ func Load(path string) (Config, error) {
 	}
 	if err := yaml.Unmarshal(contents, &loaded); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if err := loaded.Validate(); err != nil {
+		return Config{}, err
 	}
 
 	return loaded, nil

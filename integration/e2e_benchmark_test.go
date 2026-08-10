@@ -169,6 +169,13 @@ campaigns:
     kind: baseline
   candidate:
     kind: candidate
+    agent: integration-agent
+    model: integration-model
+    effort: integration
+    adapter: integration
+stbench:
+  adapters:
+    integration: integration-adapter
 `, baselineURL)
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write benchmark config: %v", err)
