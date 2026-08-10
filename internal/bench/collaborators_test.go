@@ -128,6 +128,7 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	metadata := AdapterMetadata{
 		Agent:    "codex",
 		Model:    "gpt-5",
+		Effort:   "high",
 		Hardware: "m4-pro",
 	}
 	result, err := adapter.Fix("fix the candidate", wantView, metadata)
@@ -186,7 +187,7 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 		WorkingDir: dir,
 		Env:        []string{"STBENCH_PREFLIGHT=" + inputPath},
 	}
-	metadata := AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"}
+	metadata := AdapterMetadata{Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro"}
 
 	if err := adapter.Preflight(metadata); err != nil {
 		t.Fatalf("Preflight() error = %v", err)
@@ -213,7 +214,8 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	if _, ok := fields["view"]; ok {
 		t.Fatal("preflight request contains a view")
 	}
-	if request.Agent != metadata.Agent || request.Model != metadata.Model || request.Hardware != metadata.Hardware {
+	if request.Agent != metadata.Agent || request.Model != metadata.Model ||
+		request.Effort != metadata.Effort || request.Hardware != metadata.Hardware {
 		t.Fatalf("preflight metadata = %#v, want %#v", request, metadata)
 	}
 }

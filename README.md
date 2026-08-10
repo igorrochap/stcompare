@@ -179,13 +179,41 @@ campaigns:
     kind: baseline
   gpt5.6:
     kind: candidate
-  sonnet5:
-    kind: candidate
+    agent: codex
+    model: gpt-5.6
+    effort: high
+    adapter: coding-agent
+stbench:
+  hardware: harness-machine
+  adapters:
+    coding-agent: python examples/stbench/coding_agent_adapter.py
+  adapter_timeout: 30m
+  reuse_process: false
+  source_dir: .
+  stcompare_binary: stcompare
+  prompt:
+    id: stbench-default
+    version: "2"
+  lifecycle:
+    stop: .local/stbench/stop.sh
+    reset: .local/stbench/reset.sh
+    build: .local/stbench/build.sh
+    start: .local/stbench/start.sh
+    command_timeout: 30m
+    health_url: http://localhost:8080/health
+    health_timeout: 30s
+    health_interval: 100ms
+  max_iterations: 100
+  stall_window: 2
 ```
 
 Replace the sample candidate names with stable identifiers for the
 implementations being compared. Names may contain letters, numbers, dots,
-underscores, and hyphens.
+underscores, and hyphens. Candidate Campaign identity consists of `agent`,
+`model`, `effort`, and an `adapter` type that resolves through
+`stbench.adapters`; a Baseline Campaign has none of those fields. The
+`stcompare config init` command scaffolds this complete shape, including the
+candidate identity and `stbench:` settings shown above.
 
 If the candidate publishes its own OpenAPI document, set `candidate_spec` to an
 HTTP(S) URL, an absolute workspace path, or an endpoint path such as
@@ -615,21 +643,38 @@ Schemathesis aborts.
 ## Benchmark loops with stbench
 
 `stbench` owns the neutral fix loop and invokes `stcompare` through its public
-CLI contract. Add a `stbench` section to `stcompare.yaml`, or provide the same
-values as flags:
+CLI contract. Candidate identity belongs to each Candidate Campaign, while the
+`stbench:` block contains the fixed harness configuration shared by candidates
+on the same machine:
 
 ```yaml
+campaigns:
+  baseline:
+    kind: baseline
+  sonnet5-high:
+    kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: high
+    adapter: remote
+  sonnet5-low:
+    kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: low
+    adapter: remote
 stbench:
-  campaign: gpt5.6
-  agent: local-agent
-  model: model-name
-  hardware: hardware-name
-  adapter: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
+  hardware: RTX 4090 / 64GB
+  adapters:
+    local: python /absolute/path/to/examples/stbench/local_model_adapter.py
+    remote: python /absolute/path/to/examples/stbench/coding_agent_adapter.py --timeout 1800
   adapter_timeout: 30m
-  # reuse_process: true
+  reuse_process: false
   source_dir: .
   stcompare_binary: stcompare
-  record_path: .local/stbench/records/gpt5.6.json
+  prompt:
+    id: stbench-default
+    version: "2"
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -646,20 +691,25 @@ stbench:
 Run the loop with:
 
 ```sh
-stbench run --config stcompare.yaml
+stbench --config stcompare.yaml run sonnet5-high
 ```
 
-The canonical `stbench run` flags use the same names as the settings they
-override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
-`--adapter`, `--adapter-timeout`,
-`--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
-`--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
-`--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
-`--stall-window`, `--prompt-id`, `--prompt-version`, `--reuse-process`, and
-`--emit-scorecard`. The old short and duplicate aliases are not accepted. Effective values follow this precedence:
-explicit run flags override the `stbench` YAML section, which overrides the
-documented defaults. The `--base-url` override is applied before configuration
-validation.
+In `stbench run <candidate>`, the positional argument selects a Candidate
+Campaign and reads its `agent`, `model`, `effort`, and adapter type from that
+campaign entry. `effort` is a
+first-class identity axis: `sonnet5-high` and `sonnet5-low` are distinct
+candidates and appear as separate scorecard rows even though they use the same
+agent and model. Run flags are limited to execution settings such as source and
+binary paths, lifecycle commands and timeouts, process reuse, prompt identity,
+iteration and stall limits, heartbeat cadence, the base URL, and scorecard
+emission. Explicit execution flags override the `stbench:` values, which
+override documented defaults; the `--base-url` override is applied before
+configuration validation.
+
+The benchmark record path is not configurable. It is derived from the selected
+candidate as `reports/<candidate>/benchmark-record.json` (under the configured
+`reports_dir`), so a run cannot accidentally be saved under another
+candidate's name.
 
 To scaffold the lifecycle hooks from the API repository root, run:
 
@@ -667,19 +717,24 @@ To scaffold the lifecycle hooks from the API repository root, run:
 stbench init
 ```
 
-This creates executable `stop.sh`, `reset.sh`, `build.sh`, and `start.sh`
-stubs in the repository-local `.local/stbench/` directory, then prints a
-matching `stbench:` configuration stanza with absolute paths. Each API keeps
-its own adapter lifecycle setup. Set `STBENCH_STATE_DIR` to choose an external
-state directory for a deliberate override; repository-local overrides must use
-`.local/stbench`.
+For a new project, `stcompare config init` creates the complete new-shape
+configuration with identity on campaign entries, an adapter map, and harness
+hardware. For an existing `stcompare.yaml` that does not yet contain an
+`stbench:` block, `stbench init` creates executable `stop.sh`, `reset.sh`,
+`build.sh`, and `start.sh` stubs in the repository-local `.local/stbench/`
+directory and writes the matching block directly into the configuration. Each
+API keeps its own adapter lifecycle setup. Set `STBENCH_STATE_DIR` to choose an
+external state directory for a deliberate override; repository-local overrides
+must use `.local/stbench`.
 `stbench init` also adds `.local/stbench/` to `.gitignore` if it is not already
-covered. Add the printed stanza to `stcompare.yaml` and replace the no-op
-commands with the API's commands. Keep adapter support files outside the API
-repository. The generated `stop` hook is safe to run before the first
-iteration, when no API process exists. The `reset` hook must clean per-iteration
-runtime state without reverting source files, because source changes are the
-agent's progress.
+covered. It is non-destructive: it refuses to overwrite lifecycle files or to
+modify a configuration that already has an `stbench:` block (including one
+created by `stcompare config init`). Replace the no-op
+commands with the API's commands and keep adapter support files outside the API
+repository. The generated `stop` hook is safe to run before the first iteration,
+when no API process exists. The `reset` hook must clean per-iteration runtime
+state without reverting source files, because source changes are the agent's
+progress.
 
 Before each comparison, `stbench` runs stop, optional reset, build, start, and
 health polling. `stop` may be called when nothing is running and should be
@@ -702,10 +757,11 @@ outside that tree. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json
-{"agent":"codex","model":"gpt-5","hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+{"agent":"codex","model":"gpt-5","effort":"high","hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
 ```
 
-`agent`, `model`, and `hardware` come from the `stbench` configuration and are
+`agent`, `model`, and `effort` come from the selected Candidate Campaign;
+`hardware` comes from the `stbench:` harness configuration. Together they are
 the adapter's execution metadata. Adapter-specific flags are optional explicit
 overrides; do not duplicate these values in the adapter command by default.
 
@@ -737,8 +793,9 @@ false`; enabling the runner option is a verified no-op for those adapters.
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
 null, "reuse_process": false }`. The adapter edits the candidate in place;
-unknown token usage must be reported as `null`. The command writes the versioned benchmark record to
-`record_path`; its `tokens` field sums known usage, while
+unknown token usage must be reported as `null`. The command writes the
+versioned benchmark record to the selected Candidate Campaign's derived report
+path; its `tokens` field sums known usage, while
 `unknown_token_iterations` counts fix iterations that reported `null`. If no
 iteration reports token usage, `tokens` remains `null`. The command exits `0`
 on convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
@@ -758,27 +815,35 @@ Three reference adapters are provided in
 - `local_model_adapter.py` is the first-class on-prem path. It talks to an
   OpenAI-compatible local inference server and gives the model confined
   read/write/command tools, so source is edited in place without a cloud
-  dependency or repository snapshot. Put its URL, model, hardware, timeout,
-  and turn limit in the `stbench` configuration; keep only an optional API key
-  in `STBENCH_LOCAL_MODEL_API_KEY`.
+  dependency or repository snapshot. Select its adapter type on the Candidate
+  Campaign, keep harness hardware in `stbench:`, and pass URL, timeout, and turn
+  limit as adapter-command options; keep only an optional API key in
+  `STBENCH_LOCAL_MODEL_API_KEY`.
 - `coding_agent_adapter.py` is the first-class engineering path for an
-  installed Codex or Claude Code CLI. Set `agent`, `model`, and `hardware` in
-  the `stbench` configuration and pass only the timeout on the `adapter:`
-  command; no runner code changes are needed.
+  installed Codex or Claude Code CLI. Set `agent`, `model`, `effort`, and the
+  adapter type on the Candidate Campaign, then map that type to the command in
+  `stbench.adapters`; no runner code changes are needed.
 - `adapter.py` is the explicit cloud fallback. It snapshots tracked source
   below `source_dir`; it excludes the repository-local `.local/stbench`
   and `.local/stcompare` control-plane paths from snapshots and patches. It
   requests a unified diff, validates it with `git apply --check`, and applies
   it. Keep the adapter and `_protocol.py` outside the API
-  repository; put its model and hardware in the `stbench` configuration and
-  pass the endpoint, timeout, and snapshot limit on the `adapter:` command;
+  repository; keep model and effort on the Candidate Campaign and hardware in
+  `stbench:`, then pass endpoint, timeout, and snapshot limit as adapter-command
+  options;
   keep `OPENAI_API_KEY` as an environment credential. The
   example documents its cloud, repository-size, and patch-format limitations
   up front; it is not the recommended on-prem path.
 
-Point `stbench.adapter` at any of these commands without changing the
-loop or lifecycle configuration. The examples use only Python's standard
-library.
+Map an adapter type to any of these commands in `stbench.adapters`, then select
+that type in each Candidate Campaign without changing the loop or lifecycle
+configuration. The examples use only Python's standard library.
+
+Because `hardware` is declared once for the harness, a hosted or remote
+candidate inherits the harness machine's hardware label even though inference
+runs elsewhere. This is acceptable for the current single-machine local-model
+study, but must be revisited before comparing remote candidates on cost or
+latency.
 
 ## Build a benchmark scorecard
 
@@ -786,7 +851,7 @@ Join the final traffic comparison with the benchmark record produced by
 `stbench run` automatically:
 
 ```sh
-stbench run --config stcompare.yaml --emit-scorecard
+stbench --config stcompare.yaml run gpt5.6 --emit-scorecard
 ```
 
 This writes `scorecard.html` to the candidate's configured report directory.
@@ -799,7 +864,7 @@ To build the same artifact manually:
 ```sh
 stcompare scorecard build \
   --comparison reports/gpt5.6/comparison.json \
-  --record .local/stbench/records/gpt5.6.json \
+  --record reports/gpt5.6/benchmark-record.json \
   --out reports/gpt5.6/scorecard.html
 ```
 

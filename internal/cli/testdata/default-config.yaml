@@ -1,4 +1,5 @@
 schema: openapi.json
+candidate_spec: /openapi.json # Candidate's own OpenAPI, fetched from base_url each run to grade status-code conformance; set to your app's served spec path.
 base_url: http://localhost:8080
 reports_dir: reports
 schemathesis:
@@ -28,5 +29,29 @@ campaigns:
     kind: baseline
   gpt5.6:
     kind: candidate
-  sonnet5:
-    kind: candidate
+    agent: codex
+    model: gpt-5.6
+    effort: high
+    adapter: coding-agent
+stbench:
+  hardware: harness-machine # Declared once for the harness machine.
+  adapters:
+    coding-agent: python examples/stbench/coding_agent_adapter.py
+  adapter_timeout: 30m
+  reuse_process: false
+  source_dir: .
+  stcompare_binary: stcompare
+  prompt:
+    id: stbench-default
+    version: "2"
+  lifecycle:
+    stop: .local/stbench/stop.sh
+    reset: .local/stbench/reset.sh
+    build: .local/stbench/build.sh
+    start: .local/stbench/start.sh
+    command_timeout: 30m
+    health_url: http://localhost:8080/health
+    health_timeout: 30s
+    health_interval: 100ms
+  max_iterations: 100
+  stall_window: 2

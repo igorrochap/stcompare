@@ -45,6 +45,7 @@ type Record struct {
 	SchemaVersion        string         `json:"schema_version"`
 	Agent                string         `json:"agent"`
 	Model                string         `json:"model"`
+	Effort               string         `json:"effort"`
 	Hardware             string         `json:"hardware"`
 	Prompt               PromptIdentity `json:"prompt"`
 	PromptInstructions   []string       `json:"prompt_instructions"`

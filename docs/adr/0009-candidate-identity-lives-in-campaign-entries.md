@@ -97,12 +97,22 @@ first-class rows.
 - Load-time validation becomes strict and fails fast: a candidate's `adapter`
   must resolve to a key in `stbench.adapters`; a `kind: candidate` must carry the
   identity fields; a `kind: baseline` must not.
-- Both scaffolders must emit the new shape. `stcompare config init`
-  (`config.Default` / `WriteDefault`) must produce campaign entries that carry
-  identity and an `stbench.adapters` map. `stbench init` must additionally
-  **write its block into `stcompare.yaml`** rather than only creating the
-  lifecycle scripts and printing a stanza to stdout, and that block must reflect
-  this schema (no `record_path`, `adapters` map, `hardware` in `stbench:`).
+- Both scaffolders emit the new shape, and they have distinct, non-colliding
+  jobs. `stcompare config init` (`config.Default` / `WriteDefault`) is the
+  **authoritative writer of the yaml**: it produces a complete, valid document —
+  campaign entries carrying identity, an `stbench.adapters` map, `hardware`, and
+  a full `stbench:` block whose lifecycle paths point at the managed
+  `.local/stbench/*.sh` scripts (no `record_path`). `stbench init` owns the
+  **on-disk scaffold**: it always creates those lifecycle scripts and the
+  `.gitignore` entry. It writes the `stbench:` block into `stcompare.yaml` only
+  as a **bootstrap when no block is present**; when a block already exists it
+  **skips that step and continues without failing, and never rolls back the
+  scripts it created** — the two commands are order-independent and idempotent,
+  and `config init` remaining the source of the block avoids a second writer
+  fighting it. (Rejected the alternative of removing the block from `config init`
+  so `stbench init` is its sole owner: a candidate's `adapter` reference cannot
+  validate until the `adapters` map exists, so `config init` would have to stop
+  scaffolding a runnable example candidate.)
 - Known limitation: with `hardware` declared once in `stbench:`, a `remote`
   (hosted-API) candidate inherits the harness machine's label even though
   inference did not run there. This is a non-issue for the local-model study but

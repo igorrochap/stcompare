@@ -71,21 +71,21 @@ type HeaderNormalizationRule struct {
 }
 
 type Campaign struct {
-	Kind string `yaml:"kind"`
+	Kind    string `yaml:"kind"`
+	Agent   string `yaml:"agent,omitempty"`
+	Model   string `yaml:"model,omitempty"`
+	Effort  string `yaml:"effort,omitempty"`
+	Adapter string `yaml:"adapter,omitempty"`
 }
 
 // StbenchConfig contains optional settings for the benchmark runner.
 type StbenchConfig struct {
-	Campaign        string                 `yaml:"campaign"`
-	Agent           string                 `yaml:"agent"`
-	Model           string                 `yaml:"model"`
 	Hardware        string                 `yaml:"hardware"`
-	Adapter         string                 `yaml:"adapter"`
+	Adapters        map[string]string      `yaml:"adapters"`
 	AdapterTimeout  string                 `yaml:"adapter_timeout"`
 	ReuseProcess    bool                   `yaml:"reuse_process"`
 	SourceDir       string                 `yaml:"source_dir"`
 	StcompareBinary string                 `yaml:"stcompare_binary"`
-	RecordPath      string                 `yaml:"record_path"`
 	Prompt          StbenchPromptConfig    `yaml:"prompt,omitempty"`
 	Lifecycle       StbenchLifecycleConfig `yaml:"lifecycle,omitempty"`
 	MaxIterations   int                    `yaml:"max_iterations"`
@@ -232,7 +232,45 @@ func (c Config) Validate() error {
 		switch campaign.Kind {
 		case "baseline":
 			baselineCount++
+			if strings.TrimSpace(campaign.Agent) != "" {
+				return fmt.Errorf("campaign %q: agent must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Model) != "" {
+				return fmt.Errorf("campaign %q: model must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Effort) != "" {
+				return fmt.Errorf("campaign %q: effort must not be set on a baseline campaign", name)
+			}
+			if strings.TrimSpace(campaign.Adapter) != "" {
+				return fmt.Errorf("campaign %q: adapter must not be set on a baseline campaign", name)
+			}
 		case "candidate":
+			if strings.TrimSpace(campaign.Agent) == "" {
+				return fmt.Errorf("campaign %q: agent is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Model) == "" {
+				return fmt.Errorf("campaign %q: model is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Effort) == "" {
+				return fmt.Errorf("campaign %q: effort is required for candidate campaigns", name)
+			}
+			if strings.TrimSpace(campaign.Adapter) == "" {
+				return fmt.Errorf("campaign %q: adapter is required for candidate campaigns", name)
+			}
+			if c.Stbench == nil {
+				return fmt.Errorf(
+					"campaign %q: adapter %q is not defined in stbench.adapters",
+					name,
+					campaign.Adapter,
+				)
+			}
+			if _, exists := c.Stbench.Adapters[campaign.Adapter]; !exists {
+				return fmt.Errorf(
+					"campaign %q: adapter %q is not defined in stbench.adapters",
+					name,
+					campaign.Adapter,
+				)
+			}
 		default:
 			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
 		}
@@ -316,9 +354,10 @@ func ValidateCampaignName(name string) error {
 
 func Default() Config {
 	return Config{
-		Schema:     "openapi.json",
-		BaseURL:    "http://localhost:8080",
-		ReportsDir: "reports",
+		Schema:        "openapi.json",
+		CandidateSpec: "/openapi.json",
+		BaseURL:       "http://localhost:8080",
+		ReportsDir:    "reports",
 		Schemathesis: SchemathesisConfig{
 			Seed:                    12345,
 			Workers:                 1,
@@ -338,14 +377,45 @@ func Default() Config {
 		},
 		Campaigns: map[string]Campaign{
 			"baseline": {Kind: "baseline"},
-			"gpt5.6":   {Kind: "candidate"},
-			"sonnet5":  {Kind: "candidate"},
+			"gpt5.6": {
+				Kind:    "candidate",
+				Agent:   "codex",
+				Model:   "gpt-5.6",
+				Effort:  "high",
+				Adapter: "coding-agent",
+			},
+		},
+		Stbench: &StbenchConfig{
+			Hardware: "harness-machine",
+			Adapters: map[string]string{
+				"coding-agent": "python examples/stbench/coding_agent_adapter.py",
+			},
+			AdapterTimeout:  "30m",
+			ReuseProcess:    false,
+			SourceDir:       ".",
+			StcompareBinary: "stcompare",
+			Prompt: StbenchPromptConfig{
+				ID:      "stbench-default",
+				Version: "2",
+			},
+			Lifecycle: StbenchLifecycleConfig{
+				Stop:           ".local/stbench/stop.sh",
+				Reset:          ".local/stbench/reset.sh",
+				Build:          ".local/stbench/build.sh",
+				Start:          ".local/stbench/start.sh",
+				CommandTimeout: "30m",
+				HealthURL:      "http://localhost:8080/health",
+				HealthTimeout:  "30s",
+				HealthInterval: "100ms",
+			},
+			MaxIterations: 100,
+			StallWindow:   2,
 		},
 	}
 }
 
 func WriteDefault(path string) error {
-	contents, err := yaml.Marshal(Default())
+	contents, err := marshalDefault()
 	if err != nil {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
@@ -378,13 +448,48 @@ func WriteDefault(path string) error {
 }
 
 func OverwriteDefault(path string) error {
-	contents, err := yaml.Marshal(Default())
+	contents, err := marshalDefault()
 	if err != nil {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
 
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func marshalDefault() ([]byte, error) {
+	var document yaml.Node
+	if err := document.Encode(Default()); err != nil {
+		return nil, err
+	}
+
+	stbench := mappingValue(&document, "stbench")
+	if stbench == nil {
+		return nil, errors.New("default config is missing stbench")
+	}
+	hardware := mappingValue(stbench, "hardware")
+	if hardware == nil {
+		return nil, errors.New("default config is missing stbench.hardware")
+	}
+	hardware.LineComment = "Declared once for the harness machine."
+
+	candidateSpec := mappingValue(&document, "candidate_spec")
+	if candidateSpec == nil {
+		return nil, errors.New("default config is missing candidate_spec")
+	}
+	candidateSpec.LineComment = "Candidate's own OpenAPI, fetched from base_url each run to grade status-code conformance; set to your app's served spec path."
+
+	return yaml.Marshal(&document)
+}
+
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
 	}
 
 	return nil
@@ -403,6 +508,9 @@ func Load(path string) (Config, error) {
 	}
 	if err := yaml.Unmarshal(contents, &loaded); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if err := loaded.Validate(); err != nil {
+		return Config{}, err
 	}
 
 	return loaded, nil

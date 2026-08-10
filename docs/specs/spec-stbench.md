@@ -38,7 +38,8 @@ see ADR-0004, ADR-0006). For each run it:
    - `1` (tool error) → stop, surface.
 3. Terminates the loop on convergence, on a **stall** (the actionable count
    stops dropping), or on a **max-iteration** cap.
-4. Emits one **benchmark record** per `(agent, candidate, run)` capturing
+4. Emits one **benchmark record** per `(agent, candidate, run)` at a path
+   derived from the selected Candidate Campaign, capturing
    terminal state, iteration count, a per-phase time breakdown, known token
    totals plus the number of iterations with unknown usage, and the final
    convergence counts.
@@ -86,9 +87,9 @@ across agents so the benchmark measures the model, not its harness.
     total}` while unknown iterations are counted explicitly, so that partial
     data is retained without collapsing "unknown" into "zero" or overstating
     an aggregate.
-14. As a researcher, I want the record to carry model and hardware metadata I
-    provide, so that I can read latency and token numbers fairly across cloud
-    and local runs.
+14. As a researcher, I want the record to carry campaign `agent`, `model`, and
+    `effort` identity plus harness `hardware`, so that I can read latency and
+    token numbers fairly across cloud and local runs.
 15. As a researcher, I want the record to include the final convergence counts
     (`still_failing`, `regressed`, and the `unverified` residual), so that even
     a non-converged run's ending state is captured.
@@ -150,7 +151,8 @@ integration test.
 
 **Candidate lifecycle (owned by `stbench`, configured, uniform across agents):**
 
-- Configuration supplies the commands/hooks for `stop`, `reset` (optional),
+- The fixed `stbench:` configuration supplies the harness hardware and the
+  commands/hooks for `stop`, `reset` (optional),
   `build`, `start`, and a health check (URL to poll + timeout). Per iteration
   the runner runs: stop → reset → build → start → wait-healthy → compare. If any
   lifecycle step fails, the run ends with a distinct terminal state and the
@@ -182,18 +184,20 @@ integration test.
 
 **Adapter protocol (language-agnostic, per-agent):**
 
-- `stbench` invokes the configured adapter command with the candidate source
-  directory as its working directory.
+- `stbench` resolves the selected Candidate Campaign's adapter type through the
+  `stbench.adapters` type-to-command map, then invokes that command with the
+  candidate source directory as its working directory.
 - The adapter implementation and lifecycle harness are control-plane files,
-  not candidate source. `stbench init` stores generated lifecycle scripts and
-  the benchmark record in the repository-local `.local/stbench` control-plane
-  directory by default, and prints configuration paths for that directory.
+  not candidate source. `stbench init` stores generated lifecycle scripts in
+  the repository-local `.local/stbench` control-plane directory by default and
+  writes their paths into the `stbench:` block in `stcompare.yaml`.
   Adapters exclude `.local/stbench` and `.local/stcompare` from source views and
   edits; reference adapter implementations should remain outside the source
   tree.
-- The `agent`, `model`, and `hardware` metadata from the stbench configuration,
-  the rendered task instruction, and the compact `agentreport.View` (the
-  actionable list and counts) are passed to the adapter on **stdin** as JSON.
+- The `agent`, `model`, and `effort` identity from the selected Candidate
+  Campaign, the harness `hardware` from `stbench:`, the rendered task
+  instruction, and the compact `agentreport.View` (the actionable list and
+  counts) are passed to the adapter on **stdin** as JSON.
   The request metadata is the source of truth for adapter execution; an
   adapter may override it only through an explicit adapter option.
   This compact view is the agent's problem source on **every** iteration,
@@ -250,7 +254,8 @@ integration test.
 ```
 {
   "schema_version": "...",
-  "agent": "...", "model": "...", "hardware": "...",   // provided by the caller
+  "agent": "...", "model": "...", "effort": "...",     // campaign identity
+  "hardware": "...",                                    // harness identity
   "process_reuse": bool,                                // negotiated adapter mode
   "prompt": { "id": "...", "version": "...", "hash": "..." },
                                                         // task-prompt identity (ADR-0007)
@@ -284,10 +289,69 @@ hash, and raw agent response.
   distinguishes an all-unknown run from a run with a retained partial sum.
 - `remaining_actionable` is empty on a converged run.
 
-**Configuration/CLI:** `stbench run` takes the candidate name, the agent/adapter
-command, model/hardware metadata, lifecycle commands, max-iterations, stall
-window, and the record output path — via an `stbench` config file and/or flags,
-reusing `stcompare`'s config for schema/base-url/reports-dir.
+**Configuration/CLI:** Candidate identity is declared on Candidate Campaign
+entries. The `stbench:` block contains only fixed harness infrastructure, with
+`hardware` declared once and adapter commands keyed by adapter type:
+
+```yaml
+campaigns:
+  baseline:
+    kind: baseline
+  sonnet5-high:
+    kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: high
+    adapter: remote
+  sonnet5-low:
+    kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: low
+    adapter: remote
+
+stbench:
+  source_dir: candidate-src
+  hardware: RTX 4090 / 64GB
+  reuse_process: false
+  adapters:
+    local: python adapters/local_model_adapter.py
+    remote: python adapters/coding_agent_adapter.py
+  prompt:
+    id: stbench-default
+    version: "2"
+  lifecycle:
+    stop: .local/stbench/stop.sh
+    reset: .local/stbench/reset.sh
+    build: .local/stbench/build.sh
+    start: .local/stbench/start.sh
+    health_url: http://localhost:8080/health
+```
+
+`stbench run <candidate>` selects a Candidate Campaign and reads `agent`,
+`model`, `effort`, and adapter type from that entry. Run flags can override only
+execution settings such as lifecycle commands and timeouts, source and binary
+paths, process reuse, prompt identity, iteration and stall limits, base URL,
+and scorecard emission. `effort` is an identity axis, not an execution knob:
+`sonnet5-high` and `sonnet5-low` are distinct candidates and are compared as
+separate scorecard rows.
+
+The benchmark record path is derived from the campaign and `reports_dir` as
+`reports/<candidate>/benchmark-record.json`. It is not configurable, which
+prevents a run from being saved under another candidate's name.
+
+`stcompare config init` scaffolds this complete new-shape configuration for new
+projects. For an existing `stcompare.yaml` without an `stbench:` block,
+`stbench init` creates the lifecycle scripts and writes the block into the file
+instead of printing a stanza to copy. It is non-destructive: it refuses to
+overwrite lifecycle files or modify a configuration that already contains an
+`stbench:` block, including one created by `stcompare config init`.
+
+Known limitation: because `hardware` is declared once in `stbench:`, a hosted
+or remote candidate inherits the harness machine's hardware label even though
+inference runs elsewhere. This is acceptable for the single-machine local-model
+study and must be revisited if remote candidates are compared on cost or
+latency.
 
 ## Testing Decisions
 
