@@ -157,7 +157,7 @@ func TestInitRejectsConfigWithoutMappingRoot(t *testing.T) {
 	}
 }
 
-func TestInitRefusesToOverwriteExistingStbenchConfig(t *testing.T) {
+func TestInitKeepsScaffoldWhenStbenchConfigAlreadyPresent(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	const existing = `schema: openapi.json
@@ -169,17 +169,19 @@ stbench:
 		t.Fatalf("write existing config: %v", err)
 	}
 
+	var output bytes.Buffer
 	root := NewRootCommand()
+	root.SetOut(&output)
 	root.SetArgs([]string{"init"})
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("execute stbench init error = nil, want existing-stbench error")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
 	}
-	if got, want := err.Error(), "stcompare.yaml already contains an stbench block; leaving it unchanged"; got != want {
-		t.Fatalf("execute stbench init error = %q, want %q", got, want)
-	}
+
 	if got := readInitFile(t, configPath); got != existing {
 		t.Fatalf("config = %q, want existing content unchanged", got)
+	}
+	if got := output.String(); !strings.Contains(got, "already has an stbench block") {
+		t.Fatalf("init output = %q, want skip notice", got)
 	}
 
 	harnessDir, harnessErr := managedHarnessDir(dir)
@@ -187,9 +189,13 @@ stbench:
 		t.Fatalf("resolve managed harness directory: %v", harnessErr)
 	}
 	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
-		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
-			t.Errorf("%s exists after refused config update, want rollback", name)
+		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); statErr != nil {
+			t.Errorf("stat %s: %v — scaffold must survive when the stbench block already exists", name, statErr)
 		}
+	}
+	gitignore := readInitFile(t, filepath.Join(dir, ".gitignore"))
+	if !strings.Contains(gitignore, ".local/stbench/") {
+		t.Fatalf(".gitignore = %q, want .local/stbench/ entry", gitignore)
 	}
 }
 

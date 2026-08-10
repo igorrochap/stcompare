@@ -93,16 +93,29 @@ func runInit(command *cobra.Command, _ []string) error {
 	}
 
 	configPath := filepath.Join(repositoryDir, config.DefaultFilename)
-	if err := appendStbenchConfig(configPath, stbenchConfigBlockFor(harnessDir)); err != nil {
+	switch err := appendStbenchConfig(configPath, stbenchConfigBlockFor(harnessDir)); {
+	case errors.Is(err, errStbenchConfigPresent):
+		// stcompare config init is the authoritative writer of the stbench block.
+		// When one is already present, keep the freshly created lifecycle scripts
+		// and leave the block untouched instead of failing and rolling them back.
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "%s already has an stbench block; kept the lifecycle scripts and left the block unchanged\n", configPath); err != nil {
+			return fmt.Errorf("write init confirmation: %w", err)
+		}
+	case err != nil:
 		removeCreatedFiles(created)
 		return err
-	}
-	if _, err := fmt.Fprintf(command.OutOrStdout(), "Wrote stbench configuration to %s\n", configPath); err != nil {
-		return fmt.Errorf("write init confirmation: %w", err)
+	default:
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "Wrote stbench configuration to %s\n", configPath); err != nil {
+			return fmt.Errorf("write init confirmation: %w", err)
+		}
 	}
 
 	return nil
 }
+
+// errStbenchConfigPresent signals that stcompare.yaml already carries an stbench
+// block, so init leaves it unchanged rather than treating it as a failure.
+var errStbenchConfigPresent = errors.New("stcompare.yaml already contains an stbench block")
 
 func appendStbenchConfig(path string, block string) error {
 	contents, err := os.ReadFile(path)
@@ -121,7 +134,7 @@ func appendStbenchConfig(path string, block string) error {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	if hasYAMLMappingKey(root, "stbench") {
-		return fmt.Errorf("%s already contains an stbench block; leaving it unchanged", path)
+		return errStbenchConfigPresent
 	}
 
 	var blockDocument yaml.Node
