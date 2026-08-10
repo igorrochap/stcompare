@@ -17,7 +17,7 @@ import (
 	"stcompare/internal/config"
 )
 
-const defaultRecordPath = "benchmark-record.json"
+const benchmarkRecordFilename = "benchmark-record.json"
 
 // ExitCodeError carries the process exit code selected by stbench.
 type ExitCodeError struct {
@@ -54,15 +54,10 @@ type rootCommandOptions struct {
 
 type runCommandOptions struct {
 	campaign          string
-	agent             string
-	model             string
-	hardware          string
-	adapter           string
 	adapterTimeout    string
 	reuseProcess      bool
 	sourceDir         string
 	stcompareBinary   string
-	recordPath        string
 	emitScorecard     bool
 	baseURL           string
 	stop              string
@@ -98,15 +93,10 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 
 	flags := command.Flags()
 	flags.StringVar(&options.campaign, "campaign", "", "campaign to benchmark (must be a candidate campaign)")
-	flags.StringVar(&options.agent, "agent", "", "agent metadata recorded and passed to the adapter")
-	flags.StringVar(&options.model, "model", "", "model metadata recorded and passed to the adapter")
-	flags.StringVar(&options.hardware, "hardware", "", "hardware metadata recorded and passed to the adapter")
-	flags.StringVar(&options.adapter, "adapter", "", "adapter command")
 	flags.StringVar(&options.adapterTimeout, "adapter-timeout", "", "adapter command timeout")
 	flags.BoolVar(&options.reuseProcess, "reuse-process", false, "reuse a negotiated adapter process across iterations")
 	flags.StringVar(&options.sourceDir, "source-dir", "", "candidate source directory")
 	flags.StringVar(&options.stcompareBinary, "stcompare-binary", "", "stcompare executable")
-	flags.StringVar(&options.recordPath, "record-path", "", "benchmark record output path")
 	flags.BoolVar(&options.emitScorecard, "emit-scorecard", false, "build scorecard.html after the benchmark run")
 	flags.StringVar(&options.baseURL, "base-url", "", "candidate base URL override")
 	flags.StringVar(&options.stop, "stop-command", "", "candidate stop command")
@@ -138,7 +128,10 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 
 	settings := defaultRunSettings(effective.Stbench)
 	applyRunSettings(&settings, options, command)
-	if err := validateRunSettings(effective, settings); err != nil {
+	if err := applyCampaignSettings(effective, &settings); err != nil {
+		return err
+	}
+	if err := validateRunSettings(settings); err != nil {
 		return err
 	}
 
@@ -178,6 +171,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		AdapterMetadata: AdapterMetadata{
 			Agent:    settings.agent,
 			Model:    settings.model,
+			Effort:   settings.effort,
 			Hardware: settings.hardware,
 		},
 		Candidate:         settings.campaign,
@@ -259,6 +253,7 @@ type runSettings struct {
 	campaign          string
 	agent             string
 	model             string
+	effort            string
 	hardware          string
 	adapter           string
 	adapterTimeout    string
@@ -290,17 +285,12 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings := runSettings{
 		sourceDir:         ".",
 		stcompareBinary:   "stcompare",
-		recordPath:        defaultRecordPath,
 		heartbeatInterval: defaultHeartbeatInterval,
 	}
 	if source == nil {
 		return settings
 	}
-	settings.campaign = source.Campaign
-	settings.agent = source.Agent
-	settings.model = source.Model
 	settings.hardware = source.Hardware
-	settings.adapter = source.Adapter
 	settings.adapterTimeout = source.AdapterTimeout
 	settings.reuseProcess = source.ReuseProcess
 	if source.SourceDir != "" {
@@ -308,9 +298,6 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	}
 	if source.StcompareBinary != "" {
 		settings.stcompareBinary = source.StcompareBinary
-	}
-	if source.RecordPath != "" {
-		settings.recordPath = source.RecordPath
 	}
 	settings.stop = source.Lifecycle.Stop
 	settings.reset = source.Lifecycle.Reset
@@ -331,18 +318,6 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	if command.Flags().Changed("campaign") || options.campaign != "" {
 		settings.campaign = options.campaign
 	}
-	if command.Flags().Changed("agent") {
-		settings.agent = options.agent
-	}
-	if command.Flags().Changed("model") {
-		settings.model = options.model
-	}
-	if command.Flags().Changed("hardware") {
-		settings.hardware = options.hardware
-	}
-	if command.Flags().Changed("adapter") {
-		settings.adapter = options.adapter
-	}
 	if command.Flags().Changed("adapter-timeout") {
 		settings.adapterTimeout = options.adapterTimeout
 	}
@@ -354,9 +329,6 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("stcompare-binary") {
 		settings.stcompareBinary = options.stcompareBinary
-	}
-	if command.Flags().Changed("record-path") {
-		settings.recordPath = options.recordPath
 	}
 	if command.Flags().Changed("emit-scorecard") {
 		settings.emitScorecard = options.emitScorecard
@@ -408,7 +380,7 @@ func applyRunOverrides(command *cobra.Command, effective *config.Config, options
 	}
 }
 
-func validateRunSettings(effective config.Config, settings runSettings) error {
+func applyCampaignSettings(effective config.Config, settings *runSettings) error {
 	if strings.TrimSpace(settings.campaign) == "" {
 		return errors.New("campaign is required")
 	}
@@ -417,8 +389,27 @@ func validateRunSettings(effective config.Config, settings runSettings) error {
 		return fmt.Errorf("campaign %q is not configured", settings.campaign)
 	}
 	if campaign.Kind != "candidate" {
-		return fmt.Errorf("campaign %q has kind %q: stbench requires a candidate campaign", settings.campaign, campaign.Kind)
+		return fmt.Errorf(
+			"campaign %q has kind %q: stbench requires a candidate campaign",
+			settings.campaign,
+			campaign.Kind,
+		)
 	}
+
+	settings.agent = campaign.Agent
+	settings.model = campaign.Model
+	settings.effort = campaign.Effort
+	if effective.Stbench != nil {
+		settings.adapter = effective.Stbench.Adapters[campaign.Adapter]
+	}
+	settings.recordPath = filepath.Join(
+		config.CampaignReportDir(effective, settings.campaign),
+		benchmarkRecordFilename,
+	)
+	return nil
+}
+
+func validateRunSettings(settings runSettings) error {
 	if strings.TrimSpace(settings.adapter) == "" {
 		return errors.New("adapter command is required")
 	}

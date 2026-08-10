@@ -39,6 +39,7 @@ const (
 type AdapterMetadata struct {
 	Agent    string `json:"agent"`
 	Model    string `json:"model"`
+	Effort   string `json:"effort"`
 	Hardware string `json:"hardware"`
 }
 
@@ -208,6 +209,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		SchemaVersion:        benchrecord.SchemaVersion,
 		Agent:                config.Agent,
 		Model:                config.Model,
+		Effort:               config.Effort,
 		Hardware:             config.Hardware,
 		Prompt:               config.Prompt,
 		Candidate:            config.Candidate,

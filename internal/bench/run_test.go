@@ -307,7 +307,7 @@ func TestRunPassesRecordedMetadataToAdapter(t *testing.T) {
 	adapter := &fakeAdapter{}
 
 	_, err := Run(Config{
-		AdapterMetadata: AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"},
+		AdapterMetadata: AdapterMetadata{Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro"},
 		BaselineExists:  func() bool { return true },
 		MaxIterations:   2,
 	}, Dependencies{
@@ -323,7 +323,7 @@ func TestRunPassesRecordedMetadataToAdapter(t *testing.T) {
 	if len(adapter.metadata) != 1 {
 		t.Fatalf("adapter metadata calls = %d, want 1", len(adapter.metadata))
 	}
-	want := AdapterMetadata{Agent: "codex", Model: "gpt-5", Hardware: "m4-pro"}
+	want := AdapterMetadata{Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro"}
 	if adapter.metadata[0] != want {
 		t.Fatalf("adapter metadata = %#v, want %#v", adapter.metadata[0], want)
 	}

@@ -11,6 +11,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		SchemaVersion: "1",
 		Agent:         "agent",
 		Model:         "model",
+		Effort:        "high",
 		Hardware:      "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",

@@ -71,21 +71,21 @@ type HeaderNormalizationRule struct {
 }
 
 type Campaign struct {
-	Kind string `yaml:"kind"`
+	Kind    string `yaml:"kind"`
+	Agent   string `yaml:"agent,omitempty"`
+	Model   string `yaml:"model,omitempty"`
+	Effort  string `yaml:"effort,omitempty"`
+	Adapter string `yaml:"adapter,omitempty"`
 }
 
 // StbenchConfig contains optional settings for the benchmark runner.
 type StbenchConfig struct {
-	Campaign        string                 `yaml:"campaign"`
-	Agent           string                 `yaml:"agent"`
-	Model           string                 `yaml:"model"`
 	Hardware        string                 `yaml:"hardware"`
-	Adapter         string                 `yaml:"adapter"`
+	Adapters        map[string]string      `yaml:"adapters"`
 	AdapterTimeout  string                 `yaml:"adapter_timeout"`
 	ReuseProcess    bool                   `yaml:"reuse_process"`
 	SourceDir       string                 `yaml:"source_dir"`
 	StcompareBinary string                 `yaml:"stcompare_binary"`
-	RecordPath      string                 `yaml:"record_path"`
 	Prompt          StbenchPromptConfig    `yaml:"prompt,omitempty"`
 	Lifecycle       StbenchLifecycleConfig `yaml:"lifecycle,omitempty"`
 	MaxIterations   int                    `yaml:"max_iterations"`

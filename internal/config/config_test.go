@@ -27,13 +27,18 @@ schemathesis:
 campaigns:
   baseline:
     kind: baseline
-  candidate:
+  sonnet5-high:
     kind: candidate
+    agent: claude-code
+    model: sonnet-5
+    effort: high
+    adapter: remote
 stbench:
-  campaign: candidate
+  hardware: RTX 4090 / 64GB
   reuse_process: true
   source_dir: candidate-src
-  adapter: python adapter.py
+  adapters:
+    remote: python adapters/anthropic_adapter.py
   adapter_timeout: 3m
   lifecycle:
     stop: ./stop.sh
@@ -55,10 +60,16 @@ candidate_spec: /openapi.json
 	if loaded.Stbench == nil {
 		t.Fatal("Stbench = nil, want parsed stbench section")
 	}
-	if loaded.Stbench.Campaign != "candidate" || !loaded.Stbench.ReuseProcess || loaded.Stbench.SourceDir != "candidate-src" ||
-		loaded.Stbench.Adapter != "python adapter.py" ||
+	if !loaded.Stbench.ReuseProcess || loaded.Stbench.SourceDir != "candidate-src" ||
+		loaded.Stbench.Hardware != "RTX 4090 / 64GB" ||
+		loaded.Stbench.Adapters["remote"] != "python adapters/anthropic_adapter.py" ||
 		loaded.Stbench.AdapterTimeout != "3m" || loaded.Stbench.Lifecycle.CommandTimeout != "2m" {
-		t.Fatalf("Stbench = %#v, want candidate and adapter settings", loaded.Stbench)
+		t.Fatalf("Stbench = %#v, want fixed benchmark infrastructure", loaded.Stbench)
+	}
+	candidate := loaded.Campaigns["sonnet5-high"]
+	if candidate.Agent != "claude-code" || candidate.Model != "sonnet-5" ||
+		candidate.Effort != "high" || candidate.Adapter != "remote" {
+		t.Fatalf("candidate = %#v, want campaign identity", candidate)
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
 		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
