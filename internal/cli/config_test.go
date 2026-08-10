@@ -44,6 +44,10 @@ func loadValidConfig(t *testing.T) configDocument {
 	t.Helper()
 
 	document := loadGeneratedDefaultConfig(t)
+	// The scaffolded default now ships a candidate_spec so operators don't miss
+	// it; the traffic-comparison fixtures grade without a candidate contract, so
+	// clear it here to keep exercising the no-contract path.
+	delete(document, "candidate_spec")
 	document["campaigns"] = map[string]any{
 		"baseline": map[string]any{"kind": "baseline"},
 		"gpt5.6": map[string]any{

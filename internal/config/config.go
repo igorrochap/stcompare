@@ -354,9 +354,10 @@ func ValidateCampaignName(name string) error {
 
 func Default() Config {
 	return Config{
-		Schema:     "openapi.json",
-		BaseURL:    "http://localhost:8080",
-		ReportsDir: "reports",
+		Schema:        "openapi.json",
+		CandidateSpec: "/openapi.json",
+		BaseURL:       "http://localhost:8080",
+		ReportsDir:    "reports",
 		Schemathesis: SchemathesisConfig{
 			Seed:                    12345,
 			Workers:                 1,
@@ -474,6 +475,12 @@ func marshalDefault() ([]byte, error) {
 		return nil, errors.New("default config is missing stbench.hardware")
 	}
 	hardware.LineComment = "Declared once for the harness machine."
+
+	candidateSpec := mappingValue(&document, "candidate_spec")
+	if candidateSpec == nil {
+		return nil, errors.New("default config is missing candidate_spec")
+	}
+	candidateSpec.LineComment = "Candidate's own OpenAPI, fetched from base_url each run to grade status-code conformance; set to your app's served spec path."
 
 	return yaml.Marshal(&document)
 }

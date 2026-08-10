@@ -1,4 +1,5 @@
 schema: openapi.json
+candidate_spec: /openapi.json # Candidate's own OpenAPI, fetched from base_url each run to grade status-code conformance; set to your app's served spec path.
 base_url: http://localhost:8080
 reports_dir: reports
 schemathesis:
