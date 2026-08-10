@@ -81,7 +81,8 @@ type htmlProblemEntryView struct {
 	HasDetails       bool
 }
 
-func renderHTML(document report) (string, error) {
+// RenderHTML renders a comparison report as a self-contained HTML document.
+func RenderHTML(document Report) (string, error) {
 	var output bytes.Buffer
 	if err := comparisonHTMLTemplate.Execute(&output, newHTMLReportView(document)); err != nil {
 		return "", fmt.Errorf("render comparison HTML report: %w", err)
@@ -91,7 +92,7 @@ func renderHTML(document report) (string, error) {
 }
 
 func writeHTMLReport(path string, document report) error {
-	html, err := renderHTML(document)
+	html, err := RenderHTML(document)
 	if err != nil {
 		return err
 	}

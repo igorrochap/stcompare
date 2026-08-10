@@ -156,8 +156,8 @@ func campaignComparisonInput(
 	baselineName string,
 	candidateName string,
 ) comparison.Input {
-	baselineReportDir := campaignReportDir(effective, baselineName)
-	candidateReportDir := campaignReportDir(effective, candidateName)
+	baselineReportDir := config.CampaignReportDir(effective, baselineName)
+	candidateReportDir := config.CampaignReportDir(effective, candidateName)
 
 	return comparison.Input{
 		BaselineCampaign:   baselineName,

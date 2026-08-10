@@ -57,6 +57,50 @@ func TestCommandComparatorParsesAgentViewAndExitCode(t *testing.T) {
 	}
 }
 
+func TestCommandScorecardBuilderPassesConfigAndArtifactPaths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := writeExecutable(t, dir, "scorecard.sh", "#!/bin/sh\n"+
+		"printf '%s\\n' \"$@\" > \"$STBENCH_ARGS\"\n"+
+		"printf 'wrote reports/candidate/scorecard.html\\n'\n")
+	var stdout strings.Builder
+	builder := &commandScorecardBuilder{
+		Binary:     script,
+		ConfigPath: filepath.Join(dir, "stcompare.yaml"),
+		WorkingDir: dir,
+		Env:        []string{"STBENCH_ARGS=" + argsPath},
+		Stdout:     &stdout,
+	}
+	input := scorecardBuildInput{
+		ComparisonPath: filepath.Join("reports", "candidate", "comparison.json"),
+		RecordPath:     filepath.Join("state", "benchmark-record.json"),
+		OutputPath:     filepath.Join("reports", "candidate", "scorecard.html"),
+	}
+
+	if err := builder.Build(input); err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read scorecard args: %v", err)
+	}
+	wantArgs := []string{
+		"--config", filepath.Join(dir, "stcompare.yaml"),
+		"scorecard", "build",
+		"--comparison", input.ComparisonPath,
+		"--record", input.RecordPath,
+		"--out", input.OutputPath,
+	}
+	if gotArgs := strings.Fields(string(args)); !sameStrings(gotArgs, wantArgs) {
+		t.Fatalf("scorecard args = %#v, want %#v", gotArgs, wantArgs)
+	}
+	if got := stdout.String(); got != "wrote reports/candidate/scorecard.html\n" {
+		t.Fatalf("scorecard stdout = %q, want success output", got)
+	}
+}
+
 func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.T) {
 	t.Parallel()
 

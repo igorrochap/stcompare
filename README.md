@@ -24,6 +24,7 @@ the run reaches a stopping condition.
 - [Configuration reference](#configuration-reference)
 - [Comparison behavior and reports](#comparison-behavior-and-reports)
 - [Benchmark loops with stbench](#benchmark-loops-with-stbench)
+- [Build a benchmark scorecard](#build-a-benchmark-scorecard)
 - [Caveats and troubleshooting](#caveats-and-troubleshooting)
 - [Development](#development)
 
@@ -654,8 +655,8 @@ override: `--campaign`, `--agent`, `--model`, `--hardware`, `--source-dir`,
 `--stcompare-binary`, `--record-path`, `--base-url`, `--stop-command`,
 `--reset-command`, `--build-command`, `--start-command`, `--command-timeout`,
 `--health-url`, `--health-timeout`, `--health-interval`, `--max-iterations`,
-`--stall-window`, `--prompt-id`, `--prompt-version`, and `--reuse-process`. The old short and
-duplicate aliases are not accepted. Effective values follow this precedence:
+`--stall-window`, `--prompt-id`, `--prompt-version`, `--reuse-process`, and
+`--emit-scorecard`. The old short and duplicate aliases are not accepted. Effective values follow this precedence:
 explicit run flags override the `stbench` YAML section, which overrides the
 documented defaults. The `--base-url` override is applied before configuration
 validation.
@@ -778,6 +779,35 @@ Three reference adapters are provided in
 Point `stbench.adapter` at any of these commands without changing the
 loop or lifecycle configuration. The examples use only Python's standard
 library.
+
+## Build a benchmark scorecard
+
+Join the final traffic comparison with the benchmark record produced by
+`stbench run` automatically:
+
+```sh
+stbench run --config stcompare.yaml --emit-scorecard
+```
+
+This writes `scorecard.html` to the candidate's configured report directory.
+Scorecard generation is best-effort: a missing comparison or builder failure
+prints a warning without changing the benchmark's terminal state or exit code.
+Without `--emit-scorecard`, no scorecard subprocess runs.
+
+To build the same artifact manually:
+
+```sh
+stcompare scorecard build \
+  --comparison reports/gpt5.6/comparison.json \
+  --record .local/stbench/records/gpt5.6.json \
+  --out reports/gpt5.6/scorecard.html
+```
+
+The self-contained HTML includes every section from `comparison.html` plus a
+Benchmark Run section with the agent, model, iteration count, total and
+agent-fix durations, and token usage. All three paths are required. Missing or
+malformed inputs fail without writing the output file; a record whose token
+usage is `null` is shown explicitly as not reported.
 
 ## Caveats and troubleshooting
 

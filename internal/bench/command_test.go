@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +71,7 @@ func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
 
 	canonical := []string{
 		"campaign", "agent", "model", "hardware", "adapter", "adapter-timeout", "reuse-process",
-		"source-dir", "stcompare-binary", "record-path", "base-url",
+		"source-dir", "stcompare-binary", "record-path", "emit-scorecard", "base-url",
 		"stop-command", "reset-command", "build-command", "start-command",
 		"command-timeout", "health-url", "health-timeout", "health-interval",
 		"max-iterations", "stall-window", "prompt-id", "prompt-version",
@@ -88,6 +90,113 @@ func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
 		if run.Flags().Lookup(name) != nil {
 			t.Errorf("legacy alias --%s is still registered", name)
 		}
+	}
+}
+
+func TestApplyRunSettingsEnablesScorecardOnlyWhenFlagIsPresent(t *testing.T) {
+	command := &cobra.Command{}
+	command.Flags().Bool("emit-scorecard", false, "")
+
+	settings := defaultRunSettings(nil)
+	applyRunSettings(&settings, runCommandOptions{}, command)
+	if settings.emitScorecard {
+		t.Fatal("emitScorecard = true without flag, want false")
+	}
+
+	if err := command.Flags().Set("emit-scorecard", "true"); err != nil {
+		t.Fatalf("set --emit-scorecard: %v", err)
+	}
+	applyRunSettings(&settings, runCommandOptions{emitScorecard: true}, command)
+	if !settings.emitScorecard {
+		t.Fatal("emitScorecard = false with flag, want true")
+	}
+}
+
+func TestEmitScorecardIfRequestedBuildsFromCandidateReport(t *testing.T) {
+	directory := t.TempDir()
+	comparisonPath := filepath.Join(directory, "candidate", "comparison.json")
+	if err := os.MkdirAll(filepath.Dir(comparisonPath), 0o755); err != nil {
+		t.Fatalf("create candidate report directory: %v", err)
+	}
+	if err := os.WriteFile(comparisonPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write comparison output: %v", err)
+	}
+
+	builder := &fakeScorecardBuilder{writeOutput: true}
+	var warnings bytes.Buffer
+	emitScorecardIfRequested(scorecardRequested, builder, scorecardBuildInput{
+		ComparisonPath: comparisonPath,
+		RecordPath:     filepath.Join(directory, "benchmark-record.json"),
+		OutputPath:     filepath.Join(directory, "candidate", "scorecard.html"),
+	}, &warnings)
+
+	if len(builder.inputs) != 1 {
+		t.Fatalf("scorecard build calls = %d, want 1", len(builder.inputs))
+	}
+	if got := builder.inputs[0]; got.ComparisonPath != comparisonPath ||
+		got.RecordPath != filepath.Join(directory, "benchmark-record.json") ||
+		got.OutputPath != filepath.Join(directory, "candidate", "scorecard.html") {
+		t.Fatalf("scorecard build input = %#v, want derived comparison, record, and output paths", got)
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings = %q, want none", warnings.String())
+	}
+	if _, err := os.Stat(filepath.Join(directory, "candidate", "scorecard.html")); err != nil {
+		t.Fatalf("scorecard output: %v", err)
+	}
+}
+
+func TestEmitScorecardIfRequestedSkipsMissingComparisonWithoutFailing(t *testing.T) {
+	directory := t.TempDir()
+	comparisonPath := filepath.Join(directory, "candidate", "comparison.json")
+	builder := &fakeScorecardBuilder{}
+	var warnings bytes.Buffer
+
+	emitScorecardIfRequested(scorecardRequested, builder, scorecardBuildInput{
+		ComparisonPath: comparisonPath,
+		RecordPath:     filepath.Join(directory, "benchmark-record.json"),
+		OutputPath:     filepath.Join(directory, "candidate", "scorecard.html"),
+	}, &warnings)
+
+	if len(builder.inputs) != 0 {
+		t.Fatalf("scorecard build calls = %d, want 0", len(builder.inputs))
+	}
+	if got := warnings.String(); !strings.Contains(got, "warning: scorecard not generated") ||
+		!strings.Contains(got, comparisonPath) || !strings.Contains(got, "does not exist") {
+		t.Fatalf("warning = %q, want missing comparison guidance", got)
+	}
+}
+
+func TestEmitScorecardIfRequestedLeavesAbsentFlagInert(t *testing.T) {
+	builder := &fakeScorecardBuilder{err: errors.New("must not run")}
+	var warnings bytes.Buffer
+
+	emitScorecardIfRequested(scorecardNotRequested, builder, scorecardBuildInput{}, &warnings)
+
+	if len(builder.inputs) != 0 {
+		t.Fatalf("scorecard build calls = %d, want 0", len(builder.inputs))
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings = %q, want none", warnings.String())
+	}
+}
+
+func TestEmitScorecardIfRequestedWarnsWhenBuilderFails(t *testing.T) {
+	directory := t.TempDir()
+	comparisonPath := filepath.Join(directory, "comparison.json")
+	if err := os.WriteFile(comparisonPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write comparison output: %v", err)
+	}
+	builder := &fakeScorecardBuilder{err: errors.New("subprocess failed")}
+	var warnings bytes.Buffer
+
+	emitScorecardIfRequested(scorecardRequested, builder, scorecardBuildInput{
+		ComparisonPath: comparisonPath,
+	}, &warnings)
+
+	if got := warnings.String(); !strings.Contains(got, "warning: scorecard not generated") ||
+		!strings.Contains(got, "subprocess failed") {
+		t.Fatalf("warning = %q, want subprocess failure", got)
 	}
 }
 
@@ -221,4 +330,23 @@ func TestWriteRecordCreatesParentDirectoryAndJSON(t *testing.T) {
 	if !strings.Contains(string(contents), `"terminal_state": "converged"`) || !strings.Contains(string(contents), `"tokens": null`) {
 		t.Fatalf("record = %s, want terminal state and null tokens", contents)
 	}
+}
+
+type fakeScorecardBuilder struct {
+	inputs      []scorecardBuildInput
+	err         error
+	writeOutput bool
+}
+
+const (
+	scorecardNotRequested = false
+	scorecardRequested    = true
+)
+
+func (builder *fakeScorecardBuilder) Build(input scorecardBuildInput) error {
+	builder.inputs = append(builder.inputs, input)
+	if builder.writeOutput {
+		return os.WriteFile(input.OutputPath, []byte("scorecard"), 0o644)
+	}
+	return builder.err
 }

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"stcompare/internal/config"
 )
 
 type campaignRunOptions struct {
@@ -38,7 +40,7 @@ func runCampaignRun(cmd *cobra.Command, rootOpts *rootOptions, campaignName stri
 	}
 
 	argv := schemathesisRunCommand(effective, campaignName)
-	reportDir := campaignReportDir(effective, campaignName)
+	reportDir := config.CampaignReportDir(effective, campaignName)
 	createdReportDir, err := createCampaignReportDir(reportDir, options.force)
 	if err != nil {
 		return err

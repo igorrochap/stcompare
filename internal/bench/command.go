@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,7 @@ type runCommandOptions struct {
 	sourceDir         string
 	stcompareBinary   string
 	recordPath        string
+	emitScorecard     bool
 	baseURL           string
 	stop              string
 	reset             string
@@ -105,6 +107,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.StringVar(&options.sourceDir, "source-dir", "", "candidate source directory")
 	flags.StringVar(&options.stcompareBinary, "stcompare-binary", "", "stcompare executable")
 	flags.StringVar(&options.recordPath, "record-path", "", "benchmark record output path")
+	flags.BoolVar(&options.emitScorecard, "emit-scorecard", false, "build scorecard.html after the benchmark run")
 	flags.StringVar(&options.baseURL, "base-url", "", "candidate base URL override")
 	flags.StringVar(&options.stop, "stop-command", "", "candidate stop command")
 	flags.StringVar(&options.reset, "reset-command", "", "optional candidate reset command")
@@ -231,6 +234,15 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	}
 	fmt.Fprintf(command.OutOrStdout(), "wrote %s\n", settings.recordPath)
 
+	reportDir := config.CampaignReportDir(effective, settings.campaign)
+	scorecardBuilder := newCommandScorecardBuilder(settings.stcompareBinary, configPath)
+	scorecardBuilder.Stdout = command.OutOrStdout()
+	emitScorecardIfRequested(settings.emitScorecard, scorecardBuilder, scorecardBuildInput{
+		ComparisonPath: filepath.Join(reportDir, "comparison.json"),
+		RecordPath:     settings.recordPath,
+		OutputPath:     filepath.Join(reportDir, "scorecard.html"),
+	}, command.ErrOrStderr())
+
 	if runErr != nil {
 		return &ExitCodeError{Code: exitCodeForState(record.TerminalState), Err: runErr}
 	}
@@ -254,6 +266,7 @@ type runSettings struct {
 	sourceDir         string
 	stcompareBinary   string
 	recordPath        string
+	emitScorecard     bool
 	stop              string
 	reset             string
 	build             string
@@ -344,6 +357,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("record-path") {
 		settings.recordPath = options.recordPath
+	}
+	if command.Flags().Changed("emit-scorecard") {
+		settings.emitScorecard = options.emitScorecard
 	}
 	if command.Flags().Changed("stop-command") {
 		settings.stop = options.stop
@@ -468,6 +484,29 @@ func writeRecord(path string, record benchrecord.Record) error {
 		return fmt.Errorf("write benchmark record: %w", err)
 	}
 	return nil
+}
+
+func emitScorecardIfRequested(
+	requested bool,
+	builder scorecardBuilder,
+	input scorecardBuildInput,
+	warnings io.Writer,
+) {
+	if !requested {
+		return
+	}
+	if _, err := os.Stat(input.ComparisonPath); err != nil {
+		fmt.Fprintf(
+			warnings,
+			"warning: scorecard not generated: comparison output %s does not exist: %v\n",
+			input.ComparisonPath,
+			err,
+		)
+		return
+	}
+	if err := builder.Build(input); err != nil {
+		fmt.Fprintf(warnings, "warning: scorecard not generated: %v\n", err)
+	}
 }
 
 func exitCodeForState(state benchrecord.TerminalState) int {

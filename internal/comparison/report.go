@@ -41,6 +41,9 @@ type report struct {
 	allInteractions []reportInteractionEvidence
 }
 
+// Report is the comparison.json document rendered by comparison reports.
+type Report = report
+
 type reportCampaign struct {
 	Campaign                    string  `json:"campaign"`
 	ProblemCount                *int    `json:"problem_count"`

@@ -606,7 +606,7 @@ func TestWriteHTMLReportReturnsTemplateExecutionError(t *testing.T) {
 func mustRenderHTML(t *testing.T, document report) string {
 	t.Helper()
 
-	html, err := renderHTML(document)
+	html, err := RenderHTML(document)
 	if err != nil {
 		t.Fatalf("renderHTML error = %v", err)
 	}
