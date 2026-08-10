@@ -13,9 +13,10 @@ import (
 	"stcompare/internal/config"
 )
 
-func TestInitCreatesRunnableLifecycleScaffoldAndConfigStanza(t *testing.T) {
+func TestInitCreatesLifecycleScaffoldAndWritesLoadableConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
 
 	var output bytes.Buffer
 	root := NewRootCommand()
@@ -66,23 +67,191 @@ func TestInitCreatesRunnableLifecycleScaffoldAndConfigStanza(t *testing.T) {
 		t.Errorf("reset.sh = %q, want source-preservation warning", resetScript)
 	}
 
-	configStanza := output.String()
+	configContents := readInitFile(t, filepath.Join(dir, config.DefaultFilename))
 	for _, want := range []string{
-		"# Add this stanza to stcompare.yaml",
 		"stbench:",
-		"campaign: gpt5.6",
+		"adapters:",
+		"local: python /absolute/path/to/adapter.py",
+		"hardware: hardware-name",
+		"prompt:",
 		"source_dir: .",
 		filepath.Join(harnessDir, "stop.sh"),
 		filepath.Join(harnessDir, "reset.sh"),
 		filepath.Join(harnessDir, "build.sh"),
 		filepath.Join(harnessDir, "start.sh"),
 	} {
-		if !strings.Contains(configStanza, want) {
-			t.Errorf("init output = %q, want %q", configStanza, want)
+		if !strings.Contains(configContents, want) {
+			t.Errorf("config = %q, want %q", configContents, want)
 		}
 	}
-	if strings.Contains(configStanza, "candidate_dir:") || strings.Contains(configStanza, "candidate: gpt5.6") {
-		t.Fatalf("init output = %q, want campaign/source_dir names", configStanza)
+	var document struct {
+		Stbench map[string]any `yaml:"stbench"`
+	}
+	if err := yaml.Unmarshal([]byte(configContents), &document); err != nil {
+		t.Fatalf("parse written config: %v", err)
+	}
+	for _, unwanted := range []string{"record_path", "campaign", "agent", "model", "adapter"} {
+		if _, exists := document.Stbench[unwanted]; exists {
+			t.Errorf("stbench config contains obsolete field %q", unwanted)
+		}
+	}
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("validate written config: %v", err)
+	}
+	if got, want := output.String(), "Wrote stbench configuration to stcompare.yaml\n"; got != want {
+		t.Fatalf("init output = %q, want %q", got, want)
+	}
+}
+
+func TestInitWritesStbenchIntoFlowStyleConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	const flowConfig = `{schema: openapi.json, base_url: 'http://localhost:8080', reports_dir: reports, schemathesis: {workers: 1}, campaigns: {baseline: {kind: baseline}, local-candidate: {kind: candidate, agent: local-agent, model: model-name, effort: high, adapter: local}}}
+`
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	if err := os.WriteFile(configPath, []byte(flowConfig), 0o644); err != nil {
+		t.Fatalf("write flow-style config: %v", err)
+	}
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load updated flow-style config: %v", err)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("validate updated flow-style config: %v", err)
+	}
+}
+
+func TestInitRejectsConfigWithoutMappingRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	const scalarConfig = "not-a-mapping\n"
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	if err := os.WriteFile(configPath, []byte(scalarConfig), 0o644); err != nil {
+		t.Fatalf("write scalar config: %v", err)
+	}
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("execute stbench init error = nil, want mapping-root error")
+	}
+	want := "decode stcompare.yaml: top level must be a YAML mapping"
+	if err.Error() != want {
+		t.Fatalf("execute stbench init error = %q, want %q", err, want)
+	}
+	if got := readInitFile(t, configPath); got != scalarConfig {
+		t.Fatalf("config = %q, want invalid content unchanged", got)
+	}
+}
+
+func TestInitRefusesToOverwriteExistingStbenchConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	const existing = `schema: openapi.json
+stbench:
+  hardware: keep-user-value
+`
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	if err := os.WriteFile(configPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write existing config: %v", err)
+	}
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("execute stbench init error = nil, want existing-stbench error")
+	}
+	if got, want := err.Error(), "stcompare.yaml already contains an stbench block; leaving it unchanged"; got != want {
+		t.Fatalf("execute stbench init error = %q, want %q", got, want)
+	}
+	if got := readInitFile(t, configPath); got != existing {
+		t.Fatalf("config = %q, want existing content unchanged", got)
+	}
+
+	harnessDir, harnessErr := managedHarnessDir(dir)
+	if harnessErr != nil {
+		t.Fatalf("resolve managed harness directory: %v", harnessErr)
+	}
+	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
+		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after refused config update, want rollback", name)
+		}
+	}
+}
+
+func TestInitDirectsUserToCreateMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("execute stbench init error = nil, want missing-config error")
+	}
+	if got, want := err.Error(), "stcompare.yaml does not exist; run stcompare config init first"; got != want {
+		t.Fatalf("execute stbench init error = %q, want %q", got, want)
+	}
+
+	harnessDir, harnessErr := managedHarnessDir(dir)
+	if harnessErr != nil {
+		t.Fatalf("resolve managed harness directory: %v", harnessErr)
+	}
+	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
+		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after missing config, want rollback", name)
+		}
+	}
+}
+
+func TestInitRollsBackScaffoldWhenConfigWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	writeInitConfigWithoutStbench(t, configPath)
+	if err := os.Chmod(configPath, 0o444); err != nil {
+		t.Fatalf("make config read-only: %v", err)
+	}
+	probe, probeErr := os.OpenFile(configPath, os.O_WRONLY, 0)
+	if probeErr == nil {
+		if err := probe.Close(); err != nil {
+			t.Fatalf("close write-permission probe: %v", err)
+		}
+		t.Skip("file permissions do not prevent writes in this environment")
+	}
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("execute stbench init error = nil, want config-write error")
+	}
+	if !strings.Contains(err.Error(), "write stcompare.yaml") {
+		t.Fatalf("execute stbench init error = %q, want config-write error", err)
+	}
+
+	harnessDir, harnessErr := managedHarnessDir(dir)
+	if harnessErr != nil {
+		t.Fatalf("resolve managed harness directory: %v", harnessErr)
+	}
+	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
+		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after config write failure, want rollback", name)
+		}
 	}
 }
 
@@ -128,6 +297,7 @@ func TestInitRefusesToOverwriteScaffoldFiles(t *testing.T) {
 func TestInitPreservesExistingGitignoreAndDoesNotDuplicateManagedState(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
 	const existing = "reports/\n.local/stbench/\n"
 	if err := os.WriteFile(".gitignore", []byte(existing), 0o644); err != nil {
 		t.Fatalf("write existing .gitignore: %v", err)
@@ -148,7 +318,7 @@ func TestInitPreservesExistingGitignoreAndDoesNotDuplicateManagedState(t *testin
 	}
 }
 
-func TestLifecycleConfigStanzaPreservesShellQuotingThroughYAML(t *testing.T) {
+func TestStbenchConfigBlockPreservesShellQuotingThroughYAML(t *testing.T) {
 	harnessDir := filepath.Join(t.TempDir(), "api project state")
 	if err := os.MkdirAll(harnessDir, 0o755); err != nil {
 		t.Fatalf("create harness directory: %v", err)
@@ -161,7 +331,7 @@ func TestLifecycleConfigStanzaPreservesShellQuotingThroughYAML(t *testing.T) {
 	var document struct {
 		Stbench config.StbenchConfig `yaml:"stbench"`
 	}
-	if err := yaml.Unmarshal([]byte(lifecycleConfigStanzaFor(harnessDir)), &document); err != nil {
+	if err := yaml.Unmarshal([]byte(stbenchConfigBlockFor(harnessDir)), &document); err != nil {
 		t.Fatalf("parse generated config stanza: %v", err)
 	}
 
@@ -219,4 +389,27 @@ func readInitFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(contents)
+}
+
+func writeInitConfigWithoutStbench(t *testing.T, path string) {
+	t.Helper()
+
+	const contents = `schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  workers: 1
+campaigns:
+  baseline:
+    kind: baseline
+  local-candidate:
+    kind: candidate
+    agent: local-agent
+    model: model-name
+    effort: high
+    adapter: local
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config without stbench: %v", err)
+	}
 }
