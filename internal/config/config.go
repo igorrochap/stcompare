@@ -376,14 +376,45 @@ func Default() Config {
 		},
 		Campaigns: map[string]Campaign{
 			"baseline": {Kind: "baseline"},
-			"gpt5.6":   {Kind: "candidate"},
-			"sonnet5":  {Kind: "candidate"},
+			"gpt5.6": {
+				Kind:    "candidate",
+				Agent:   "codex",
+				Model:   "gpt-5.6",
+				Effort:  "high",
+				Adapter: "coding-agent",
+			},
+		},
+		Stbench: &StbenchConfig{
+			Hardware: "harness-machine",
+			Adapters: map[string]string{
+				"coding-agent": "python examples/stbench/coding_agent_adapter.py",
+			},
+			AdapterTimeout:  "30m",
+			ReuseProcess:    false,
+			SourceDir:       ".",
+			StcompareBinary: "stcompare",
+			Prompt: StbenchPromptConfig{
+				ID:      "stbench-default",
+				Version: "2",
+			},
+			Lifecycle: StbenchLifecycleConfig{
+				Stop:           ".local/stbench/stop.sh",
+				Reset:          ".local/stbench/reset.sh",
+				Build:          ".local/stbench/build.sh",
+				Start:          ".local/stbench/start.sh",
+				CommandTimeout: "30m",
+				HealthURL:      "http://localhost:8080/health",
+				HealthTimeout:  "30s",
+				HealthInterval: "100ms",
+			},
+			MaxIterations: 100,
+			StallWindow:   2,
 		},
 	}
 }
 
 func WriteDefault(path string) error {
-	contents, err := yaml.Marshal(Default())
+	contents, err := marshalDefault()
 	if err != nil {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
@@ -416,13 +447,42 @@ func WriteDefault(path string) error {
 }
 
 func OverwriteDefault(path string) error {
-	contents, err := yaml.Marshal(Default())
+	contents, err := marshalDefault()
 	if err != nil {
 		return fmt.Errorf("marshal default config: %w", err)
 	}
 
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func marshalDefault() ([]byte, error) {
+	var document yaml.Node
+	if err := document.Encode(Default()); err != nil {
+		return nil, err
+	}
+
+	stbench := mappingValue(&document, "stbench")
+	if stbench == nil {
+		return nil, errors.New("default config is missing stbench")
+	}
+	hardware := mappingValue(stbench, "hardware")
+	if hardware == nil {
+		return nil, errors.New("default config is missing stbench.hardware")
+	}
+	hardware.LineComment = "Declared once for the harness machine."
+
+	return yaml.Marshal(&document)
+}
+
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
 	}
 
 	return nil

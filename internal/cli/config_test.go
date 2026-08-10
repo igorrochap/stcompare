@@ -179,6 +179,9 @@ func TestConfigInitWritesDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stcompare.yaml: %v", err)
 	}
+	if !bytes.Contains(contents, []byte("hardware: harness-machine # Declared once for the harness machine.")) {
+		t.Fatalf("default config lacks the harness hardware comment:\n%s", contents)
+	}
 	got := decodeConfig(t, contents)
 
 	if !reflect.DeepEqual(got, want) {

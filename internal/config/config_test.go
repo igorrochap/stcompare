@@ -48,6 +48,21 @@ func TestCampaignReportDirJoinsConfiguredRootAndCampaign(t *testing.T) {
 	}
 }
 
+func TestWriteDefaultCreatesLoadableValidConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stcompare.yaml")
+	if err := WriteDefault(path); err != nil {
+		t.Fatalf("WriteDefault() error = %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestLoadParsesOptionalStbenchConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stcompare.yaml")
 	contents := `schema: openapi.json
