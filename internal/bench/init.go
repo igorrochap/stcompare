@@ -65,16 +65,22 @@ const stbenchStateDirEnv = "STBENCH_STATE_DIR"
 const managedStateGitignoreEntry = ".local/stbench/"
 
 func newInitCommand() *cobra.Command {
-	return &cobra.Command{
+	command := &cobra.Command{
 		Use:  "init",
 		Args: cobra.NoArgs,
 		RunE: runInit,
 	}
+	command.Flags().String("adapters", "", "comma-separated list of adapters to install")
+	return command
 }
 
 func runInit(command *cobra.Command, _ []string) error {
+	adapterFiles, err := adapterFilesForInit(command)
+	if err != nil {
+		return err
+	}
+
 	repositoryDir := "."
-	var err error
 	harnessDir, err := managedHarnessDir(repositoryDir)
 	if err != nil {
 		return err
@@ -87,19 +93,19 @@ func runInit(command *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	adapterFiles, err := writeAdapterScaffold(harnessDir)
+	createdAdapterFiles, err := writeAdapterScaffold(harnessDir, adapterFiles)
 	if err != nil {
 		removeCreatedFiles(created)
 		return err
 	}
-	created = append(created, adapterFiles...)
+	created = append(created, createdAdapterFiles...)
 	if err := ensureManagedStateIgnored(repositoryDir); err != nil {
 		removeCreatedFiles(created)
 		return fmt.Errorf("update .gitignore: %w", err)
 	}
 
 	configPath := filepath.Join(repositoryDir, config.DefaultFilename)
-	switch err := appendStbenchConfig(configPath, stbenchConfigBlockFor(harnessDir)); {
+	switch err := appendStbenchConfig(configPath, stbenchConfigBlockForAdapters(harnessDir, adapterFiles)); {
 	case errors.Is(err, errStbenchConfigPresent):
 		// stcompare config init is the authoritative writer of the stbench block.
 		// When one is already present, keep the freshly created lifecycle scripts
@@ -117,6 +123,46 @@ func runInit(command *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+func adapterFilesForInit(command *cobra.Command) ([]stbenchadapters.AdapterFile, error) {
+	if !command.Flags().Changed("adapters") {
+		return stbenchadapters.Files(), nil
+	}
+
+	selection, err := command.Flags().GetString("adapters")
+	if err != nil {
+		return nil, fmt.Errorf("read adapters selection: %w", err)
+	}
+
+	selectedRoles := make(map[stbenchadapters.Role]bool, 3)
+	for _, token := range strings.Split(selection, ",") {
+		role := stbenchadapters.Role(strings.TrimSpace(token))
+		if role == "" {
+			continue
+		}
+		if !validAdapterRole(role) {
+			return nil, fmt.Errorf("unknown adapter %q; valid adapters: cloud, local, coding-agent", role)
+		}
+		selectedRoles[role] = true
+	}
+
+	selectedFiles := make([]stbenchadapters.AdapterFile, 0, len(selectedRoles)+1)
+	for _, adapter := range stbenchadapters.Files() {
+		if adapter.Role == "" || selectedRoles[adapter.Role] {
+			selectedFiles = append(selectedFiles, adapter)
+		}
+	}
+	return selectedFiles, nil
+}
+
+func validAdapterRole(role stbenchadapters.Role) bool {
+	switch role {
+	case stbenchadapters.RoleCloud, stbenchadapters.RoleLocal, stbenchadapters.RoleCodingAgent:
+		return true
+	default:
+		return false
+	}
 }
 
 // errStbenchConfigPresent signals that stcompare.yaml already carries an stbench
@@ -253,6 +299,10 @@ func pathWithin(parent string, child string) bool {
 }
 
 func stbenchConfigBlockFor(harnessDir string) string {
+	return stbenchConfigBlockForAdapters(harnessDir, stbenchadapters.Files())
+}
+
+func stbenchConfigBlockForAdapters(harnessDir string, adapterFiles []stbenchadapters.AdapterFile) string {
 	path := func(name string) string {
 		return strconv.Quote(quoteShellPath(filepath.Join(harnessDir, name)))
 	}
@@ -260,20 +310,23 @@ func stbenchConfigBlockFor(harnessDir string) string {
 		adapterPath := filepath.Join(harnessDir, "adapters", name)
 		return strconv.Quote("python " + quoteShellPath(adapterPath))
 	}
-	adapterConfigLines := make([]string, 0, 3)
-	for _, adapter := range stbenchadapters.Files() {
+	adapterConfigLines := make([]string, 0, len(adapterFiles))
+	for _, adapter := range adapterFiles {
 		if adapter.Role == "" {
 			continue
 		}
 		line := fmt.Sprintf("    %s: %s", adapter.Role, adapterCommand(adapter.Filename))
 		adapterConfigLines = append(adapterConfigLines, line)
 	}
+	adapterConfig := "  adapters:\n" + strings.Join(adapterConfigLines, "\n")
+	if len(adapterConfigLines) == 0 {
+		adapterConfig = "  adapters: {}"
+	}
 
 	return fmt.Sprintf(`# The lifecycle scripts live in the managed stbench state directory:
 # %s
 stbench:
   hardware: hardware-name
-  adapters:
 %s
   adapter_timeout: 30m
   reuse_process: false
@@ -294,7 +347,7 @@ stbench:
   max_iterations: 100
   stall_window: 2
 `, harnessDir,
-		strings.Join(adapterConfigLines, "\n"),
+		adapterConfig,
 		path("stop.sh"),
 		path("reset.sh"),
 		path("build.sh"),
@@ -320,13 +373,12 @@ func writeLifecycleScaffold(directory string) ([]string, error) {
 	return created, nil
 }
 
-func writeAdapterScaffold(harnessDir string) ([]string, error) {
+func writeAdapterScaffold(harnessDir string, adapterFiles []stbenchadapters.AdapterFile) ([]string, error) {
 	directory := filepath.Join(harnessDir, "adapters")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create adapter directory: %w", err)
 	}
 
-	adapterFiles := stbenchadapters.Files()
 	created := make([]string, 0, len(adapterFiles))
 	for _, adapter := range adapterFiles {
 		contents, err := adapter.Contents()
