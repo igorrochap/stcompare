@@ -67,6 +67,10 @@ the adapter outside the API repository; do not copy adapter support files into
 the source tree being modified by the agent. `stbench init` keeps lifecycle
 scripts in `.local/stbench/` and adds that directory to `.gitignore`.
 
+These four Python files are also the canonical sources embedded into the
+`stbench` binary. Running `stbench init` installs byte-identical copies in
+`.local/stbench/adapters/`.
+
 ## Local-model adapter
 
 Start an on-prem inference server that exposes a compatible
