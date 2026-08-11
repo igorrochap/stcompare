@@ -3,7 +3,6 @@ package bench
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"stcompare/examples/stbench"
 	"stcompare/internal/config"
 )
 
@@ -87,6 +87,12 @@ func runInit(command *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	adapterFiles, err := writeAdapterScaffold(harnessDir)
+	if err != nil {
+		removeCreatedFiles(created)
+		return err
+	}
+	created = append(created, adapterFiles...)
 	if err := ensureManagedStateIgnored(repositoryDir); err != nil {
 		removeCreatedFiles(created)
 		return fmt.Errorf("update .gitignore: %w", err)
@@ -250,14 +256,25 @@ func stbenchConfigBlockFor(harnessDir string) string {
 	path := func(name string) string {
 		return strconv.Quote(quoteShellPath(filepath.Join(harnessDir, name)))
 	}
+	adapterCommand := func(name string) string {
+		adapterPath := filepath.Join(harnessDir, "adapters", name)
+		return strconv.Quote("python " + quoteShellPath(adapterPath))
+	}
+	adapterConfigLines := make([]string, 0, 3)
+	for _, adapter := range stbenchadapters.Files() {
+		if adapter.Role == "" {
+			continue
+		}
+		line := fmt.Sprintf("    %s: %s", adapter.Role, adapterCommand(adapter.Filename))
+		adapterConfigLines = append(adapterConfigLines, line)
+	}
 
 	return fmt.Sprintf(`# The lifecycle scripts live in the managed stbench state directory:
 # %s
 stbench:
   hardware: hardware-name
   adapters:
-    # Keep the adapter command outside the API repository.
-    local: python /absolute/path/to/adapter.py
+%s
   adapter_timeout: 30m
   reuse_process: false
   source_dir: .
@@ -277,6 +294,7 @@ stbench:
   max_iterations: 100
   stall_window: 2
 `, harnessDir,
+		strings.Join(adapterConfigLines, "\n"),
 		path("stop.sh"),
 		path("reset.sh"),
 		path("build.sh"),
@@ -302,8 +320,37 @@ func writeLifecycleScaffold(directory string) ([]string, error) {
 	return created, nil
 }
 
+func writeAdapterScaffold(harnessDir string) ([]string, error) {
+	directory := filepath.Join(harnessDir, "adapters")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, fmt.Errorf("create adapter directory: %w", err)
+	}
+
+	adapterFiles := stbenchadapters.Files()
+	created := make([]string, 0, len(adapterFiles))
+	for _, adapter := range adapterFiles {
+		contents, err := adapter.Contents()
+		if err != nil {
+			removeCreatedFiles(created)
+			return nil, fmt.Errorf("read embedded adapter %s: %w", adapter.Filename, err)
+		}
+		path := filepath.Join(directory, adapter.Filename)
+		if err := writeManagedFile(path, contents, 0o644); err != nil {
+			removeCreatedFiles(created)
+			return nil, err
+		}
+		created = append(created, path)
+	}
+
+	return created, nil
+}
+
 func writeScaffoldFile(path string, contents string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	return writeManagedFile(path, []byte(contents), 0o755)
+}
+
+func writeManagedFile(path string, contents []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("%s already exists", filepath.Base(path))
 	}
@@ -319,7 +366,7 @@ func writeScaffoldFile(path string, contents string) error {
 		}
 	}()
 
-	if _, err := io.WriteString(file, contents); err != nil {
+	if _, err := file.Write(contents); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := file.Close(); err != nil {

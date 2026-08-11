@@ -2,6 +2,7 @@ package bench
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,7 +72,9 @@ func TestInitCreatesLifecycleScaffoldAndWritesLoadableConfig(t *testing.T) {
 	for _, want := range []string{
 		"stbench:",
 		"adapters:",
-		"local: python /absolute/path/to/adapter.py",
+		"cloud:",
+		"local:",
+		"coding-agent:",
 		"hardware: hardware-name",
 		"prompt:",
 		"source_dir: .",
@@ -105,6 +108,104 @@ func TestInitCreatesLifecycleScaffoldAndWritesLoadableConfig(t *testing.T) {
 	}
 	if got, want := output.String(), "Wrote stbench configuration to stcompare.yaml\n"; got != want {
 		t.Fatalf("init output = %q, want %q", got, want)
+	}
+}
+
+func TestInitInstallsCanonicalAdapterFiles(t *testing.T) {
+	adapterNames := []string{
+		"_protocol.py",
+		"adapter.py",
+		"coding_agent_adapter.py",
+		"local_model_adapter.py",
+	}
+	canonicalContents := make(map[string][]byte, len(adapterNames))
+	for _, name := range adapterNames {
+		contents, err := os.ReadFile(filepath.Join("..", "..", "examples", "stbench", name))
+		if err != nil {
+			t.Fatalf("read canonical adapter %s: %v", name, err)
+		}
+		canonicalContents[name] = contents
+	}
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	adapterDir := filepath.Join(harnessDir, "adapters")
+	entries, err := os.ReadDir(adapterDir)
+	if err != nil {
+		t.Fatalf("read installed adapter directory: %v", err)
+	}
+	if got, want := len(entries), len(adapterNames); got != want {
+		t.Fatalf("installed adapter count = %d, want %d", got, want)
+	}
+
+	for _, entry := range entries {
+		wantContents, exists := canonicalContents[entry.Name()]
+		if !exists {
+			t.Errorf("unexpected installed adapter %q", entry.Name())
+			continue
+		}
+		path := filepath.Join(adapterDir, entry.Name())
+		gotContents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Errorf("read installed adapter %s: %v", entry.Name(), readErr)
+			continue
+		}
+		if !bytes.Equal(gotContents, wantContents) {
+			t.Errorf("installed adapter %s does not match canonical source", entry.Name())
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			t.Errorf("stat installed adapter %s: %v", entry.Name(), statErr)
+			continue
+		}
+		if got, want := info.Mode().Perm(), os.FileMode(0o644); got != want {
+			t.Errorf("installed adapter %s mode = %o, want %o", entry.Name(), got, want)
+		}
+	}
+}
+
+func TestInitConfiguresInstalledAdapters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "API repo's files")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("create repository directory: %v", err)
+	}
+	t.Chdir(dir)
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	writeInitConfigWithoutStbench(t, configPath)
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	want := map[string]string{
+		"cloud":        "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "adapter.py")),
+		"coding-agent": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "coding_agent_adapter.py")),
+		"local":        "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, want) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
 	}
 }
 
@@ -222,6 +323,12 @@ func TestInitDirectsUserToCreateMissingConfig(t *testing.T) {
 			t.Errorf("%s exists after missing config, want rollback", name)
 		}
 	}
+	for _, name := range []string{"_protocol.py", "adapter.py", "coding_agent_adapter.py", "local_model_adapter.py"} {
+		path := filepath.Join(harnessDir, "adapters", name)
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after missing config, want rollback", name)
+		}
+	}
 }
 
 func TestInitRollsBackScaffoldWhenConfigWriteFails(t *testing.T) {
@@ -256,6 +363,12 @@ func TestInitRollsBackScaffoldWhenConfigWriteFails(t *testing.T) {
 	}
 	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
 		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after config write failure, want rollback", name)
+		}
+	}
+	for _, name := range []string{"_protocol.py", "adapter.py", "coding_agent_adapter.py", "local_model_adapter.py"} {
+		path := filepath.Join(harnessDir, "adapters", name)
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 			t.Errorf("%s exists after config write failure, want rollback", name)
 		}
 	}
@@ -297,6 +410,80 @@ func TestInitRefusesToOverwriteScaffoldFiles(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
 			t.Errorf("%s exists after failed init, want rollback", name)
 		}
+	}
+}
+
+func TestInitRefusesToOverwriteAdapterFilesAndRollsBackNewFiles(t *testing.T) {
+	adapterNames := []string{
+		"_protocol.py",
+		"adapter.py",
+		"coding_agent_adapter.py",
+		"local_model_adapter.py",
+	}
+	for _, existingName := range adapterNames {
+		t.Run(existingName, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+			harnessDir, err := managedHarnessDir(dir)
+			if err != nil {
+				t.Fatalf("resolve managed harness directory: %v", err)
+			}
+			adapterDir := filepath.Join(harnessDir, "adapters")
+			if err := os.MkdirAll(adapterDir, 0o755); err != nil {
+				t.Fatalf("create adapter directory: %v", err)
+			}
+			const sentinel = "keep me\n"
+			if err := os.WriteFile(filepath.Join(adapterDir, existingName), []byte(sentinel), 0o644); err != nil {
+				t.Fatalf("write existing adapter: %v", err)
+			}
+
+			root := NewRootCommand()
+			root.SetArgs([]string{"init"})
+			err = root.Execute()
+			if err == nil {
+				t.Fatal("execute stbench init error = nil, want existing-file error")
+			}
+			if !strings.Contains(err.Error(), existingName+" already exists") {
+				t.Fatalf("execute stbench init error = %q, want %s conflict", err, existingName)
+			}
+			if got := readInitFile(t, filepath.Join(adapterDir, existingName)); got != sentinel {
+				t.Fatalf("existing adapter = %q, want sentinel", got)
+			}
+			for _, name := range adapterNames {
+				if name == existingName {
+					continue
+				}
+				if _, statErr := os.Stat(filepath.Join(adapterDir, name)); !os.IsNotExist(statErr) {
+					t.Errorf("%s exists after failed init, want rollback", name)
+				}
+			}
+			for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
+				if _, statErr := os.Stat(filepath.Join(harnessDir, name)); !os.IsNotExist(statErr) {
+					t.Errorf("%s exists after adapter conflict, want rollback", name)
+				}
+			}
+		})
+	}
+}
+
+func TestInitGitIgnoresInstalledAdapters(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+	if output, err := exec.Command("git", "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("initialize git repository: %v: %s", err, output)
+	}
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
+	}
+
+	adapterPath := filepath.Join(".local", "stbench", "adapters", "adapter.py")
+	if output, err := exec.Command("git", "check-ignore", "--quiet", adapterPath).CombinedOutput(); err != nil {
+		t.Fatalf("git check-ignore %s: %v: %s", adapterPath, err, output)
 	}
 }
 
