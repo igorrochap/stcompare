@@ -37,13 +37,17 @@ func (err *ExitCodeError) Unwrap() error {
 
 // NewRootCommand creates the stbench command tree.
 func NewRootCommand() *cobra.Command {
+	return newRootCommand(defaultInitDependencies())
+}
+
+func newRootCommand(initDeps initDependencies) *cobra.Command {
 	options := rootCommandOptions{}
 	root := &cobra.Command{
 		Use:          "stbench",
 		SilenceUsage: true,
 	}
 	root.PersistentFlags().StringVar(&options.configPath, "config", config.DefaultFilename, "stcompare configuration path")
-	root.AddCommand(newInitCommand())
+	root.AddCommand(newInitCommand(initDeps))
 	root.AddCommand(newRunCommand(&options))
 	return root
 }
