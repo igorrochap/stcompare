@@ -209,6 +209,168 @@ func TestInitConfiguresInstalledAdapters(t *testing.T) {
 	}
 }
 
+func TestInitSelectsSingleAdapter(t *testing.T) {
+	dir, harnessDir := executeInitInTempRepository(t, "init", "--adapters=local")
+
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	want := map[string]string{
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, want) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
+	}
+}
+
+func TestInitSelectsMultipleAdapters(t *testing.T) {
+	dir, harnessDir := executeInitInTempRepository(t, "init", "--adapters=cloud,local")
+
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"adapter.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	want := map[string]string{
+		"cloud": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "adapter.py")),
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, want) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
+	}
+}
+
+func TestInitDeduplicatesAdaptersAndIgnoresEmptyTokens(t *testing.T) {
+	dir, harnessDir := executeInitInTempRepository(t, "init", "--adapters=local,local,")
+
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	want := map[string]string{
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, want) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
+	}
+}
+
+func TestInitWithOnlyEmptyAdapterTokensInstallsProtocolOnly(t *testing.T) {
+	dir, harnessDir := executeInitInTempRepository(t, "init", "--adapters=,")
+
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+	})
+
+	var document struct {
+		Stbench struct {
+			Adapters map[string]string `yaml:"adapters"`
+		} `yaml:"stbench"`
+	}
+	contents := readInitFile(t, filepath.Join(dir, config.DefaultFilename))
+	if err := yaml.Unmarshal([]byte(contents), &document); err != nil {
+		t.Fatalf("parse written config: %v", err)
+	}
+	if len(document.Stbench.Adapters) != 0 {
+		t.Fatalf("configured adapters = %#v, want empty map", document.Stbench.Adapters)
+	}
+}
+
+func TestInitRejectsUnknownAdapterBeforeWritingFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	writeInitConfigWithoutStbench(t, configPath)
+	originalConfig := readInitFile(t, configPath)
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init", "--adapters=locall"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("execute stbench init error = nil, want unknown-adapter error")
+	}
+	for _, want := range []string{"locall", "cloud", "local", "coding-agent"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("execute stbench init error = %q, want %q", err, want)
+		}
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	if _, statErr := os.Stat(harnessDir); !os.IsNotExist(statErr) {
+		t.Fatalf("managed harness directory exists after invalid selection, want no files: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(statErr) {
+		t.Fatalf(".gitignore exists after invalid selection, want no files: %v", statErr)
+	}
+	if got := readInitFile(t, configPath); got != originalConfig {
+		t.Fatalf("config = %q, want unchanged content %q", got, originalConfig)
+	}
+}
+
+func TestInitExplicitlySelectingAllAdaptersMatchesDefaultOutput(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	configPath := filepath.Join(dir, config.DefaultFilename)
+	writeInitConfigWithoutStbench(t, configPath)
+	originalConfig := readInitFile(t, configPath)
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute default stbench init: %v", err)
+	}
+	defaultConfig := readInitFile(t, configPath)
+	defaultAdapters := readAdapterContents(t, filepath.Join(dir, ".local", "stbench", "adapters"))
+
+	if err := os.RemoveAll(filepath.Join(dir, ".local", "stbench")); err != nil {
+		t.Fatalf("remove default managed state: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, ".gitignore")); err != nil {
+		t.Fatalf("remove generated .gitignore: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(originalConfig), 0o644); err != nil {
+		t.Fatalf("restore config: %v", err)
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"init", "--adapters=cloud,local,coding-agent"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute explicit-all stbench init: %v", err)
+	}
+	if got := readInitFile(t, configPath); got != defaultConfig {
+		t.Fatalf("explicit-all config differs from default output\ngot:  %q\nwant: %q", got, defaultConfig)
+	}
+	gotAdapters := readAdapterContents(t, filepath.Join(dir, ".local", "stbench", "adapters"))
+	if len(gotAdapters) != len(defaultAdapters) {
+		t.Fatalf("explicit-all adapter file count = %d, want default count %d", len(gotAdapters), len(defaultAdapters))
+	}
+	for name, wantContents := range defaultAdapters {
+		gotContents, exists := gotAdapters[name]
+		if !exists || !bytes.Equal(gotContents, wantContents) {
+			t.Errorf("explicit-all adapter %s differs from default output", name)
+		}
+	}
+}
+
 func TestInitWritesStbenchIntoFlowStyleConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -605,4 +767,63 @@ campaigns:
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write config without stbench: %v", err)
 	}
+}
+
+func executeInitInTempRepository(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	root := NewRootCommand()
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute stbench init: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	return dir, harnessDir
+}
+
+func assertInstalledAdapterNames(t *testing.T, directory string, want []string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read installed adapter directory: %v", err)
+	}
+	got := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		got[entry.Name()] = true
+	}
+	wantSet := make(map[string]bool, len(want))
+	for _, name := range want {
+		wantSet[name] = true
+	}
+	if !maps.Equal(got, wantSet) {
+		t.Fatalf("installed adapter files = %#v, want %#v", got, wantSet)
+	}
+}
+
+func readAdapterContents(t *testing.T, directory string) map[string][]byte {
+	t.Helper()
+
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read adapter directory: %v", err)
+	}
+	contents := make(map[string][]byte, len(entries))
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read adapter %s: %v", entry.Name(), err)
+		}
+		contents[entry.Name()] = data
+	}
+	return contents
 }
