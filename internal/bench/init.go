@@ -3,12 +3,15 @@ package bench
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
 	"stcompare/examples/stbench"
@@ -64,18 +67,87 @@ const stbenchStateDirEnv = "STBENCH_STATE_DIR"
 
 const managedStateGitignoreEntry = ".local/stbench/"
 
-func newInitCommand() *cobra.Command {
+type initDependencies struct {
+	isTerminal     func(int) bool
+	selectAdapters func(*cobra.Command) ([]stbenchadapters.Role, error)
+}
+
+type adapterChoice struct {
+	label string
+	role  stbenchadapters.Role
+}
+
+type checklistRunner func(
+	input io.Reader,
+	output io.Writer,
+	choices []adapterChoice,
+) ([]stbenchadapters.Role, error)
+
+type fileDescriptor interface {
+	Fd() uintptr
+}
+
+func newInitDependencies(isTerminal func(int) bool, runChecklist checklistRunner) initDependencies {
+	return initDependencies{
+		isTerminal:     isTerminal,
+		selectAdapters: newAdapterSelector(runChecklist),
+	}
+}
+
+func defaultInitDependencies() initDependencies {
+	return newInitDependencies(term.IsTerminal, runHuhChecklist)
+}
+
+func runHuhChecklist(
+	input io.Reader,
+	output io.Writer,
+	choices []adapterChoice,
+) ([]stbenchadapters.Role, error) {
+	options := make([]huh.Option[stbenchadapters.Role], 0, len(choices))
+	for _, choice := range choices {
+		options = append(options, huh.NewOption(choice.label, choice.role))
+	}
+
+	var selected []stbenchadapters.Role
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[stbenchadapters.Role]().
+				Title("Select adapters to install").
+				Options(options...).
+				Value(&selected),
+		),
+	).WithInput(input).WithOutput(output).Run()
+	if err != nil {
+		return nil, err
+	}
+	return selected, nil
+}
+
+func newAdapterSelector(runChecklist checklistRunner) func(*cobra.Command) ([]stbenchadapters.Role, error) {
+	return func(command *cobra.Command) ([]stbenchadapters.Role, error) {
+		choices := []adapterChoice{
+			{label: "cloud", role: stbenchadapters.RoleCloud},
+			{label: "local", role: stbenchadapters.RoleLocal},
+			{label: "coding-agent", role: stbenchadapters.RoleCodingAgent},
+		}
+		return runChecklist(command.InOrStdin(), command.OutOrStdout(), choices)
+	}
+}
+
+func newInitCommand(deps initDependencies) *cobra.Command {
 	command := &cobra.Command{
 		Use:  "init",
 		Args: cobra.NoArgs,
-		RunE: runInit,
+		RunE: func(command *cobra.Command, args []string) error {
+			return runInit(command, args, deps)
+		},
 	}
 	command.Flags().String("adapters", "", "comma-separated list of adapters to install")
 	return command
 }
 
-func runInit(command *cobra.Command, _ []string) error {
-	adapterFiles, err := adapterFilesForInit(command)
+func runInit(command *cobra.Command, _ []string, deps initDependencies) error {
+	adapterFiles, err := adapterFilesForInit(command, deps)
 	if err != nil {
 		return err
 	}
@@ -125,9 +197,20 @@ func runInit(command *cobra.Command, _ []string) error {
 	return nil
 }
 
-func adapterFilesForInit(command *cobra.Command) ([]stbenchadapters.AdapterFile, error) {
+func adapterFilesForInit(command *cobra.Command, deps initDependencies) ([]stbenchadapters.AdapterFile, error) {
 	if !command.Flags().Changed("adapters") {
-		return stbenchadapters.Files(), nil
+		if !commandIsInteractive(command, deps.isTerminal) {
+			return stbenchadapters.Files(), nil
+		}
+
+		roles, err := deps.selectAdapters(command)
+		if err != nil {
+			return nil, fmt.Errorf("select adapters: %w", err)
+		}
+		if len(roles) == 0 {
+			return []stbenchadapters.AdapterFile{}, nil
+		}
+		return adapterFilesForSelectedRoles(rolesToSet(roles)), nil
 	}
 
 	selection, err := command.Flags().GetString("adapters")
@@ -135,7 +218,7 @@ func adapterFilesForInit(command *cobra.Command) ([]stbenchadapters.AdapterFile,
 		return nil, fmt.Errorf("read adapters selection: %w", err)
 	}
 
-	selectedRoles := make(map[stbenchadapters.Role]bool, 3)
+	selectedRoles := make([]stbenchadapters.Role, 0, 3)
 	for _, token := range strings.Split(selection, ",") {
 		role := stbenchadapters.Role(strings.TrimSpace(token))
 		if role == "" {
@@ -144,16 +227,40 @@ func adapterFilesForInit(command *cobra.Command) ([]stbenchadapters.AdapterFile,
 		if !validAdapterRole(role) {
 			return nil, fmt.Errorf("unknown adapter %q; valid adapters: cloud, local, coding-agent", role)
 		}
-		selectedRoles[role] = true
+		selectedRoles = append(selectedRoles, role)
 	}
 
+	return adapterFilesForSelectedRoles(rolesToSet(selectedRoles)), nil
+}
+
+func rolesToSet(roles []stbenchadapters.Role) map[stbenchadapters.Role]bool {
+	roleSet := make(map[stbenchadapters.Role]bool, len(roles))
+	for _, role := range roles {
+		roleSet[role] = true
+	}
+	return roleSet
+}
+
+func adapterFilesForSelectedRoles(selectedRoles map[stbenchadapters.Role]bool) []stbenchadapters.AdapterFile {
 	selectedFiles := make([]stbenchadapters.AdapterFile, 0, len(selectedRoles)+1)
 	for _, adapter := range stbenchadapters.Files() {
 		if adapter.Role == "" || selectedRoles[adapter.Role] {
 			selectedFiles = append(selectedFiles, adapter)
 		}
 	}
-	return selectedFiles, nil
+	return selectedFiles
+}
+
+func commandIsInteractive(command *cobra.Command, isTerminal func(int) bool) bool {
+	stdin, ok := command.InOrStdin().(fileDescriptor)
+	if !ok {
+		return false
+	}
+	stdout, ok := command.OutOrStdout().(fileDescriptor)
+	if !ok {
+		return false
+	}
+	return isTerminal(int(stdin.Fd())) && isTerminal(int(stdout.Fd()))
 }
 
 func validAdapterRole(role stbenchadapters.Role) bool {
@@ -374,6 +481,10 @@ func writeLifecycleScaffold(directory string) ([]string, error) {
 }
 
 func writeAdapterScaffold(harnessDir string, adapterFiles []stbenchadapters.AdapterFile) ([]string, error) {
+	if len(adapterFiles) == 0 {
+		return nil, nil
+	}
+
 	directory := filepath.Join(harnessDir, "adapters")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create adapter directory: %w", err)

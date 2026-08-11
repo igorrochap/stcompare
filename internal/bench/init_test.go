@@ -2,15 +2,20 @@ package bench
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	stbenchadapters "stcompare/examples/stbench"
 	"stcompare/internal/config"
 )
 
@@ -226,6 +231,325 @@ func TestInitSelectsSingleAdapter(t *testing.T) {
 	}
 	if !maps.Equal(loaded.Stbench.Adapters, want) {
 		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
+	}
+}
+
+func TestInitExplicitAdaptersTakePrecedenceInInteractiveTerminal(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	selectorErr := errors.New("adapter selector must not be called")
+	command := newInitCommand(initDependencies{
+		isTerminal: func(int) bool { return true },
+		selectAdapters: func(*cobra.Command) ([]stbenchadapters.Role, error) {
+			return nil, selectorErr
+		},
+	})
+	command.SetArgs([]string{"--adapters=local"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute stbench init with explicit adapters: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+}
+
+func TestInitNonInteractiveTerminalInstallsAllAdaptersWithoutPrompting(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	selectorErr := errors.New("adapter selector must not be called")
+	command := newInitCommand(initDependencies{
+		isTerminal: func(int) bool { return false },
+		selectAdapters: func(*cobra.Command) ([]stbenchadapters.Role, error) {
+			return nil, selectorErr
+		},
+	})
+	command.SetArgs([]string{})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute non-interactive stbench init: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"adapter.py",
+		"coding_agent_adapter.py",
+		"local_model_adapter.py",
+	})
+}
+
+func TestInitInteractiveSelectionInstallsAndConfiguresSelectedAdapters(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	command := newInitCommand(initDependencies{
+		isTerminal: func(int) bool { return true },
+		selectAdapters: func(*cobra.Command) ([]stbenchadapters.Role, error) {
+			return []stbenchadapters.Role{stbenchadapters.RoleLocal}, nil
+		},
+	})
+	command.SetArgs([]string{})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute interactive stbench init: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	want := map[string]string{
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, want) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, want)
+	}
+}
+
+func TestInitInteractiveEmptySelectionCreatesNoAdapterDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	command := newInitCommand(initDependencies{
+		isTerminal: func(int) bool { return true },
+		selectAdapters: func(*cobra.Command) ([]stbenchadapters.Role, error) {
+			return []stbenchadapters.Role{}, nil
+		},
+	})
+	command.SetArgs([]string{})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute interactive stbench init with empty selection: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	for _, name := range []string{"stop.sh", "reset.sh", "build.sh", "start.sh"} {
+		if _, err := os.Stat(filepath.Join(harnessDir, name)); err != nil {
+			t.Errorf("stat lifecycle script %s: %v", name, err)
+		}
+	}
+
+	var document struct {
+		Stbench struct {
+			Adapters map[string]string `yaml:"adapters"`
+		} `yaml:"stbench"`
+	}
+	contents := readInitFile(t, filepath.Join(dir, config.DefaultFilename))
+	if err := yaml.Unmarshal([]byte(contents), &document); err != nil {
+		t.Fatalf("parse written config: %v", err)
+	}
+	if len(document.Stbench.Adapters) != 0 {
+		t.Fatalf("configured adapters = %#v, want empty map", document.Stbench.Adapters)
+	}
+
+	adapterDir := filepath.Join(harnessDir, "adapters")
+	if _, err := os.Stat(adapterDir); !os.IsNotExist(err) {
+		t.Fatalf("adapter directory exists after empty interactive selection: %v", err)
+	}
+}
+
+func TestInitPromptsOnlyWhenStdinAndStdoutAreTerminals(t *testing.T) {
+	const (
+		stdinFD  = 10
+		stdoutFD = 11
+	)
+	tests := []struct {
+		name      string
+		stdinTTY  bool
+		stdoutTTY bool
+		wantFiles []string
+	}{
+		{
+			name:      "both terminals",
+			stdinTTY:  true,
+			stdoutTTY: true,
+			wantFiles: []string{"_protocol.py", "local_model_adapter.py"},
+		},
+		{
+			name:      "only stdin terminal",
+			stdinTTY:  true,
+			stdoutTTY: false,
+			wantFiles: []string{"_protocol.py", "adapter.py", "coding_agent_adapter.py", "local_model_adapter.py"},
+		},
+		{
+			name:      "only stdout terminal",
+			stdinTTY:  false,
+			stdoutTTY: true,
+			wantFiles: []string{"_protocol.py", "adapter.py", "coding_agent_adapter.py", "local_model_adapter.py"},
+		},
+		{
+			name:      "neither terminal",
+			stdinTTY:  false,
+			stdoutTTY: false,
+			wantFiles: []string{"_protocol.py", "adapter.py", "coding_agent_adapter.py", "local_model_adapter.py"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+			command := newInitCommand(initDependencies{
+				isTerminal: func(fd int) bool {
+					switch fd {
+					case stdinFD:
+						return test.stdinTTY
+					case stdoutFD:
+						return test.stdoutTTY
+					default:
+						return false
+					}
+				},
+				selectAdapters: func(*cobra.Command) ([]stbenchadapters.Role, error) {
+					return []stbenchadapters.Role{stbenchadapters.RoleLocal}, nil
+				},
+			})
+			command.SetIn(fakeTerminalStream{fd: stdinFD})
+			command.SetOut(fakeTerminalStream{fd: stdoutFD})
+			command.SetArgs([]string{})
+			if err := command.Execute(); err != nil {
+				t.Fatalf("execute stbench init: %v", err)
+			}
+
+			harnessDir, err := managedHarnessDir(dir)
+			if err != nil {
+				t.Fatalf("resolve managed harness directory: %v", err)
+			}
+			assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), test.wantFiles)
+		})
+	}
+}
+
+func TestInitDefaultSelectorOffersAllAdaptersUnselected(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	stdin := &fakeTerminalStream{fd: 20}
+	stdout := &fakeTerminalStream{fd: 21}
+	runner := checklistRunner(func(
+		input io.Reader,
+		output io.Writer,
+		choices []adapterChoice,
+	) ([]stbenchadapters.Role, error) {
+		if input != stdin {
+			t.Errorf("checklist input differs from command input")
+		}
+		if output != stdout {
+			t.Errorf("checklist output differs from command output")
+		}
+		wantChoices := []adapterChoice{
+			{label: "cloud", role: stbenchadapters.RoleCloud},
+			{label: "local", role: stbenchadapters.RoleLocal},
+			{label: "coding-agent", role: stbenchadapters.RoleCodingAgent},
+		}
+		if !slices.Equal(choices, wantChoices) {
+			t.Errorf("adapter choices = %#v, want %#v", choices, wantChoices)
+		}
+		return []stbenchadapters.Role{stbenchadapters.RoleLocal}, nil
+	})
+
+	command := newInitCommand(initDependencies{
+		isTerminal:     func(int) bool { return true },
+		selectAdapters: newAdapterSelector(runner),
+	})
+	command.SetIn(stdin)
+	command.SetOut(stdout)
+	command.SetArgs([]string{})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute interactive stbench init: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	wantAdapters := map[string]string{
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, wantAdapters) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, wantAdapters)
+	}
+}
+
+func TestRootInitDependenciesDriveInteractiveSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeInitConfigWithoutStbench(t, filepath.Join(dir, config.DefaultFilename))
+
+	stdin := &fakeTerminalStream{fd: 30}
+	stdout := &fakeTerminalStream{fd: 31}
+	deps := newInitDependencies(
+		func(fd int) bool { return fd == int(stdin.Fd()) || fd == int(stdout.Fd()) },
+		func(
+			_ io.Reader,
+			_ io.Writer,
+			_ []adapterChoice,
+		) ([]stbenchadapters.Role, error) {
+			return []stbenchadapters.Role{stbenchadapters.RoleLocal}, nil
+		},
+	)
+	root := newRootCommand(deps)
+	root.SetIn(stdin)
+	root.SetOut(stdout)
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute interactive stbench init through root: %v", err)
+	}
+
+	harnessDir, err := managedHarnessDir(dir)
+	if err != nil {
+		t.Fatalf("resolve managed harness directory: %v", err)
+	}
+	assertInstalledAdapterNames(t, filepath.Join(harnessDir, "adapters"), []string{
+		"_protocol.py",
+		"local_model_adapter.py",
+	})
+
+	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
+	if err != nil {
+		t.Fatalf("load written config: %v", err)
+	}
+	wantAdapters := map[string]string{
+		"local": "python " + quoteShellPath(filepath.Join(harnessDir, "adapters", "local_model_adapter.py")),
+	}
+	if !maps.Equal(loaded.Stbench.Adapters, wantAdapters) {
+		t.Fatalf("configured adapters = %#v, want %#v", loaded.Stbench.Adapters, wantAdapters)
 	}
 }
 
@@ -807,6 +1131,22 @@ func assertInstalledAdapterNames(t *testing.T, directory string, want []string) 
 	if !maps.Equal(got, wantSet) {
 		t.Fatalf("installed adapter files = %#v, want %#v", got, wantSet)
 	}
+}
+
+type fakeTerminalStream struct {
+	fd uintptr
+}
+
+func (stream fakeTerminalStream) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (stream fakeTerminalStream) Write(contents []byte) (int, error) {
+	return len(contents), nil
+}
+
+func (stream fakeTerminalStream) Fd() uintptr {
+	return stream.fd
 }
 
 func readAdapterContents(t *testing.T, directory string) map[string][]byte {
