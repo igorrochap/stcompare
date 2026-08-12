@@ -343,9 +343,12 @@ prevents a run from being saved under another candidate's name.
 `stcompare config init` scaffolds this complete new-shape configuration for new
 projects. For an existing `stcompare.yaml` without an `stbench:` block,
 `stbench init` creates the lifecycle scripts and writes the block into the file
-instead of printing a stanza to copy. It is non-destructive: it refuses to
-overwrite lifecycle files or modify a configuration that already contains an
-`stbench:` block, including one created by `stcompare config init`.
+instead of printing a stanza to copy. Re-running `stbench init` is
+non-destructive: existing lifecycle and adapter files are preserved, missing
+selected adapters and configuration entries are added, and existing adapter
+configuration values, ordering, comments, and formatting remain unchanged.
+The shared `_protocol.py` is refreshed from the running binary whenever an
+adapter is selected or the adapters directory is already populated.
 
 Known limitation: because `hardware` is declared once in `stbench:`, a hosted
 or remote candidate inherits the harness machine's hardware label even though
