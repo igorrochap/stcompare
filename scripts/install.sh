@@ -1,22 +1,31 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-# Builds stcompare and stbench and installs them onto $PATH so they can be
-# run as `stcompare <command>` / `stbench <command>` from any repository.
-#
-# Install location precedence: --dir/-d flag, $INSTALL_DIR, $GOBIN,
-# $(go env GOPATH)/bin.
+repository="igorrochap/stcompare"
+download_base="${STCOMPARE_DOWNLOAD_BASE:-https://github.com/$repository/releases}"
+install_dir="${INSTALL_DIR:-${HOME}/.local/bin}"
+version="latest"
 
 usage() {
-  echo "Usage: $0 [-d|--dir INSTALL_DIR]" >&2
+  echo "Usage: $0 [-d|--dir INSTALL_DIR] [-v|--version VERSION]" >&2
 }
 
-INSTALL_DIR="${INSTALL_DIR:-}"
-
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
   case "$1" in
     -d|--dir)
-      INSTALL_DIR="$2"
+      if [ "$#" -lt 2 ]; then
+        usage
+        exit 1
+      fi
+      install_dir="$2"
+      shift 2
+      ;;
+    -v|--version)
+      if [ "$#" -lt 2 ]; then
+        usage
+        exit 1
+      fi
+      version="$2"
       shift 2
       ;;
     -h|--help)
@@ -30,33 +39,87 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$INSTALL_DIR" ]; then
-  INSTALL_DIR="${GOBIN:-}"
-fi
-if [ -z "$INSTALL_DIR" ]; then
-  INSTALL_DIR="$(go env GOPATH)/bin"
-fi
+for command_name in curl tar; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Error: $command_name is required." >&2
+    exit 1
+  fi
+done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-mkdir -p "$INSTALL_DIR"
-
-echo "Building stcompare and stbench into $INSTALL_DIR ..."
-(cd "$REPO_ROOT" && go build -o "$INSTALL_DIR/stcompare" ./cmd/stcompare)
-(cd "$REPO_ROOT" && go build -o "$INSTALL_DIR/stbench" ./cmd/stbench)
-
-echo "Installed:"
-echo "  $INSTALL_DIR/stcompare"
-echo "  $INSTALL_DIR/stbench"
-
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*)
-    echo "$INSTALL_DIR is already on your PATH."
-    ;;
+case "$(uname -s)" in
+  Linux) os="Linux" ;;
+  Darwin) os="Darwin" ;;
   *)
-    echo
-    echo "$INSTALL_DIR is not on your PATH. Add it, e.g.:"
-    echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    echo "Error: unsupported operating system: $(uname -s)" >&2
+    exit 1
     ;;
+esac
+
+case "$(uname -m)" in
+  x86_64|amd64) arch="amd64" ;;
+  arm64|aarch64) arch="arm64" ;;
+  *)
+    echo "Error: unsupported architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+asset="stcompare_${os}_${arch}.tar.gz"
+if [ "$version" = "latest" ]; then
+  release_url="$download_base/latest/download"
+else
+  case "$version" in
+    v*) ;;
+    *) version="v$version" ;;
+  esac
+  release_url="$download_base/download/$version"
+fi
+
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stcompare-install.XXXXXX")"
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+echo "Downloading stcompare ${version} for ${os}/${arch}..."
+curl --fail --location --silent --show-error \
+  --output "$temp_dir/$asset" "$release_url/$asset"
+curl --fail --location --silent --show-error \
+  --output "$temp_dir/checksums.txt" "$release_url/checksums.txt"
+
+expected_checksum="$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$temp_dir/checksums.txt")"
+if [ -z "$expected_checksum" ]; then
+  echo "Error: checksum for $asset was not found." >&2
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_checksum="$(sha256sum "$temp_dir/$asset" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual_checksum="$(shasum -a 256 "$temp_dir/$asset" | awk '{print $1}')"
+else
+  echo "Error: sha256sum or shasum is required." >&2
+  exit 1
+fi
+
+if [ "$actual_checksum" != "$expected_checksum" ]; then
+  echo "Error: checksum verification failed for $asset." >&2
+  exit 1
+fi
+
+mkdir -p "$temp_dir/extracted" "$install_dir"
+tar -xzf "$temp_dir/$asset" -C "$temp_dir/extracted"
+
+for binary in stcompare stbench; do
+  if [ ! -f "$temp_dir/extracted/$binary" ]; then
+    echo "Error: release archive does not contain $binary." >&2
+    exit 1
+  fi
+  install -m 0755 "$temp_dir/extracted/$binary" "$install_dir/$binary"
+done
+
+echo "Installed stcompare and stbench to $install_dir."
+case ":${PATH}:" in
+  *":$install_dir:"*) ;;
+  *) echo "Add $install_dir to PATH to run the binaries from any directory." ;;
 esac
