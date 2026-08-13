@@ -12,8 +12,8 @@ the run reaches a stopping condition.
 ## Table of contents
 
 - [How it works](#how-it-works)
-- [Quick start](#quick-start)
 - [Installation](#installation)
+- [Quick start](#quick-start)
 - [Usage guide](#usage-guide)
   - [1. Initialize the configuration](#1-initialize-the-configuration)
   - [2. Configure the campaigns](#2-configure-the-campaigns)
@@ -23,7 +23,7 @@ the run reaches a stopping condition.
   - [6. Compare a candidate](#6-compare-a-candidate)
 - [Configuration reference](#configuration-reference)
 - [Comparison behavior and reports](#comparison-behavior-and-reports)
-- [Benchmark loops with stbench](#benchmark-loops-with-stbench)
+- [Controlling the harness with stbench](#controlling-the-harness-with-stbench)
 - [Build a benchmark scorecard](#build-a-benchmark-scorecard)
 - [Caveats and troubleshooting](#caveats-and-troubleshooting)
 - [Development](#development)
@@ -48,32 +48,6 @@ responsible for starting the baseline or candidate API at `base_url` before the
 corresponding command runs. `stcompare` records the baseline with Schemathesis,
 then replays its ordered HAR requests against the candidate and grades the
 result using the recorded problem evidence.
-
-## Quick start
-
-This example assumes the baseline API is already running at
-`http://localhost:8080` and exposes a local `openapi.json` schema.
-
-```sh
-# Build and initialize.
-go build -o stcompare ./cmd/stcompare
-./stcompare config init
-
-# Check the generated settings and the underlying Schemathesis command.
-./stcompare config show
-./stcompare campaign command baseline
-
-# Record the running baseline API.
-./stcompare campaign run baseline
-
-# Stop the baseline, start the candidate on the same URL, then compare it.
-./stcompare campaign compare gpt5.6
-```
-
-Review `reports/gpt5.6/comparison.html` for the scorecard,
-`comparison.md` for a portable review, or `comparison.json` for automation.
-A comparison that found actionable failures still writes all reports and exits
-with status `2`; this is a comparison result, not a tool failure.
 
 ## Installation
 
@@ -115,6 +89,32 @@ Commands can also be run without keeping a binary:
 ```sh
 go run ./cmd/stcompare --help
 ```
+
+## Quick start
+
+This example assumes `stcompare` is installed (see [Installation](#installation))
+and the baseline API is already running at `http://localhost:8080` and exposes
+a local `openapi.json` schema.
+
+```sh
+# Initialize the configuration.
+stcompare config init
+
+# Check the generated settings and the underlying Schemathesis command.
+stcompare config show
+stcompare campaign command baseline
+
+# Record the running baseline API.
+stcompare campaign run baseline
+
+# Stop the baseline, start the candidate on the same URL, then compare it.
+stcompare campaign compare gpt5.6
+```
+
+Review `reports/gpt5.6/comparison.html` for the scorecard,
+`comparison.md` for a portable review, or `comparison.json` for automation.
+A comparison that found actionable failures still writes all reports and exits
+with status `2`; this is a comparison result, not a tool failure.
 
 ## Usage guide
 
@@ -645,7 +645,7 @@ removes a newly-created campaign directory and does not write success metadata.
 Forced runs against an existing directory leave existing files in place if
 Schemathesis aborts.
 
-## Benchmark loops with stbench
+## Controlling the harness with stbench
 
 `stbench` owns the neutral fix loop and invokes `stcompare` through its public
 CLI contract. Candidate identity belongs to each Candidate Campaign, while the
@@ -727,19 +727,39 @@ configuration with identity on campaign entries, an adapter map, and harness
 hardware. For an existing `stcompare.yaml` that does not yet contain an
 `stbench:` block, `stbench init` creates executable `stop.sh`, `reset.sh`,
 `build.sh`, and `start.sh` stubs in the repository-local `.local/stbench/`
-directory and writes the matching block directly into the configuration. Each
-API keeps its own adapter lifecycle setup. Set `STBENCH_STATE_DIR` to choose an
-external state directory for a deliberate override; repository-local overrides
-must use `.local/stbench`.
+directory, installs the selected adapter files, and writes the matching
+`stbench:` block directly into the configuration. Each API keeps its own
+adapter lifecycle setup. Set `STBENCH_STATE_DIR` to choose an external state
+directory for a deliberate override; repository-local overrides must use
+`.local/stbench`.
+
+`stbench init` installs one file per selected adapter role (`cloud`, `local`,
+`coding-agent`) plus the shared `_protocol.py` support file into
+`.local/stbench/adapters/`, using the canonical copies embedded in the
+`stbench` binary. Select adapters explicitly with a comma-separated flag:
+
+```sh
+stbench init --adapters local,coding-agent
+```
+
+Without `--adapters`, an interactive terminal prompts with a checklist to
+choose adapters; a non-interactive invocation, such as one run from a script or
+CI, installs every adapter. Selecting nothing in the interactive checklist
+installs no adapter files.
+
 `stbench init` also adds `.local/stbench/` to `.gitignore` if it is not already
-covered. It is non-destructive: it refuses to overwrite lifecycle files or to
-modify a configuration that already has an `stbench:` block (including one
-created by `stcompare config init`). Replace the no-op
-commands with the API's commands and keep adapter support files outside the API
-repository. The generated `stop` hook is safe to run before the first iteration,
-when no API process exists. The `reset` hook must clean per-iteration runtime
-state without reverting source files, because source changes are the agent's
-progress.
+covered, and it never overwrites a lifecycle or adapter file that already
+exists on disk. Running `stbench init` again against a configuration that
+already has an `stbench:` block is additive, not a no-op: it installs any
+selected adapter files still missing on disk and appends only the
+corresponding missing entries to `stbench.adapters`, leaving the rest of the
+block untouched. It reports whether it wrote a new block, appended missing
+adapters to an existing one, or left an already-complete configuration
+unchanged. Replace the no-op commands with the API's commands and keep adapter
+support files outside the API repository. The generated `stop` hook is safe to
+run before the first iteration, when no API process exists. The `reset` hook
+must clean per-iteration runtime state without reverting source files, because
+source changes are the agent's progress.
 
 Before each comparison, `stbench` runs stop, optional reset, build, start, and
 health polling. `stop` may be called when nothing is running and should be
@@ -815,7 +835,9 @@ candidate in place, and returns the protocol result. It does not read raw
 campaign artifacts, rewrite the task, or decide when to iterate.
 
 Three reference adapters are provided in
-[`examples/stbench/README.md`](examples/stbench/README.md):
+[`examples/stbench/README.md`](examples/stbench/README.md). These files are
+also the canonical sources embedded into the `stbench` binary; `stbench init`
+installs byte-identical copies into `.local/stbench/adapters/`.
 
 - `local_model_adapter.py` is the first-class on-prem path. It talks to an
   OpenAI-compatible local inference server and gives the model confined
