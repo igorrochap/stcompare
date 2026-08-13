@@ -79,31 +79,36 @@ with status `2`; this is a comparison result, not a tool failure.
 
 ### Requirements
 
-- Go 1.25 or later.
 - Schemathesis available as `st`, or `uvx` available so `stcompare` can fall
   back to `uvx schemathesis` when running a campaign.
 - A reachable baseline or candidate API for commands that generate or replay
   traffic.
 
-Build local binaries from the repository root:
+Install the latest prebuilt `stcompare` and `stbench` binaries on Linux or
+macOS without installing Go:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/igorrochap/stcompare/main/scripts/install.sh | sh
+```
+
+The installer verifies the release checksum and writes both binaries to
+`~/.local/bin` by default. Select another directory or a specific release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/igorrochap/stcompare/main/scripts/install.sh \
+  | sh -s -- --dir /usr/local/bin --version v1.2.3
+```
+
+Make sure the selected directory is on `PATH`. The examples below assume the
+binary is available as `stcompare`.
+
+To build from source instead, install Go 1.25 or later and run from the
+repository root:
 
 ```sh
 go build -o stcompare ./cmd/stcompare
 go build -o stbench ./cmd/stbench
 ```
-
-The examples below assume the binary is available as `stcompare`; use
-`./stcompare` when running the local build directly.
-
-To build both binaries and install them onto your `PATH` (so `stcompare` and
-`stbench` are runnable from any repository), run:
-
-```sh
-./scripts/install.sh
-```
-
-By default this installs to `$GOBIN` (or `$(go env GOPATH)/bin` if `GOBIN` is
-unset); pass `--dir <path>` to install elsewhere.
 
 Commands can also be run without keeping a binary:
 
@@ -922,7 +927,19 @@ Run the test suite, race detector, and static checks:
 go test ./...
 go test -race ./...
 go vet ./...
+scripts/install_test.sh
 ```
+
+Pull requests and pushes to `main` run formatting, ShellCheck, module-file,
+package-boundary, vet, test, and race-detector checks. Only after every check
+passes does CI cross-compile release archives for Linux and macOS on amd64 and
+arm64.
+
+Successful `main` builds use Conventional Commit messages to create semantic
+versions and GitHub Releases. `feat` commits produce minor releases, `fix` and
+`perf` commits produce patch releases, and breaking changes produce major
+releases. Each release contains both binaries for every supported platform and
+a checksum manifest consumed by the installer.
 
 ### Optional benchmark verification
 

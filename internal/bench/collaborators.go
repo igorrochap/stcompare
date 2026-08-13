@@ -609,6 +609,12 @@ func (buffer *synchronizedBuffer) Bytes() []byte {
 	return append([]byte(nil), buffer.buffer.Bytes()...)
 }
 
+type writerFunc func([]byte) (int, error)
+
+func (write writerFunc) Write(value []byte) (int, error) {
+	return write(value)
+}
+
 // CommandCandidate manages a candidate with configured shell commands.
 type CommandCandidate struct {
 	WorkingDir string
@@ -627,6 +633,7 @@ type CommandCandidate struct {
 	Output         io.Writer
 	ErrorOutput    io.Writer
 
+	outputMu    sync.Mutex
 	started     *exec.Cmd
 	startedDone chan error
 	startedEver bool
@@ -786,8 +793,26 @@ func (candidate *CommandCandidate) configureCommand(command *exec.Cmd) {
 	configureProcessGroup(command)
 	command.Dir = candidate.WorkingDir
 	command.Env = os.Environ()
-	command.Stdout = candidate.Output
-	command.Stderr = candidate.ErrorOutput
+	if candidate.Output != nil {
+		command.Stdout = writerFunc(candidate.writeOutput)
+	}
+	if candidate.ErrorOutput != nil {
+		command.Stderr = writerFunc(candidate.writeErrorOutput)
+	}
+}
+
+func (candidate *CommandCandidate) writeOutput(value []byte) (int, error) {
+	candidate.outputMu.Lock()
+	defer candidate.outputMu.Unlock()
+
+	return candidate.Output.Write(value)
+}
+
+func (candidate *CommandCandidate) writeErrorOutput(value []byte) (int, error) {
+	candidate.outputMu.Lock()
+	defer candidate.outputMu.Unlock()
+
+	return candidate.ErrorOutput.Write(value)
 }
 
 func (candidate *CommandCandidate) terminateStartedProcess() {
