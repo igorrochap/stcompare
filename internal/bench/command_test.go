@@ -26,7 +26,11 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		ReuseProcess:    true,
 		SourceDir:       "candidate-src",
 		StcompareBinary: "./stcompare",
-		Prompt:          config.StbenchPromptConfig{ID: "prompt", Version: "2"},
+		Prompt: config.StbenchPromptConfig{
+			ID:      "prompt",
+			Version: "2",
+			File:    "prompts/ablation.md",
+		},
 		Lifecycle: config.StbenchLifecycleConfig{
 			Stop:           "./stop.sh",
 			Reset:          "./reset.sh",
@@ -49,7 +53,8 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		settings.commandTimeout != "2m" || settings.adapterTimeout != "3m" {
 		t.Fatalf("lifecycle settings = %#v, want caller configuration", settings)
 	}
-	if settings.maxIterations != 7 || settings.stallWindow != 3 || settings.promptVersion != "2" {
+	if settings.maxIterations != 7 || settings.stallWindow != 3 ||
+		settings.promptVersion != "2" || settings.promptFile != "prompts/ablation.md" {
 		t.Fatalf("run limits/prompt = %#v, want caller configuration", settings)
 	}
 }
@@ -75,6 +80,7 @@ func TestRunCommandUsesOneCanonicalFlagPerSetting(t *testing.T) {
 		"stop-command", "reset-command", "build-command", "start-command",
 		"command-timeout", "health-url", "health-timeout", "health-interval",
 		"heartbeat-interval", "max-iterations", "stall-window", "prompt-id", "prompt-version",
+		"prompt-file",
 	}
 	for _, name := range canonical {
 		if run.Flags().Lookup(name) == nil {
@@ -319,8 +325,10 @@ func TestApplyRunSettingsFlagsOverrideConfiguration(t *testing.T) {
 	command.Flags().String("campaign", "", "")
 	command.Flags().String("source-dir", "", "")
 	command.Flags().String("stop-command", "", "")
+	command.Flags().String("prompt-file", "", "")
 	for name, value := range map[string]string{
 		"campaign":     "flag-campaign",
+		"prompt-file":  "flag-prompt.md",
 		"source-dir":   "flag-source",
 		"stop-command": "flag-stop",
 	} {
@@ -330,17 +338,20 @@ func TestApplyRunSettingsFlagsOverrideConfiguration(t *testing.T) {
 	}
 
 	settings := runSettings{
-		campaign:  "config-campaign",
-		sourceDir: "config-source",
-		stop:      "config-stop",
+		campaign:   "config-campaign",
+		promptFile: "config-prompt.md",
+		sourceDir:  "config-source",
+		stop:       "config-stop",
 	}
 	applyRunSettings(&settings, runCommandOptions{
-		campaign:  "flag-campaign",
-		sourceDir: "flag-source",
-		stop:      "flag-stop",
+		campaign:   "flag-campaign",
+		promptFile: "flag-prompt.md",
+		sourceDir:  "flag-source",
+		stop:       "flag-stop",
 	}, command)
 
-	if settings.campaign != "flag-campaign" || settings.sourceDir != "flag-source" || settings.stop != "flag-stop" {
+	if settings.campaign != "flag-campaign" || settings.promptFile != "flag-prompt.md" ||
+		settings.sourceDir != "flag-source" || settings.stop != "flag-stop" {
 		t.Fatalf("settings = %#v, want explicit flag values to override config", settings)
 	}
 }

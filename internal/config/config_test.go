@@ -83,6 +83,10 @@ stbench:
   hardware: RTX 4090 / 64GB
   reuse_process: true
   source_dir: candidate-src
+  prompt:
+    id: ablation-terse
+    version: "1"
+    file: prompts/ablation-terse.md
   adapters:
     remote: python adapters/anthropic_adapter.py
   adapter_timeout: 3m
@@ -119,6 +123,9 @@ candidate_spec: /openapi.json
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
 		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
+	}
+	if got, want := loaded.Stbench.Prompt.File, "prompts/ablation-terse.md"; got != want {
+		t.Fatalf("prompt file = %q, want %q", got, want)
 	}
 	if loaded.CandidateSpec != "/openapi.json" {
 		t.Fatalf("candidate spec = %q, want %q", loaded.CandidateSpec, "/openapi.json")

@@ -72,7 +72,7 @@ type Record struct {
 type PromptIdentity struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
-	Hash    string `json:"hash"` // SHA-256 of the embedded prompt template.
+	Hash    string `json:"hash"` // SHA-256 of the prompt template content.
 }
 
 // TimeBreakdown contains wall-clock duration measurements in milliseconds.

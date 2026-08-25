@@ -105,6 +105,13 @@ func TestInitCreatesLifecycleScaffoldAndWritesLoadableConfig(t *testing.T) {
 			t.Errorf("stbench config contains obsolete field %q", unwanted)
 		}
 	}
+	prompt, ok := document.Stbench["prompt"].(map[string]any)
+	if !ok {
+		t.Fatalf("stbench prompt = %#v, want mapping", document.Stbench["prompt"])
+	}
+	if _, exists := prompt["file"]; exists {
+		t.Error("stbench init scaffolded advanced prompt.file override")
+	}
 
 	loaded, err := config.Load(filepath.Join(dir, config.DefaultFilename))
 	if err != nil {

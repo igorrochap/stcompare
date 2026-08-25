@@ -1,7 +1,10 @@
 package bench
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -281,6 +284,10 @@ func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
 	if len(record.Prompt.Hash) != 64 {
 		t.Fatalf("prompt hash length = %d, want SHA-256 hex length", len(record.Prompt.Hash))
 	}
+	wantPromptHash := hashContent(promptTemplateText)
+	if record.Prompt.Hash != wantPromptHash {
+		t.Fatalf("prompt hash = %q, want embedded template hash %q", record.Prompt.Hash, wantPromptHash)
+	}
 	if len(record.PromptInstructions) != 1 {
 		t.Fatalf("prompt instructions = %#v, want one rendered instruction", record.PromptInstructions)
 	}
@@ -295,6 +302,146 @@ func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
 	}
 	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "raw model response" {
 		t.Fatalf("agent responses = %#v, want archived raw model response", record.AgentResponses)
+	}
+}
+
+func TestRunUsesCustomPromptFileFromWorkingDirectory(t *testing.T) {
+	directory := t.TempDir()
+	promptContent := "Custom\n{{ .ComparisonView }}\n"
+	if err := os.WriteFile(filepath.Join(directory, "prompt.md"), []byte(promptContent), 0o644); err != nil {
+		t.Fatalf("write prompt file: %v", err)
+	}
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(directory); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDirectory); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+	var notice bytes.Buffer
+	config := testConfig()
+	config.PromptFile = "prompt.md"
+
+	record, err := Run(config, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+		Notice:     &notice,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := record.Prompt.Hash, "d7d38aa643f66b523788c3b0257575a6172ff98dc10dde81f883a0c828681160"; got != want {
+		t.Fatalf("prompt hash = %q, want file content hash %q", got, want)
+	}
+	if len(adapter.instructions) != 1 || !strings.HasPrefix(adapter.instructions[0], "Custom\n") ||
+		!strings.Contains(adapter.instructions[0], `"problem-1"`) {
+		t.Fatalf("adapter instructions = %#v, want custom template rendered with comparison view", adapter.instructions)
+	}
+	if got, want := notice.String(), "using custom prompt template prompt.md\n"; got != want {
+		t.Fatalf("notice = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsInvalidCustomPromptBeforeLoop(t *testing.T) {
+	directory := t.TempDir()
+	tests := []struct {
+		name        string
+		path        string
+		content     string
+		wantMessage string
+		writeFile   bool
+	}{
+		{
+			name:        "missing file",
+			path:        filepath.Join(directory, "missing.md"),
+			wantMessage: "load custom prompt template",
+		},
+		{
+			name:        "whitespace-only path",
+			path:        "   ",
+			wantMessage: "load custom prompt template",
+		},
+		{
+			name:        "unparseable template",
+			path:        filepath.Join(directory, "unparseable.md"),
+			content:     "{{",
+			wantMessage: "parse custom prompt template",
+			writeFile:   true,
+		},
+		{
+			name:        "missing comparison view",
+			path:        filepath.Join(directory, "no-view.md"),
+			content:     "{{/* .ComparisonView */}}Fix the candidate",
+			wantMessage: "must reference .ComparisonView",
+			writeFile:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.writeFile {
+				if err := os.WriteFile(test.path, []byte(test.content), 0o644); err != nil {
+					t.Fatalf("write prompt file: %v", err)
+				}
+			}
+			comparator := &fakeComparator{}
+			candidate := &fakeCandidate{}
+			adapter := &fakeAdapter{}
+			config := testConfig()
+			config.PromptFile = test.path
+
+			record, err := Run(config, Dependencies{
+				Comparator: comparator,
+				Candidate:  candidate,
+				Adapter:    adapter,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("Run error = %v, want message containing %q", err, test.wantMessage)
+			}
+			if record.SchemaVersion != "" || len(comparator.configs) != 0 ||
+				len(candidate.calls) != 0 || len(adapter.preflightMetadata) != 0 {
+				t.Fatalf("invalid prompt started loop: record=%#v comparisons=%d candidate=%#v preflights=%d",
+					record, len(comparator.configs), candidate.calls, len(adapter.preflightMetadata))
+			}
+		})
+	}
+}
+
+func TestRunEmbeddedPromptDoesNotEmitCustomPromptNotice(t *testing.T) {
+	var notice bytes.Buffer
+	_, err := Run(Config{BaselineExists: func() bool { return true }}, Dependencies{
+		Comparator: &fakeComparator{results: []comparisonResult{{
+			view:     agentreport.View{Converged: true},
+			exitCode: agentreport.ExitCodeConverged,
+		}}},
+		Candidate: &fakeCandidate{},
+		Adapter:   &fakeAdapter{},
+		Notice:    &notice,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if notice.Len() != 0 {
+		t.Fatalf("notice = %q, want silence for embedded prompt", notice.String())
 	}
 }
 
