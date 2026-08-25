@@ -164,7 +164,7 @@ integration test.
   validation reports a mismatch before the benchmark starts; the health URL may
   use a different path.
 
-**Task prompt (fixed, versioned, owned by `stbench`; see ADR-0007):**
+**Task prompt (fixed by default, versioned, owned by `stbench`; see ADR-0007 and ADR-0010):**
 
 - `stbench` owns a single canonical **task prompt template** — the instruction
   that tells the agent what to do with the actionable list. It is fixed and
@@ -176,11 +176,18 @@ integration test.
   alongside the view. The adapter only **delivers** it in its agent's required
   envelope (system/user split, tool-use framing, a local model's chat template);
   it must not rewrite the task.
-- The prompt is fixed by default and overridable via config **only** for
-  deliberate prompt-ablation experiments. The prompt identity (version or content
-  hash) is recorded in the benchmark record, and two runs are comparable only
-  when their recorded prompt identity matches. The record also stores a hash of
-  each exact rendered instruction sent to the adapter.
+- The prompt is fixed by default. For deliberate prompt-ablation experiments,
+  optional `stbench.prompt.file` / `--prompt-file` selects an external Go
+  `text/template`; the flag overrides YAML, and a relative path resolves against
+  the current working directory. The file is loaded before the loop and must
+  exist, parse, and reference `.ComparisonView`. `stbench init` deliberately does
+  not scaffold a `file:` key.
+- The record's `prompt.hash` is the SHA-256 of the selected template's exact
+  content: the embedded template by default or the external file when overridden.
+  Prompt `id` and `version` remain freely configurable and unenforced. Runs are
+  comparable only when analysis determines that their recorded prompt identities
+  match. The record also stores a hash of each exact rendered instruction sent to
+  the adapter.
 
 **Adapter protocol (language-agnostic, per-agent):**
 

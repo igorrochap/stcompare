@@ -9,7 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"text/template"
+	"text/template/parse"
 	"time"
 
 	"stcompare/agentreport"
@@ -52,6 +55,10 @@ type Config struct {
 	// Prompt identifies the versioned task prompt. A zero value uses the
 	// canonical prompt identity.
 	Prompt benchrecord.PromptIdentity
+	// PromptFile selects an external task prompt template. A zero value uses the
+	// canonical embedded template. Relative paths resolve against the process's
+	// current working directory.
+	PromptFile string
 
 	// BaselineExists is checked before any candidate lifecycle operation. A nil
 	// check means the caller has already established the precondition.
@@ -82,6 +89,8 @@ type Dependencies struct {
 	Candidate  Candidate
 	Adapter    Adapter
 	Now        func() time.Time
+	// Notice receives run-start notices. A nil writer keeps Run silent.
+	Notice io.Writer
 
 	// Reporter, when set, is narrated at every loop phase boundary. A nil
 	// Reporter keeps Run silent, preserving its pure-library behavior.
@@ -186,6 +195,13 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	if err := validate(config, dependencies); err != nil {
 		return benchrecord.Record{}, err
 	}
+	selectedPrompt, selectedPromptHash, err := loadPromptTemplate(config.PromptFile)
+	if err != nil {
+		return benchrecord.Record{}, err
+	}
+	if config.PromptFile != "" && dependencies.Notice != nil {
+		fmt.Fprintf(dependencies.Notice, "using custom prompt template %s\n", config.PromptFile)
+	}
 	if dependencies.Now == nil {
 		dependencies.Now = time.Now
 	}
@@ -202,7 +218,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	if config.Prompt.Version == "" {
 		config.Prompt.Version = DefaultPromptVersion
 	}
-	config.Prompt.Hash = promptTemplateHash
+	config.Prompt.Hash = selectedPromptHash
 
 	startedAt := dependencies.Now()
 	record = benchrecord.Record{
@@ -256,21 +272,23 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		record.ProcessReuse = reporter.ProcessReuseActive()
 	}
 
-	return runIterations(config, dependencies, record, startedAt)
+	return runIterations(config, dependencies, selectedPrompt, record, startedAt)
 }
 
 func runIterations(
 	config Config,
 	dependencies Dependencies,
+	promptTemplate *template.Template,
 	record benchrecord.Record,
 	startedAt time.Time,
 ) (benchrecord.Record, error) {
 	record.Tokens = &benchrecord.TokenUsage{}
 	runner := iterationRunner{
-		config:       config,
-		dependencies: dependencies,
-		record:       &record,
-		timer:        &phaseTimer{now: dependencies.Now, cursor: startedAt},
+		config:         config,
+		dependencies:   dependencies,
+		promptTemplate: promptTemplate,
+		record:         &record,
+		timer:          &phaseTimer{now: dependencies.Now, cursor: startedAt},
 	}
 	for iteration := 1; iteration <= config.MaxIterations; iteration++ {
 		runner.record.Iterations = iteration
@@ -286,6 +304,7 @@ func runIterations(
 type iterationRunner struct {
 	config                 Config
 	dependencies           Dependencies
+	promptTemplate         *template.Template
 	record                 *benchrecord.Record
 	timer                  *phaseTimer
 	lastView               agentreport.View
@@ -416,6 +435,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 			var err error
 			fix, err = runAgentFix(
 				runner.dependencies.Adapter,
+				runner.promptTemplate,
 				runner.config.Prompt,
 				view,
 				runner.config.AdapterMetadata,
@@ -534,18 +554,108 @@ type promptTemplateData struct {
 }
 
 func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (string, error) {
+	return renderPromptTemplate(promptTemplate, prompt, view)
+}
+
+func renderPromptTemplate(
+	selectedTemplate *template.Template,
+	prompt benchrecord.PromptIdentity,
+	view agentreport.View,
+) (string, error) {
 	compactView, err := json.Marshal(view)
 	if err != nil {
 		return "", err
 	}
 	var instruction bytes.Buffer
-	if err := promptTemplate.Execute(&instruction, promptTemplateData{
+	if err := selectedTemplate.Execute(&instruction, promptTemplateData{
 		Prompt:         prompt,
 		ComparisonView: string(compactView),
 	}); err != nil {
 		return "", fmt.Errorf("render task prompt template: %w", err)
 	}
 	return instruction.String(), nil
+}
+
+func loadPromptTemplate(path string) (*template.Template, string, error) {
+	if path == "" {
+		return promptTemplate, promptTemplateHash, nil
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("load custom prompt template %q: %w", path, err)
+	}
+	customPrompt, err := template.New("stbench-prompt").Parse(string(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("parse custom prompt template %q: %w", path, err)
+	}
+	if !referencesComparisonView(customPrompt) {
+		return nil, "", fmt.Errorf("custom prompt template %q must reference .ComparisonView", path)
+	}
+	return customPrompt, hashContent(string(content)), nil
+}
+
+func referencesComparisonView(prompt *template.Template) bool {
+	for _, defined := range prompt.Templates() {
+		if defined.Tree != nil && nodeReferencesComparisonView(defined.Tree.Root) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeReferencesComparisonView(node parse.Node) bool {
+	switch typed := node.(type) {
+	case *parse.ListNode:
+		if typed == nil {
+			return false
+		}
+		for _, child := range typed.Nodes {
+			if nodeReferencesComparisonView(child) {
+				return true
+			}
+		}
+	case *parse.ActionNode:
+		return nodeReferencesComparisonView(typed.Pipe)
+	case *parse.IfNode:
+		return branchReferencesComparisonView(typed.Pipe, typed.List, typed.ElseList)
+	case *parse.RangeNode:
+		return branchReferencesComparisonView(typed.Pipe, typed.List, typed.ElseList)
+	case *parse.WithNode:
+		return branchReferencesComparisonView(typed.Pipe, typed.List, typed.ElseList)
+	case *parse.TemplateNode:
+		return typed.Pipe != nil && nodeReferencesComparisonView(typed.Pipe)
+	case *parse.PipeNode:
+		if typed == nil {
+			return false
+		}
+		for _, command := range typed.Cmds {
+			if nodeReferencesComparisonView(command) {
+				return true
+			}
+		}
+	case *parse.CommandNode:
+		for _, argument := range typed.Args {
+			if nodeReferencesComparisonView(argument) {
+				return true
+			}
+		}
+	case *parse.FieldNode:
+		return len(typed.Ident) > 0 && typed.Ident[0] == "ComparisonView"
+	case *parse.ChainNode:
+		return len(typed.Field) > 0 && typed.Field[0] == "ComparisonView"
+	}
+	return false
+}
+
+func branchReferencesComparisonView(pipe *parse.PipeNode, list, elseList *parse.ListNode) bool {
+	if pipe != nil && nodeReferencesComparisonView(pipe) {
+		return true
+	}
+	if list != nil && nodeReferencesComparisonView(list) {
+		return true
+	}
+	return elseList != nil && nodeReferencesComparisonView(elseList)
 }
 
 func hashContent(content string) string {
@@ -562,6 +672,7 @@ type agentFixResult struct {
 
 func runAgentFix(
 	adapter Adapter,
+	promptTemplate *template.Template,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
 	metadata AdapterMetadata,
@@ -569,7 +680,7 @@ func runAgentFix(
 	hasKnownTokens *bool,
 	unknownTokenIterations *int,
 ) (agentFixResult, error) {
-	instruction, err := renderPrompt(prompt, view)
+	instruction, err := renderPromptTemplate(promptTemplate, prompt, view)
 	if err != nil {
 		return agentFixResult{}, fmt.Errorf("render task prompt: %w", err)
 	}

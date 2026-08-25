@@ -77,6 +77,7 @@ type runCommandOptions struct {
 	stallWindow       int
 	promptID          string
 	promptVersion     string
+	promptFile        string
 }
 
 func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
@@ -116,6 +117,7 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 	flags.IntVar(&options.stallWindow, "stall-window", 0, "non-improving transitions before stalling")
 	flags.StringVar(&options.promptID, "prompt-id", "", "task prompt identity")
 	flags.StringVar(&options.promptVersion, "prompt-version", "", "task prompt version")
+	flags.StringVar(&options.promptFile, "prompt-file", "", "external task prompt template")
 
 	return command
 }
@@ -181,6 +183,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		Candidate:         settings.campaign,
 		Baseline:          baselineName,
 		Prompt:            benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
+		PromptFile:        settings.promptFile,
 		ReuseProcess:      settings.reuseProcess,
 		MaxIterations:     settings.maxIterations,
 		StallWindow:       settings.stallWindow,
@@ -221,6 +224,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		Comparator:      comparator,
 		Candidate:       candidate,
 		Adapter:         adapter,
+		Notice:          command.ErrOrStderr(),
 		Reporter:        NewTextReporter(command.OutOrStdout()),
 		ChangeInspector: NewGitChangeInspector(workingDir),
 	})
@@ -279,6 +283,7 @@ type runSettings struct {
 	stallWindow       int
 	promptID          string
 	promptVersion     string
+	promptFile        string
 }
 
 // defaultHeartbeatInterval keeps the terminal visibly alive during long agent
@@ -315,6 +320,7 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings.stallWindow = source.StallWindow
 	settings.promptID = source.Prompt.ID
 	settings.promptVersion = source.Prompt.Version
+	settings.promptFile = source.Prompt.File
 	return settings
 }
 
@@ -375,6 +381,9 @@ func applyRunSettings(settings *runSettings, options runCommandOptions, command 
 	}
 	if command.Flags().Changed("prompt-version") {
 		settings.promptVersion = options.promptVersion
+	}
+	if command.Flags().Changed("prompt-file") {
+		settings.promptFile = options.promptFile
 	}
 }
 

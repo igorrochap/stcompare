@@ -711,6 +711,17 @@ emission. Explicit execution flags override the `stbench:` values, which
 override documented defaults; the `--base-url` override is applied before
 configuration validation.
 
+The `prompt.id` and `prompt.version` fields (or `--prompt-id` and
+`--prompt-version`) label the task prompt in the benchmark record and remain
+free-form. As an advanced ablation knob, `stbench.prompt.file` selects an
+external Go `text/template`, and `--prompt-file` overrides that YAML value. The
+template must reference `.ComparisonView`; relative paths resolve against the
+current working directory, not the configuration file. When selected,
+`prompt.hash` is the SHA-256 of the file's exact content. With no file override,
+the embedded prompt and its existing hash remain unchanged. `stbench init`
+deliberately does not scaffold a `file:` key, keeping the canonical embedded
+prompt as the default.
+
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured
 `reports_dir`), so a run cannot accidentally be saved under another
