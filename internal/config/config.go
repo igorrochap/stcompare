@@ -117,6 +117,7 @@ func (c *StbenchConfig) UnmarshalYAML(node *yaml.Node) error {
 type StbenchPromptConfig struct {
 	ID      string `yaml:"id"`
 	Version string `yaml:"version"`
+	File    string `yaml:"file,omitempty"`
 }
 
 // StbenchLifecycleConfig contains candidate process and health-check hooks.

@@ -5,3 +5,4 @@ skills-lock.json
 .cache
 __pycache__/
 /stcompare.yaml
+.syl
