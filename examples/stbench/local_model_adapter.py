@@ -3,7 +3,7 @@
 
 The model edits the candidate through a small tool-enabled scaffold.  It never
 receives a repository snapshot and the adapter never applies a model-generated
-patch: read/write/command tools mutate the candidate directory directly.
+patch: read/write tools mutate the candidate directory directly.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import json
 import math
 import os
 import re
-import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -44,11 +43,15 @@ READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
 EDIT_HISTORY_PLACEHOLDER = "[edit content elided from history]"
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
-The user message is the complete rendered stbench task instruction and is
-authoritative. Preserve its scope and success criteria. Inspect and edit the
-candidate in the current working directory with the provided tools, run useful
-local checks, and stop when the requested fix is complete. Do not invent a new
-benchmark loop or consult stcompare artifacts that are not in the user task.
+Available tools: list_files, read_file, str_replace, and write_file.
+Use only the provided tools. Do not build, test, or run verification commands.
+Use str_replace to edit existing files and write_file to create new files. Make
+edits directly in the candidate.
+When finished, send a plain message with no tool call.
+"""
+
+NUDGE_PROMPT = """Use the provided tools if work remains.
+When finished, send a plain message with no tool call.
 """
 
 TOOLS = [
@@ -109,22 +112,6 @@ TOOLS = [
                     "new_string": {"type": "string"},
                 },
                 "required": ["path", "old_string", "new_string"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_command",
-            "description": "Run a local candidate command without a shell.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "timeout_seconds": {"type": "number", "default": 30},
-                },
-                "required": ["command"],
                 "additionalProperties": False,
             },
         },
@@ -292,9 +279,12 @@ def run_agent(
                 tool_calls = recovered_calls
             else:
                 messages.append(message)
-                if isinstance(content, str):
+                if isinstance(content, str) and content.strip():
                     final_response = content
-                return final_response, usages
+                    return final_response, usages
+                messages.append({"role": "user", "content": NUDGE_PROMPT})
+                current_turn_start = len(messages) - 2
+                continue
 
         assistant_message_start = len(messages)
         messages.append(message)
@@ -538,14 +528,12 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
                 str(arguments["old_string"]),
                 str(arguments["new_string"]),
             )
-        if name == "run_command":
-            return run_command(root, arguments)
         return tool_error("unknown_tool", f"unknown tool {name!r}")
     except ToolError as error:
         return tool_error(error.code, str(error))
     except FileNotFoundError as error:
         return tool_error("file_not_found", str(error))
-    except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+    except (KeyError, OSError, TypeError, ValueError) as error:
         return tool_error("tool_error", str(error))
 
 
@@ -633,29 +621,6 @@ def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> 
     with target.open("w", encoding="utf-8", newline="") as output:
         output.write(text.replace(old_string, new_string, 1))
     return {"ok": True, "path": relative, "replacements": 1}
-
-
-def run_command(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
-    command = arguments.get("command")
-    if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
-        raise ValueError("command must be a non-empty string array")
-    timeout = float(arguments.get("timeout_seconds", 30))
-    if timeout <= 0:
-        raise ValueError("timeout_seconds must be positive")
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    return {
-        "ok": completed.returncode == 0,
-        "exit_code": completed.returncode,
-        "stdout": cap_text(completed.stdout),
-        "stderr": cap_text(completed.stderr),
-    }
 
 
 def safe_path(root: Path, relative: str) -> Path:
