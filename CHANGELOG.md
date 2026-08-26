@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-08-26)
+
+### Features
+
+- **adapter**: Add str_replace tool and history compaction
+  ([#74](https://github.com/igorrochap/stcompare/pull/74),
+  [`c45cd75`](https://github.com/igorrochap/stcompare/commit/c45cd758cf96eb0b7c73ccfa53b297ea2f714b69))
+
+
 ## v1.2.0 (2026-08-26)
 
 ### Bug Fixes
