@@ -201,10 +201,10 @@ integration test.
   Adapters exclude `.local/stbench` and `.local/stcompare` from source views and
   edits; reference adapter implementations should remain outside the source
   tree.
-- The `agent`, `model`, and `effort` identity from the selected Candidate
-  Campaign, the harness `hardware` from `stbench:`, the rendered task
-  instruction, and the compact `agentreport.View` (the actionable list and
-  counts) are passed to the adapter on **stdin** as JSON.
+- The `agent`, `model`, `effort`, and optional `temperature` identity from
+  the selected Candidate Campaign, the harness `hardware` from `stbench:`,
+  the rendered task instruction, and the compact `agentreport.View` (the
+  actionable list and counts) are passed to the adapter on **stdin** as JSON.
   The request metadata is the source of truth for adapter execution; an
   adapter may override it only through an explicit adapter option.
   This compact view is the agent's problem source on **every** iteration,
@@ -212,9 +212,11 @@ integration test.
   (those are internal evidence only; see Further Notes).
 - The adapter edits the candidate source **in place** and writes a small result
   JSON to **stdout**: `{ "tokens": {"input": N, "output": N, "total": N} | null,
-  "response": "<raw model response>", "status": "ok" | "error",
-  "message": "…" }`. A non-zero adapter exit or `status: "error"` ends the
-  run as `adapter_error`; the response text is retained for audit.
+  "temperature": N | null, "response": "<raw model response>",
+  "status": "ok" | "error", "message": "…" }`. A non-zero adapter exit or
+  `status: "error"` ends the run as `adapter_error`; the response text is
+  retained for audit. Bundled local-model adapters report their resolved
+  temperature during preflight and each fix.
 - Before the first comparison, `stbench` sends a no-op preflight request with
   `"preflight": true`. The adapter must execute its command, return an `ok`
   result, and exit without invoking a model or editing the candidate. The
@@ -262,6 +264,7 @@ integration test.
 {
   "schema_version": "...",
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
+  "temperature": N,                                     // effective adapter sampling temperature
   "hardware": "...",                                    // harness identity
   "process_reuse": bool,                                // negotiated adapter mode
   "prompt": { "id": "...", "version": "...", "hash": "..." },
@@ -309,6 +312,7 @@ campaigns:
     agent: claude-code
     model: sonnet-5
     effort: high
+    temperature: 0.0
     adapter: remote
   sonnet5-low:
     kind: candidate
@@ -336,12 +340,19 @@ stbench:
 ```
 
 `stbench run <candidate>` selects a Candidate Campaign and reads `agent`,
-`model`, `effort`, and adapter type from that entry. Run flags can override only
+`model`, `effort`, `temperature`, and adapter type from that entry. Run flags can override only
 execution settings such as lifecycle commands and timeouts, source and binary
 paths, process reuse, prompt identity, iteration and stall limits, base URL,
 and scorecard emission. `effort` is an identity axis, not an execution knob:
 `sonnet5-high` and `sonnet5-low` are distinct candidates and are compared as
 separate scorecard rows.
+
+For the bundled local-model adapter, `temperature` is an independent sampling
+knob. It is resolved as adapter `--temperature` flag, campaign `temperature`,
+then `0` (greedy), and the effective value is recorded on every benchmark
+record. `effort` is never read as or mapped to temperature. The local adapter
+rejects values outside `0`–`2` before making model requests and sends the
+resolved temperature on every request; when it is `0`, it pins `top_p` to `1`.
 
 The benchmark record path is derived from the campaign and `reports_dir` as
 `reports/<candidate>/benchmark-record.json`. It is not configurable, which

@@ -4,11 +4,12 @@
 delivery boundary:
 
 1. `stbench` sends one JSON request on stdin: the `agent`, `model`, and
-   `hardware` metadata from `stcompare.yml`, plus the rendered, versioned task
-   instruction and the compact `agentreport.View`.
+   `hardware` metadata from `stcompare.yml`, an optional campaign
+   `temperature`, plus the rendered, versioned task instruction and the
+   compact `agentreport.View`.
 
    ```json
-   {"agent":"codex","model":"gpt-5","hardware":"local-machine","instruction":"...","view":{"actionable":[]}}
+   {"agent":"codex","model":"gpt-5","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"actionable":[]}}
    ```
 
 2. The adapter delivers that instruction in the selected agent's envelope and
@@ -20,7 +21,8 @@ delivery boundary:
      "status": "ok",
      "message": "",
      "response": "short audit text",
-     "tokens": {"input": 12, "output": 34, "total": 46}
+     "tokens": {"input": 12, "output": 34, "total": 46},
+     "temperature": 0.0
    }
    ```
 
@@ -75,15 +77,23 @@ These four Python files are also the canonical sources embedded into the
 
 Start an on-prem inference server that exposes a compatible
 `/v1/chat/completions` endpoint with tool-call support, then configure the
-adapter command. Keep the server URL, model, hardware, timeout, and turn limit
-in the `stbench` configuration:
+adapter command. Keep the model and temperature on the Candidate Campaign;
+keep the server URL, hardware, timeout, and turn limit in the `stbench`
+configuration:
 
 ```yaml
+campaigns:
+  local-model:
+    kind: candidate
+    agent: local-model
+    model: my-local-code-model
+    effort: high
+    temperature: 0.0
+    adapter: local
 stbench:
-  agent: local-model
-  model: my-local-code-model
   hardware: local-machine
-  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 600 --max-turns 20
+  adapters:
+    local: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 300 --max-turns 20
 ```
 
 Use an absolute script path when `source_dir` is not the repository root.
@@ -98,6 +108,14 @@ and `.local/stcompare` state is hidden from file listing and write tools.
 `stbench init` uses `.local/stbench` by default, while an external state
 directory can be selected explicitly. The adapter sums usage reported by each
 inference response and returns `null` if a response omits usage.
+The local adapter's sampling temperature is resolved once per run in this
+order: `--temperature`, campaign `temperature`, then `0` (greedy). The
+flag and campaign field must be between `0` and `2`; `effort` is an
+independent campaign identity field and is never used as temperature. The
+resolved value is sent on every chat-completions request. At temperature `0`,
+the adapter also sends `top_p: 1` to keep decoding fully greedy and
+deterministic. The adapter reports the resolved value during preflight so the
+benchmark record captures the effective sampling regime.
 
 ## Coding-agent CLI adapter
 

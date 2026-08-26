@@ -12,6 +12,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		Agent:         "agent",
 		Model:         "model",
 		Effort:        "high",
+		Temperature:   0.65,
 		Hardware:      "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
@@ -72,6 +73,9 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	}
 	if string(fields["unknown_token_iterations"]) != `1` {
 		t.Fatalf("unknown_token_iterations = %s, want 1", fields["unknown_token_iterations"])
+	}
+	if string(fields["temperature"]) != `0.65` {
+		t.Fatalf("temperature = %s, want 0.65", fields["temperature"])
 	}
 }
 

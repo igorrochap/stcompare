@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v1.2.0 (2026-08-26)
+
+### Bug Fixes
+
+- **test**: Increase command timeout in benchmark
+  ([#73](https://github.com/igorrochap/stcompare/pull/73),
+  [`70d4da4`](https://github.com/igorrochap/stcompare/commit/70d4da4d8c2d13ec473653160ea3dea6057d844a))
+
+### Features
+
+- **bench**: Add support for sampling temperature
+  ([#73](https://github.com/igorrochap/stcompare/pull/73),
+  [`70d4da4`](https://github.com/igorrochap/stcompare/commit/70d4da4d8c2d13ec473653160ea3dea6057d844a))
+
+
 ## v1.1.0 (2026-08-25)
 
 ### Bug Fixes

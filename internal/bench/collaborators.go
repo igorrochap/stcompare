@@ -209,6 +209,7 @@ type AdapterResponse struct {
 	Status       string                  `json:"status"`
 	Message      string                  `json:"message"`
 	ReuseProcess bool                    `json:"reuse_process"`
+	Temperature  *float64                `json:"temperature,omitempty"`
 }
 
 // AdapterResult contains the result returned to the benchmark runner.
@@ -216,6 +217,7 @@ type AdapterResult struct {
 	Tokens       *benchrecord.TokenUsage
 	Response     string
 	ReuseProcess bool
+	Temperature  *float64
 }
 
 // CommandAdapter invokes a language-agnostic adapter process.
@@ -228,6 +230,8 @@ type CommandAdapter struct {
 	// ReuseProcess enables the negotiated line-delimited adapter protocol.
 	// Adapters that do not advertise support during preflight use cold calls.
 	ReuseProcess bool
+
+	effectiveTemperature *float64
 
 	reuse adapterReuseState
 }
@@ -259,6 +263,7 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 		if err != nil {
 			return err
 		}
+		adapter.effectiveTemperature = result.Temperature
 		if result.ReuseProcess && adapter.reuse.process != nil && adapter.reuse.process.running(adapterReuseProbe) {
 			adapter.reuse.active = true
 			adapter.reuse.wasActive = true
@@ -268,11 +273,20 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 		// That is the compatibility path: subsequent fixes use cold calls.
 		return adapter.Close()
 	}
-	_, err := adapter.runRequest(AdapterPreflightRequest{
+	result, err := adapter.runRequest(AdapterPreflightRequest{
 		AdapterMetadata: metadata,
 		Preflight:       true,
 	})
+	if result != nil {
+		adapter.effectiveTemperature = result.Temperature
+	}
 	return err
+}
+
+// EffectiveTemperature returns the temperature reported by the adapter during
+// preflight, if one was provided.
+func (adapter *CommandAdapter) EffectiveTemperature() *float64 {
+	return adapter.effectiveTemperature
 }
 
 // Fix sends execution metadata, the rendered instruction, and compact view to the adapter.
@@ -437,6 +451,7 @@ func interpretAdapterResponse(output []byte) (*AdapterResult, error) {
 		Tokens:       response.Tokens,
 		Response:     response.Response,
 		ReuseProcess: response.ReuseProcess,
+		Temperature:  response.Temperature,
 	}
 	switch response.Status {
 	case "ok":

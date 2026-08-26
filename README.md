@@ -215,7 +215,7 @@ stbench:
 Replace the sample candidate names with stable identifiers for the
 implementations being compared. Names may contain letters, numbers, dots,
 underscores, and hyphens. Candidate Campaign identity consists of `agent`,
-`model`, `effort`, and an `adapter` type that resolves through
+`model`, `effort`, optional `temperature`, and an `adapter` type that resolves through
 `stbench.adapters`; a Baseline Campaign has none of those fields. The
 `stcompare config init` command scaffolds this complete shape, including the
 candidate identity and `stbench:` settings shown above.
@@ -793,10 +793,10 @@ outside that tree. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json
-{"agent":"codex","model":"gpt-5","effort":"high","hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+{"agent":"codex","model":"gpt-5","effort":"high","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
 ```
 
-`agent`, `model`, and `effort` come from the selected Candidate Campaign;
+`agent`, `model`, `effort`, and optional `temperature` come from the selected Candidate Campaign;
 `hardware` comes from the `stbench:` harness configuration. Together they are
 the adapter's execution metadata. Adapter-specific flags are optional explicit
 overrides; do not duplicate these values in the adapter command by default.
@@ -828,7 +828,7 @@ false`; enabling the runner option is a verified no-op for those adapters.
 
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
-null, "reuse_process": false }`. The adapter edits the candidate in place;
+null, "temperature": N | null, "reuse_process": false }`. The adapter edits the candidate in place;
 unknown token usage must be reported as `null`. The command writes the
 versioned benchmark record to the selected Candidate Campaign's derived report
 path; its `tokens` field sums known usage, while
@@ -854,9 +854,12 @@ installs byte-identical copies into `.local/stbench/adapters/`.
   OpenAI-compatible local inference server and gives the model confined
   read/write/command tools, so source is edited in place without a cloud
   dependency or repository snapshot. Select its adapter type on the Candidate
-  Campaign, keep harness hardware in `stbench:`, and pass URL, timeout, and turn
-  limit as adapter-command options; keep only an optional API key in
-  `STBENCH_LOCAL_MODEL_API_KEY`.
+  Campaign, keep harness hardware in `stbench:`, and pass URL, timeout, turn
+  limit, and any deliberate `--temperature` override as adapter-command
+  options; keep only an optional API key in
+  `STBENCH_LOCAL_MODEL_API_KEY`. Without the flag or campaign field, it uses
+  temperature `0` and pins `top_p` to `1` for deterministic greedy
+  decoding. `effort` remains an independent identity field.
 - `coding_agent_adapter.py` is the first-class engineering path for an
   installed Codex or Claude Code CLI. Set `agent`, `model`, `effort`, and the
   adapter type on the Candidate Campaign, then map that type to the command in

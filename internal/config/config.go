@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -14,6 +15,8 @@ import (
 )
 
 const DefaultFilename = "stcompare.yaml"
+
+const maxCampaignTemperature = 2.0
 
 // CampaignReportDir returns the configured report directory for a campaign.
 func CampaignReportDir(effective Config, campaignName string) string {
@@ -71,11 +74,12 @@ type HeaderNormalizationRule struct {
 }
 
 type Campaign struct {
-	Kind    string `yaml:"kind"`
-	Agent   string `yaml:"agent,omitempty"`
-	Model   string `yaml:"model,omitempty"`
-	Effort  string `yaml:"effort,omitempty"`
-	Adapter string `yaml:"adapter,omitempty"`
+	Kind        string   `yaml:"kind"`
+	Agent       string   `yaml:"agent,omitempty"`
+	Model       string   `yaml:"model,omitempty"`
+	Effort      string   `yaml:"effort,omitempty"`
+	Temperature *float64 `yaml:"temperature,omitempty"`
+	Adapter     string   `yaml:"adapter,omitempty"`
 }
 
 // StbenchConfig contains optional settings for the benchmark runner.
@@ -242,6 +246,9 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(campaign.Effort) != "" {
 				return fmt.Errorf("campaign %q: effort must not be set on a baseline campaign", name)
 			}
+			if campaign.Temperature != nil {
+				return fmt.Errorf("campaign %q: temperature must not be set on a baseline campaign", name)
+			}
 			if strings.TrimSpace(campaign.Adapter) != "" {
 				return fmt.Errorf("campaign %q: adapter must not be set on a baseline campaign", name)
 			}
@@ -254,6 +261,15 @@ func (c Config) Validate() error {
 			}
 			if strings.TrimSpace(campaign.Effort) == "" {
 				return fmt.Errorf("campaign %q: effort is required for candidate campaigns", name)
+			}
+			if campaign.Temperature != nil &&
+				(math.IsNaN(*campaign.Temperature) || math.IsInf(*campaign.Temperature, 0) ||
+					*campaign.Temperature < 0 || *campaign.Temperature > maxCampaignTemperature) {
+				return fmt.Errorf(
+					"campaign %q: temperature must be between 0 and %.0f",
+					name,
+					maxCampaignTemperature,
+				)
 			}
 			if strings.TrimSpace(campaign.Adapter) == "" {
 				return fmt.Errorf("campaign %q: adapter is required for candidate campaigns", name)

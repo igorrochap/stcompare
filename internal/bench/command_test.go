@@ -155,6 +155,7 @@ campaigns:
     agent: claude-code
     model: sonnet-5
     effort: high
+    temperature: 0.65
     adapter: remote
 stbench:
   source_dir: %s
@@ -195,6 +196,9 @@ stbench:
 		record.Effort != "high" || record.Hardware != "RTX 4090 / 64GB" {
 		t.Fatalf("record identity = %#v, want selected campaign identity and harness hardware", record)
 	}
+	if record.Temperature != 0.65 {
+		t.Fatalf("record temperature = %v, want campaign temperature", record.Temperature)
+	}
 
 	adapterInput, err := os.ReadFile(adapterInputPath)
 	if err != nil {
@@ -207,6 +211,9 @@ stbench:
 	if preflight.Agent != "claude-code" || preflight.Model != "sonnet-5" ||
 		preflight.Effort != "high" || preflight.Hardware != "RTX 4090 / 64GB" {
 		t.Fatalf("adapter metadata = %#v, want resolved identity", preflight.AdapterMetadata)
+	}
+	if preflight.Temperature == nil || *preflight.Temperature != 0.65 {
+		t.Fatalf("adapter temperature = %#v, want campaign temperature", preflight.Temperature)
 	}
 	if !strings.Contains(stdout.String(), "wrote "+recordPath) {
 		t.Fatalf("stdout = %q, want derived record path", stdout.String())
