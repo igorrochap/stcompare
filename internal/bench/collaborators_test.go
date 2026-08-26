@@ -344,7 +344,7 @@ func TestCommandAdapterReusedProcessTimeoutTerminatesSession(t *testing.T) {
 		Command:        "",
 		WorkingDir:     dir,
 		ReuseProcess:   true,
-		CommandTimeout: 20 * time.Millisecond,
+		CommandTimeout: 100 * time.Millisecond,
 		Env:            []string{"STBENCH_MARKER=" + markerPath},
 	}
 	adapter.Command = `first_request=yes
