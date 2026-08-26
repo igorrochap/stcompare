@@ -16,7 +16,7 @@ EXAMPLES = Path(__file__).parent
 sys.path.insert(0, str(EXAMPLES))
 
 from adapter import apply_patch, tracked_snapshot
-from local_model_adapter import list_files, safe_path
+from local_model_adapter import list_files, parse_args, resolve_temperature, safe_path
 
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
 CLI_ADAPTER = EXAMPLES / "coding_agent_adapter.py"
@@ -24,6 +24,22 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def test_local_model_temperature_resolution_is_explicit_and_bounded(self) -> None:
+        tests = [
+            ("default independent of effort", None, {"effort": "luna-high"}, 0.0),
+            ("campaign", None, {"temperature": 0.35}, 0.35),
+            ("flag overrides campaign", 0.9, {"temperature": 0.35}, 0.9),
+        ]
+        for name, flag, metadata, expected in tests:
+            with self.subTest(name=name):
+                self.assertEqual(resolve_temperature(flag, metadata), expected)
+
+        self.assertIsNone(parse_args([]).temperature)
+        for value in (-0.01, 2.01):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "temperature.*between 0 and 2"):
+                    resolve_temperature(value, {})
+
     def test_cloud_snapshot_excludes_managed_tool_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -93,6 +109,30 @@ class AdapterExamplesTest(unittest.TestCase):
                     result = json.loads(completed.stdout)
                     self.assertEqual(result["status"], "ok")
                     self.assertFalse(result["reuse_process"])
+
+    def test_local_model_adapter_reports_flag_override_during_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER), "--temperature", "0.9"],
+                cwd=directory,
+                input=json.dumps(
+                    {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "hardware": "m4-pro",
+                        "temperature": 0.35,
+                        "preflight": True,
+                    }
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["temperature"], 0.9)
 
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
@@ -203,6 +243,8 @@ class AdapterExamplesTest(unittest.TestCase):
                 [
                     sys.executable,
                     str(LOCAL_ADAPTER),
+                    "--temperature",
+                    "0.35",
                     "--url",
                     url,
                     "--timeout",
@@ -232,9 +274,13 @@ class AdapterExamplesTest(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["response"], "done")
+            self.assertEqual(result["temperature"], 0.35)
             self.assertEqual(result["tokens"], {"input": 8, "output": 6, "total": 14})
             self.assertEqual((Path(directory) / "fixed.txt").read_text(), "fixed\n")
             self.assertEqual(calls[0]["model"], "local-code-model")
+            self.assertEqual([call["temperature"] for call in calls], [0.35, 0.35])
+            for call in calls:
+                self.assertNotIn("top_p", call)
             self.assertEqual(
                 received_metadata[0],
                 {"agent": "local-model", "model": "local-code-model", "hardware": "m4-pro"},

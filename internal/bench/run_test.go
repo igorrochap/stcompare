@@ -46,6 +46,9 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	if record.Iterations != 1 {
 		t.Fatalf("iterations = %d, want 1", record.Iterations)
 	}
+	if record.Temperature != 0 {
+		t.Fatalf("record temperature = %v, want deterministic default 0", record.Temperature)
+	}
 	if len(adapter.instructions) != 0 {
 		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
 	}
@@ -204,6 +207,32 @@ func TestRunReportsPreflightAdapterFailureBeforeComparison(t *testing.T) {
 	}
 	if record.Iterations != 0 || len(comparator.configs) != 0 || len(adapter.instructions) != 0 {
 		t.Fatalf("preflight failure performed real work: iterations=%d comparisons=%d fixes=%d", record.Iterations, len(comparator.configs), len(adapter.instructions))
+	}
+}
+
+func TestRunRejectsAdapterTemperatureBeforeCandidateLifecycle(t *testing.T) {
+	comparator := &fakeComparator{}
+	candidate := &fakeCandidate{}
+	adapter := &fakeAdapter{
+		preflightResult: &AdapterResult{Temperature: float64Pointer(2.01)},
+	}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+	})
+	if err == nil || !strings.Contains(err.Error(), "temperature must be between 0 and 2") {
+		t.Fatalf("Run() error = %v, want out-of-range temperature error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAdapterError {
+		t.Fatalf("terminal state = %q, want adapter error", record.TerminalState)
+	}
+	if len(candidate.calls) != 0 {
+		t.Fatalf("candidate calls = %#v, want no lifecycle side effects", candidate.calls)
+	}
+	if len(comparator.configs) != 0 {
+		t.Fatalf("comparator calls = %d, want 0", len(comparator.configs))
 	}
 }
 
@@ -453,10 +482,13 @@ func TestRunPassesRecordedMetadataToAdapter(t *testing.T) {
 	}}
 	adapter := &fakeAdapter{}
 
-	_, err := Run(Config{
-		AdapterMetadata: AdapterMetadata{Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro"},
-		BaselineExists:  func() bool { return true },
-		MaxIterations:   2,
+	record, err := Run(Config{
+		AdapterMetadata: AdapterMetadata{
+			Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro",
+			Temperature: float64Pointer(0.65),
+		},
+		BaselineExists: func() bool { return true },
+		MaxIterations:  2,
 	}, Dependencies{
 		Comparator: comparator,
 		Candidate:  &fakeCandidate{},
@@ -470,10 +502,42 @@ func TestRunPassesRecordedMetadataToAdapter(t *testing.T) {
 	if len(adapter.metadata) != 1 {
 		t.Fatalf("adapter metadata calls = %d, want 1", len(adapter.metadata))
 	}
-	want := AdapterMetadata{Agent: "codex", Model: "gpt-5", Effort: "high", Hardware: "m4-pro"}
-	if adapter.metadata[0] != want {
-		t.Fatalf("adapter metadata = %#v, want %#v", adapter.metadata[0], want)
+	metadata := adapter.metadata[0]
+	if metadata.Agent != "codex" || metadata.Model != "gpt-5" || metadata.Effort != "high" ||
+		metadata.Hardware != "m4-pro" || metadata.Temperature == nil || *metadata.Temperature != 0.65 {
+		t.Fatalf("adapter metadata = %#v, want campaign metadata with temperature", metadata)
 	}
+	if record.Temperature != 0.65 {
+		t.Fatalf("record temperature = %v, want 0.65", record.Temperature)
+	}
+}
+
+func TestRunRecordsAdapterReportedEffectiveTemperature(t *testing.T) {
+	adapter := &fakeAdapter{
+		preflightResult: &AdapterResult{Temperature: float64Pointer(0.9)},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.Temperature != 0.9 {
+		t.Fatalf("record temperature = %v, want adapter-reported effective temperature", record.Temperature)
+	}
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }
 
 func TestRunStopsAtMaxIterations(t *testing.T) {
@@ -957,6 +1021,7 @@ func (f *fakeCandidate) fail(phase string) error {
 
 type fakeAdapter struct {
 	preflightMetadata []AdapterMetadata
+	preflightResult   *AdapterResult
 	preflightErr      error
 	instructions      []string
 	metadata          []AdapterMetadata
@@ -984,6 +1049,13 @@ func (adapter *trackingAdapter) ProcessReuseActive() bool {
 func (f *fakeAdapter) Preflight(metadata AdapterMetadata) error {
 	f.preflightMetadata = append(f.preflightMetadata, metadata)
 	return f.preflightErr
+}
+
+func (f *fakeAdapter) EffectiveTemperature() *float64 {
+	if f.preflightResult == nil {
+		return nil
+	}
+	return f.preflightResult.Temperature
 }
 
 func (f *fakeAdapter) Fix(

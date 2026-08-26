@@ -38,6 +38,10 @@ func validCandidateCampaign() Campaign {
 	}
 }
 
+func float64Pointer(value float64) *float64 {
+	return &value
+}
+
 func TestCampaignReportDirJoinsConfiguredRootAndCampaign(t *testing.T) {
 	effective := Config{ReportsDir: filepath.Join("custom", "reports")}
 
@@ -78,6 +82,7 @@ campaigns:
     agent: claude-code
     model: sonnet-5
     effort: high
+    temperature: 0.65
     adapter: remote
 stbench:
   hardware: RTX 4090 / 64GB
@@ -120,6 +125,9 @@ candidate_spec: /openapi.json
 	if candidate.Agent != "claude-code" || candidate.Model != "sonnet-5" ||
 		candidate.Effort != "high" || candidate.Adapter != "remote" {
 		t.Fatalf("candidate = %#v, want campaign identity", candidate)
+	}
+	if candidate.Temperature == nil || *candidate.Temperature != 0.65 {
+		t.Fatalf("candidate temperature = %#v, want 0.65", candidate.Temperature)
 	}
 	if loaded.Stbench.Lifecycle.HealthTimeout != "5s" {
 		t.Fatalf("health timeout = %q, want %q", loaded.Stbench.Lifecycle.HealthTimeout, "5s")
@@ -454,6 +462,28 @@ func TestConfigValidateEnforcesCampaignIdentity(t *testing.T) {
 			}
 			if err.Error() != test.wantError {
 				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigValidateRejectsOutOfRangeCampaignTemperature(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		temperature float64
+	}{
+		{name: "negative", temperature: -0.01},
+		{name: "above server maximum", temperature: 2.01},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := validCandidateIdentityConfig()
+			campaign := config.Campaigns["sonnet5-high"]
+			campaign.Temperature = float64Pointer(test.temperature)
+			config.Campaigns["sonnet5-high"] = campaign
+
+			err := config.Validate()
+			if err == nil || !strings.Contains(err.Error(), "temperature must be between 0 and 2") {
+				t.Fatalf("Validate() error = %v, want out-of-range temperature error", err)
 			}
 		})
 	}
