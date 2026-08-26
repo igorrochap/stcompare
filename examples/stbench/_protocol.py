@@ -74,19 +74,21 @@ def decode_request(raw: str) -> tuple[dict[str, Any], str]:
     return request, instruction
 
 
-def request_metadata(request: dict[str, Any]) -> dict[str, str]:
+def request_metadata(request: dict[str, Any]) -> dict[str, Any]:
     """Return the stbench execution metadata from an adapter request."""
 
-    metadata: dict[str, str] = {}
+    metadata: dict[str, Any] = {}
     for name in ("agent", "model", "hardware"):
         value = request.get(name)
         if not isinstance(value, str):
             raise ValueError(f"adapter input {name} is required")
         metadata[name] = value
+    if "temperature" in request:
+        metadata["temperature"] = request["temperature"]
     return metadata
 
 
-def metadata_environment(metadata: dict[str, str]) -> dict[str, str]:
+def metadata_environment(metadata: dict[str, Any]) -> dict[str, str]:
     """Expose request metadata to an adapter's child process."""
 
     return {
@@ -96,7 +98,7 @@ def metadata_environment(metadata: dict[str, str]) -> dict[str, str]:
     }
 
 
-def metadata_headers(metadata: dict[str, str]) -> dict[str, str]:
+def metadata_headers(metadata: dict[str, Any]) -> dict[str, str]:
     """Expose request metadata to an adapter's HTTP-backed agent."""
 
     return {
@@ -113,6 +115,7 @@ def emit_result(
     tokens: dict[str, int] | None = None,
     message: str = "",
     reuse_process: bool = False,
+    temperature: float | None = None,
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
 
@@ -123,6 +126,8 @@ def emit_result(
         "tokens": tokens,
         "reuse_process": reuse_process,
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 

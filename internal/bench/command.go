@@ -175,10 +175,11 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	baselineName := findBaselineName(effective)
 	benchConfig := Config{
 		AdapterMetadata: AdapterMetadata{
-			Agent:    settings.agent,
-			Model:    settings.model,
-			Effort:   settings.effort,
-			Hardware: settings.hardware,
+			Agent:       settings.agent,
+			Model:       settings.model,
+			Effort:      settings.effort,
+			Temperature: settings.temperature,
+			Hardware:    settings.hardware,
 		},
 		Candidate:         settings.campaign,
 		Baseline:          baselineName,
@@ -262,6 +263,7 @@ type runSettings struct {
 	agent             string
 	model             string
 	effort            string
+	temperature       *float64
 	hardware          string
 	adapter           string
 	adapterTimeout    string
@@ -412,6 +414,7 @@ func applyCampaignSettings(effective config.Config, settings *runSettings) error
 	settings.agent = campaign.Agent
 	settings.model = campaign.Model
 	settings.effort = campaign.Effort
+	settings.temperature = campaign.Temperature
 	if effective.Stbench != nil {
 		settings.adapter = effective.Stbench.Adapters[campaign.Adapter]
 	}

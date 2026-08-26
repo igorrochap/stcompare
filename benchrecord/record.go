@@ -42,10 +42,12 @@ const (
 
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
-	SchemaVersion        string         `json:"schema_version"`
-	Agent                string         `json:"agent"`
-	Model                string         `json:"model"`
-	Effort               string         `json:"effort"`
+	SchemaVersion string `json:"schema_version"`
+	Agent         string `json:"agent"`
+	Model         string `json:"model"`
+	Effort        string `json:"effort"`
+	// Temperature is the effective sampling temperature used by the adapter.
+	Temperature          float64        `json:"temperature"`
 	Hardware             string         `json:"hardware"`
 	Prompt               PromptIdentity `json:"prompt"`
 	PromptInstructions   []string       `json:"prompt_instructions"`

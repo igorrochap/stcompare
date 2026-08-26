@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"text/template"
 	"text/template/parse"
@@ -40,10 +41,11 @@ const (
 
 // AdapterMetadata identifies the execution configuration supplied to an adapter.
 type AdapterMetadata struct {
-	Agent    string `json:"agent"`
-	Model    string `json:"model"`
-	Effort   string `json:"effort"`
-	Hardware string `json:"hardware"`
+	Agent       string   `json:"agent"`
+	Model       string   `json:"model"`
+	Effort      string   `json:"effort"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	Hardware    string   `json:"hardware"`
 }
 
 // Config describes one benchmark run.
@@ -119,6 +121,12 @@ type Candidate interface {
 type Adapter interface {
 	Preflight(metadata AdapterMetadata) error
 	Fix(instruction string, view agentreport.View, metadata AdapterMetadata) (*AdapterResult, error)
+}
+
+// EffectiveTemperatureReporter exposes an adapter's resolved run temperature
+// when it can apply an adapter-level override during preflight.
+type EffectiveTemperatureReporter interface {
+	EffectiveTemperature() *float64
 }
 
 // AdapterCloser releases adapter resources after a benchmark run.
@@ -226,6 +234,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		Agent:                config.Agent,
 		Model:                config.Model,
 		Effort:               config.Effort,
+		Temperature:          effectiveTemperature(config.Temperature),
 		Hardware:             config.Hardware,
 		Prompt:               config.Prompt,
 		Candidate:            config.Candidate,
@@ -263,7 +272,12 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	}
 
 	report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressStart})
-	if state, err := runPreflight(config, dependencies, &record.LifecyclePhase); err != nil {
+	if state, err := runPreflight(
+		config,
+		dependencies,
+		&record.LifecyclePhase,
+		&record.Temperature,
+	); err != nil {
 		report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressError, Err: err})
 		return finish(record, dependencies.Now(), state), err
 	}
@@ -452,6 +466,9 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
 		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
 	}
+	if fix.Temperature != nil {
+		runner.record.Temperature = *fix.Temperature
+	}
 	if err != nil {
 		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
 		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
@@ -534,7 +551,23 @@ func runPreflight(
 	config Config,
 	dependencies Dependencies,
 	failedPhase *benchrecord.LifecyclePhase,
+	recordedTemperature *float64,
 ) (benchrecord.TerminalState, error) {
+	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
+		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+	}
+	if reporter, ok := dependencies.Adapter.(EffectiveTemperatureReporter); ok {
+		temperature := reporter.EffectiveTemperature()
+		if temperature != nil {
+			if err := validateTemperature(*temperature); err != nil {
+				return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+			}
+			// The adapter may apply an explicit command-line override that is not
+			// visible in the campaign metadata. Its preflight result is the source
+			// of truth for the recorded effective value.
+			*recordedTemperature = *temperature
+		}
+	}
 	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil); err != nil {
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
 	}
@@ -542,10 +575,21 @@ func runPreflight(
 		*failedPhase = benchrecord.LifecyclePhaseStop
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight stop: %w", err)
 	}
-	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
-		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
-	}
 	return "", nil
+}
+
+func validateTemperature(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
+		return errors.New("temperature must be between 0 and 2")
+	}
+	return nil
+}
+
+func effectiveTemperature(temperature *float64) float64 {
+	if temperature == nil {
+		return 0
+	}
+	return *temperature
 }
 
 type promptTemplateData struct {
@@ -667,6 +711,7 @@ type agentFixResult struct {
 	Instruction string
 	Hash        string
 	Response    string
+	Temperature *float64
 	Rendered    bool
 }
 
@@ -700,6 +745,12 @@ func runAgentFix(
 	}
 	if result != nil {
 		fix.Response = result.Response
+		if result.Temperature != nil {
+			if err := validateTemperature(*result.Temperature); err != nil {
+				return fix, fmt.Errorf("adapter temperature: %w", err)
+			}
+		}
+		fix.Temperature = result.Temperature
 	}
 	if err != nil {
 		return fix, fmt.Errorf("adapter fix: %w", err)

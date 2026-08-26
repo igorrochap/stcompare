@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import urllib.error
@@ -24,6 +25,7 @@ from _protocol import (
     emit_result,
     handle_preflight,
     is_managed_state_path,
+    is_preflight_request,
     metadata_headers,
     read_requests,
     request_metadata,
@@ -34,6 +36,8 @@ from _protocol import (
 DEFAULT_URL = "http://127.0.0.1:8000/v1/chat/completions"
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_MAX_TURNS = 20
+DEFAULT_TEMPERATURE = 0.0
+MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
@@ -115,9 +119,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model",
         help="Explicit model override; defaults to the stbench request metadata",
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature override; defaults to campaign metadata or 0",
+    )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout in seconds")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help="Maximum tool-use turns")
     return parser.parse_args(argv)
+
+
+def resolve_temperature(
+    flag_temperature: float | None,
+    metadata: dict[str, Any] | None,
+) -> float:
+    """Resolve and validate the one sampling temperature used for a run."""
+
+    if flag_temperature is not None:
+        return validate_temperature(flag_temperature, "--temperature")
+    if metadata is not None and metadata.get("temperature") is not None:
+        return validate_temperature(metadata["temperature"], "campaign temperature")
+    return DEFAULT_TEMPERATURE
+
+
+def validate_temperature(value: Any, source: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{source} must be a number between 0 and {MAX_TEMPERATURE:g}")
+    temperature = float(value)
+    if not math.isfinite(temperature) or temperature < 0 or temperature > MAX_TEMPERATURE:
+        raise ValueError(f"{source} must be between 0 and {MAX_TEMPERATURE:g}")
+    return temperature
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,14 +157,22 @@ def main(argv: list[str] | None = None) -> int:
         settings = parse_args(argv)
         for request, instruction in read_requests():
             try:
-                if handle_preflight(request):
+                if is_preflight_request(request):
+                    if all(name in request for name in ("agent", "model", "hardware")):
+                        metadata = request_metadata(request)
+                        temperature = resolve_temperature(settings.temperature, metadata)
+                        emit_result(status="ok", temperature=temperature)
+                    else:
+                        handle_preflight(request)
                     continue
                 metadata = request_metadata(request)
+                temperature = resolve_temperature(settings.temperature, metadata)
                 response, usages = run_agent(
                     instruction,
                     Path.cwd(),
                     url=settings.url,
                     model=settings.model or metadata["model"],
+                    temperature=temperature,
                     metadata=metadata,
                     timeout=settings.timeout,
                     max_turns=settings.max_turns,
@@ -141,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                     status="ok",
                     response=response,
                     tokens=aggregate_usages(usages),
+                    temperature=temperature,
                 )
             except (OSError, ValueError, RuntimeError) as error:
                 emit_error(str(error))
@@ -161,7 +202,8 @@ def run_agent(
     model: str,
     timeout: float,
     max_turns: int,
-    metadata: dict[str, str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    temperature: float | None = None,
 ) -> tuple[str, list[dict[str, int] | None]]:
     if timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -169,6 +211,9 @@ def run_agent(
         raise ValueError("--max-turns must be positive")
     if not model.strip():
         raise ValueError("--model must not be empty")
+    if temperature is None:
+        temperature = resolve_temperature(None, metadata)
+    temperature = validate_temperature(temperature, "temperature")
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -180,10 +225,13 @@ def run_agent(
     for _ in range(max_turns):
         payload = {
             "model": model,
+            "temperature": temperature,
             "messages": messages,
             "tools": TOOLS,
             "tool_choice": "auto",
         }
+        if temperature == DEFAULT_TEMPERATURE:
+            payload["top_p"] = 1
         result = post_json(url, payload, timeout, metadata=metadata)
         usages.append(usage_to_tokens(result.get("usage")))
         choices = result.get("choices")
@@ -230,7 +278,7 @@ def post_json(
     payload: dict[str, Any],
     timeout: float,
     *,
-    metadata: dict[str, str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     if metadata is not None:

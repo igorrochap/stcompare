@@ -126,10 +126,11 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	}
 
 	metadata := AdapterMetadata{
-		Agent:    "codex",
-		Model:    "gpt-5",
-		Effort:   "high",
-		Hardware: "m4-pro",
+		Agent:       "codex",
+		Model:       "gpt-5",
+		Effort:      "high",
+		Temperature: float64Pointer(0.65),
+		Hardware:    "m4-pro",
 	}
 	result, err := adapter.Fix("fix the candidate", wantView, metadata)
 	if err != nil {
@@ -157,6 +158,9 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 		request.Hardware != metadata.Hardware {
 		t.Fatalf("metadata = %#v, want %#v", request, metadata)
 	}
+	if request.Temperature == nil || *request.Temperature != 0.65 {
+		t.Fatalf("temperature = %#v, want 0.65", request.Temperature)
+	}
 	if request.View.Counts != wantView.Counts || len(request.View.Actionable) != 1 ||
 		request.View.Actionable[0].ID != "problem-1" {
 		t.Fatalf("view = %#v, want %#v", request.View, wantView)
@@ -181,7 +185,7 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	inputPath := filepath.Join(dir, "preflight.json")
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_PREFLIGHT\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"tokens\":null}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"tokens\":null,\"temperature\":0.8}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -191,6 +195,10 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 
 	if err := adapter.Preflight(metadata); err != nil {
 		t.Fatalf("Preflight() error = %v", err)
+	}
+	temperature := adapter.EffectiveTemperature()
+	if temperature == nil || *temperature != 0.8 {
+		t.Fatalf("preflight temperature = %#v, want 0.8", temperature)
 	}
 
 	contents, err := os.ReadFile(inputPath)
