@@ -10,13 +10,24 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from unittest.mock import patch
 
 
 EXAMPLES = Path(__file__).parent
 sys.path.insert(0, str(EXAMPLES))
 
 from adapter import apply_patch, tracked_snapshot
-from local_model_adapter import execute_tool, list_files, parse_args, safe_path, resolve_temperature
+from local_model_adapter import (
+    NUDGE_PROMPT,
+    SYSTEM_PROMPT,
+    TOOLS,
+    execute_tool,
+    list_files,
+    parse_args,
+    run_agent,
+    safe_path,
+    resolve_temperature,
+)
 
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
 CLI_ADAPTER = EXAMPLES / "coding_agent_adapter.py"
@@ -24,6 +35,72 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def test_local_model_prompts_are_task_neutral_and_advertise_final_tools(self) -> None:
+        tool_names = [tool["function"]["name"] for tool in TOOLS]
+        self.assertEqual(tool_names, ["list_files", "read_file", "write_file", "str_replace"])
+
+        self.assertIn("You are the coding agent", SYSTEM_PROMPT)
+        self.assertIn("Available tools: list_files, read_file, str_replace, and write_file.", SYSTEM_PROMPT)
+        self.assertIn("Use only the provided tools.", SYSTEM_PROMPT)
+        self.assertIn("Do not build, test, or run verification commands.", SYSTEM_PROMPT)
+        self.assertIn("Use str_replace to edit existing files and write_file to create new files.", SYSTEM_PROMPT)
+        self.assertIn("When finished, send a plain message with no tool call.", SYSTEM_PROMPT)
+        self.assertNotIn("run useful", SYSTEM_PROMPT.lower())
+        self.assertNotIn("benchmark loop", SYSTEM_PROMPT.lower())
+        self.assertNotIn("stcompare artifact", SYSTEM_PROMPT.lower())
+        self.assertNotIn("map each", SYSTEM_PROMPT.lower())
+        self.assertNotIn("status code", SYSTEM_PROMPT.lower())
+        self.assertNotIn("documentation", SYSTEM_PROMPT.lower())
+        self.assertNotIn("annotation", SYSTEM_PROMPT.lower())
+
+        self.assertIn("Use the provided tools if work remains.", NUDGE_PROMPT)
+        self.assertIn("When finished, send a plain message with no tool call.", NUDGE_PROMPT)
+        self.assertNotIn("verification", NUDGE_PROMPT.lower())
+        self.assertNotIn("build", NUDGE_PROMPT.lower())
+        self.assertNotIn("test", NUDGE_PROMPT.lower())
+        self.assertNotIn("map each", NUDGE_PROMPT.lower())
+        self.assertNotIn("status code", NUDGE_PROMPT.lower())
+
+    def test_local_model_adapter_nudges_only_empty_non_tool_turns(self) -> None:
+        responses = [
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json", side_effect=responses
+        ) as post_json:
+            response, _ = run_agent(
+                "task",
+                Path(directory),
+                url="http://model.invalid",
+                model="local-model",
+                timeout=5,
+                max_turns=2,
+            )
+
+        self.assertEqual(response, "done")
+        self.assertEqual(post_json.call_count, 2)
+        second_messages = post_json.call_args_list[1].args[1]["messages"]
+        self.assertIn({"role": "user", "content": NUDGE_PROMPT}, second_messages)
+
+    def test_local_model_adapter_ends_on_plain_message_without_nudge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json",
+            return_value={"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ) as post_json:
+            response, _ = run_agent(
+                "task",
+                Path(directory),
+                url="http://model.invalid",
+                model="local-model",
+                timeout=5,
+                max_turns=2,
+            )
+
+        self.assertEqual(response, "done")
+        self.assertEqual(post_json.call_count, 1)
+
     def test_local_model_temperature_resolution_is_explicit_and_bounded(self) -> None:
         tests = [
             ("default independent of effort", None, {"effort": "luna-high"}, 0.0),
