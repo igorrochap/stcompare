@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -32,9 +33,11 @@ from _protocol import (
 
 
 DEFAULT_URL = "http://127.0.0.1:8000/v1/chat/completions"
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_TURNS = 20
 MAX_FILE_BYTES = 256_000
+READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
+EDIT_HISTORY_PLACEHOLDER = "[edit content elided from history]"
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
 The user message is the complete rendered stbench task instruction and is
@@ -77,7 +80,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write UTF-8 text to a candidate file, creating parents.",
+            "description": "Create a new UTF-8 candidate file and its parent directories.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -85,6 +88,23 @@ TOOLS = [
                     "content": {"type": "string"},
                 },
                 "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "str_replace",
+            "description": "Replace one unique, exact UTF-8 substring in an existing candidate file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                },
+                "required": ["path", "old_string", "new_string"],
                 "additionalProperties": False,
             },
         },
@@ -106,6 +126,25 @@ TOOLS = [
         },
     },
 ]
+TOOL_NAMES = frozenset(
+    tool["function"]["name"] for tool in TOOLS if isinstance(tool.get("function"), dict)
+)
+
+
+class ToolError(ValueError):
+    """An expected tool failure that can be returned to the model."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+TOOL_CALL_TAG = re.compile(
+    r"<tool_call>(?P<plain_body>.*?)</tool_call>"
+    r"|<\|tool_call\|>(?P<special_body>.*?)<\|/tool_call\|>"
+    r"|<\|tool_call\|>(?P<alternate_body>.*?)</\|tool_call\|>",
+    flags=re.DOTALL,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -176,8 +215,10 @@ def run_agent(
     ]
     usages: list[dict[str, int] | None] = []
     final_response = ""
+    current_turn_start = len(messages)
 
     for _ in range(max_turns):
+        compact_history(messages, current_turn_start)
         payload = {
             "model": model,
             "messages": messages,
@@ -192,37 +233,212 @@ def run_agent(
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise RuntimeError("local model response has no assistant message")
-        messages.append(message)
 
         content = message.get("content")
-        if isinstance(content, str):
-            final_response = content
         tool_calls = message.get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
-            return final_response, usages
+            recovered_calls = recover_tool_calls(content)
+            if recovered_calls:
+                message = dict(message)
+                message["tool_calls"] = recovered_calls
+                tool_calls = recovered_calls
+            else:
+                messages.append(message)
+                if isinstance(content, str):
+                    final_response = content
+                return final_response, usages
+
+        assistant_message_start = len(messages)
+        messages.append(message)
 
         for call in tool_calls:
-            if not isinstance(call, dict):
-                raise RuntimeError("local model returned an invalid tool call")
-            function = call.get("function")
-            if not isinstance(function, dict):
-                raise RuntimeError("local model tool call has no function")
-            name = function.get("name")
-            arguments = function.get("arguments", {})
-            if isinstance(arguments, str):
-                arguments = json.loads(arguments)
-            if not isinstance(name, str) or not isinstance(arguments, dict):
-                raise RuntimeError("local model returned invalid tool arguments")
-            tool_result = execute_tool(name, arguments, root)
+            tool_result = execute_model_tool_call(call, root)
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": call.get("id", "unknown"),
+                    "tool_call_id": call.get("id", "unknown") if isinstance(call, dict) else "unknown",
                     "content": json.dumps(tool_result, ensure_ascii=False),
                 }
             )
+        current_turn_start = assistant_message_start
 
     raise RuntimeError(f"local model reached the {max_turns}-turn limit")
+
+
+def execute_model_tool_call(call: Any, root: Path) -> dict[str, Any]:
+    """Validate one structured or recovered model call and execute it."""
+
+    if not isinstance(call, dict):
+        return tool_error("invalid_tool_call", "local model returned an invalid tool call")
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return tool_error("invalid_tool_call", "local model tool call has no function")
+    name = function.get("name")
+    arguments = function.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError as error:
+            return tool_error("invalid_tool_arguments", f"local model returned invalid JSON arguments: {error}")
+    if not isinstance(name, str) or not isinstance(arguments, dict):
+        return tool_error("invalid_tool_arguments", "local model returned invalid tool arguments")
+    return execute_tool(name, arguments, root)
+
+
+def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
+    """Recover registered JSON tool calls that a model emitted as text."""
+
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    candidates = [
+        match.group("plain_body") or match.group("special_body") or match.group("alternate_body")
+        for match in TOOL_CALL_TAG.finditer(content)
+    ]
+    candidates.append(content)
+    decoder = json.JSONDecoder()
+    recovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_candidate(candidate: Any) -> None:
+        if isinstance(candidate, list):
+            for item in candidate:
+                add_candidate(item)
+            return
+        if not isinstance(candidate, dict):
+            return
+        name = candidate.get("name", candidate.get("tool"))
+        arguments = candidate.get(
+            "arguments",
+            candidate.get("parameters", candidate.get("args")),
+        )
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(name, str) or name not in TOOL_NAMES or not isinstance(arguments, dict):
+            return
+        identity = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+        if identity in seen:
+            return
+        seen.add(identity)
+        recovered.append(
+            {
+                "id": f"recovered-{len(recovered) + 1}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        )
+
+    for candidate in candidates:
+        try:
+            add_candidate(json.loads(candidate.strip()))
+        except json.JSONDecodeError:
+            pass
+
+    # A prose wrapper may surround the JSON object. Scan each possible object
+    # without interpreting arbitrary JSON: only a registered name plus an
+    # arguments object qualifies as a recovered tool call.
+    for start, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(content[start:])
+        except json.JSONDecodeError:
+            continue
+        add_candidate(candidate)
+
+    # Some instruction-tuned servers put a function name in the text and
+    # follow it with a JSON argument object, for example
+    # ``str_replace({"path": "api.py", ...})``. Recover that form too, but
+    # only for names in the registered tool set.
+    for name in sorted(TOOL_NAMES):
+        for match in re.finditer(rf"(?<![\w-]){re.escape(name)}\s*(?:\(|:)?\s*", content):
+            start = match.end()
+            if start >= len(content) or content[start] != "{":
+                continue
+            try:
+                arguments, _ = decoder.raw_decode(content[start:])
+            except json.JSONDecodeError:
+                continue
+            add_candidate({"name": name, "arguments": arguments})
+
+    return recovered
+
+
+def compact_history(messages: list[dict[str, Any]], current_turn_start: int) -> None:
+    """Elide bulky file payloads from messages older than the current turn."""
+
+    for message in messages[:current_turn_start]:
+        role = message.get("role")
+        if role == "assistant":
+            compact_edit_arguments(message)
+        elif role == "tool":
+            compact_read_file_result(message)
+
+
+def compact_edit_arguments(message: dict[str, Any]) -> None:
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    echoed_content = message.get("content")
+    redactions: list[str] = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if name not in {"write_file", "str_replace"}:
+            continue
+        arguments = function.get("arguments")
+        was_string = isinstance(arguments, str)
+        if was_string:
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(arguments, dict):
+            continue
+        fields = ("content",) if name == "write_file" else ("old_string", "new_string")
+        changed = False
+        for field in fields:
+            value = arguments.get(field)
+            if isinstance(value, str) and value and value != EDIT_HISTORY_PLACEHOLDER:
+                redactions.append(value)
+            if field in arguments and arguments[field] != EDIT_HISTORY_PLACEHOLDER:
+                arguments[field] = EDIT_HISTORY_PLACEHOLDER
+                changed = True
+        if changed and was_string:
+            function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+        elif changed:
+            function["arguments"] = arguments
+    if isinstance(echoed_content, str):
+        # Text-recovered calls repeat their JSON arguments in assistant
+        # content. Keep the surrounding model decision while eliding only the
+        # repeated edit payload.
+        for value in sorted(set(redactions), key=len, reverse=True):
+            echoed_content = echoed_content.replace(value, EDIT_HISTORY_PLACEHOLDER)
+        message["content"] = echoed_content
+
+
+def compact_read_file_result(message: dict[str, Any]) -> None:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(result, dict) or "content" not in result or result.get("ok") is not True:
+        return
+    result["content"] = READ_FILE_HISTORY_PLACEHOLDER
+    message["content"] = json.dumps(result, ensure_ascii=False)
 
 
 def post_json(
@@ -258,6 +474,8 @@ def post_json(
 
 
 def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
+    if not isinstance(arguments, dict):
+        return tool_error("invalid_tool_arguments", "tool arguments must be an object")
     try:
         if name == "list_files":
             return list_files(root, str(arguments.get("path", ".")))
@@ -265,11 +483,26 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
             return read_file(root, str(arguments["path"]), int(arguments.get("max_bytes", MAX_FILE_BYTES)))
         if name == "write_file":
             return write_file(root, str(arguments["path"]), str(arguments["content"]))
+        if name == "str_replace":
+            return str_replace(
+                root,
+                str(arguments["path"]),
+                str(arguments["old_string"]),
+                str(arguments["new_string"]),
+            )
         if name == "run_command":
             return run_command(root, arguments)
-        return {"ok": False, "error": f"unknown tool {name!r}"}
-    except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
-        return {"ok": False, "error": str(error)}
+        return tool_error("unknown_tool", f"unknown tool {name!r}")
+    except ToolError as error:
+        return tool_error(error.code, str(error))
+    except FileNotFoundError as error:
+        return tool_error("file_not_found", str(error))
+    except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        return tool_error("tool_error", str(error))
+
+
+def tool_error(code: str, message: str) -> dict[str, Any]:
+    return {"ok": False, "error": message, "error_code": code}
 
 
 def list_files(root: Path, relative: str) -> dict[str, Any]:
@@ -308,9 +541,50 @@ def read_file(root: Path, relative: str, max_bytes: int) -> dict[str, Any]:
 
 def write_file(root: Path, relative: str, content: str) -> dict[str, Any]:
     target = safe_path(root, relative)
+    if target.exists():
+        raise ToolError("write_file_existing", f"write_file can only create new files: {relative}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    try:
+        with target.open("x", encoding="utf-8", newline="") as output:
+            output.write(content)
+    except FileExistsError as error:
+        raise ToolError("write_file_existing", f"write_file can only create new files: {relative}") from error
     return {"ok": True, "path": relative, "bytes": len(content.encode("utf-8"))}
+
+
+def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> dict[str, Any]:
+    if not old_string:
+        raise ToolError("invalid_arguments", "old_string must not be empty")
+    target = safe_path(root, relative)
+    try:
+        contents = target.read_bytes()
+    except FileNotFoundError as error:
+        raise ToolError("file_not_found", f"str_replace target does not exist: {relative}") from error
+    if b"\x00" in contents:
+        raise ToolError("invalid_file", "str_replace only supports text files")
+    try:
+        text = contents.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ToolError("invalid_file", "str_replace only supports UTF-8 text files") from error
+
+    matches = 0
+    search_from = 0
+    while True:
+        match_at = text.find(old_string, search_from)
+        if match_at < 0:
+            break
+        matches += 1
+        search_from = match_at + 1
+    if matches == 0:
+        raise ToolError("str_replace_no_match", f"str_replace found no match in {relative}")
+    if matches > 1:
+        raise ToolError(
+            "str_replace_multiple_matches",
+            f"str_replace found {matches} matches in {relative}; the match must be unique",
+        )
+    with target.open("w", encoding="utf-8", newline="") as output:
+        output.write(text.replace(old_string, new_string, 1))
+    return {"ok": True, "path": relative, "replacements": 1}
 
 
 def run_command(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -342,9 +616,9 @@ def safe_path(root: Path, relative: str) -> Path:
     try:
         relative_path = candidate.relative_to(root)
     except ValueError as error:
-        raise ValueError("path escapes the candidate directory") from error
+        raise ToolError("path_error", "path escapes the candidate directory") from error
     if is_managed_state_path(relative_path.as_posix()):
-        raise ValueError("path belongs to managed tool state")
+        raise ToolError("path_error", "path belongs to managed tool state")
     return candidate
 
 

@@ -16,7 +16,7 @@ EXAMPLES = Path(__file__).parent
 sys.path.insert(0, str(EXAMPLES))
 
 from adapter import apply_patch, tracked_snapshot
-from local_model_adapter import list_files, safe_path
+from local_model_adapter import execute_tool, list_files, parse_args, safe_path
 
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
 CLI_ADAPTER = EXAMPLES / "coding_agent_adapter.py"
@@ -74,6 +74,90 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(listing["files"], ["api.py"])
             with self.assertRaises(ValueError):
                 safe_path(root, ".local/stbench/stop.sh")
+
+    def test_local_model_str_replace_applies_unique_whitespace_exact_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "api.py"
+            target.write_text("def answer():\n    return 41\n", encoding="utf-8")
+
+            result = execute_tool(
+                "str_replace",
+                {
+                    "path": "api.py",
+                    "old_string": "def answer():\n    return 41",
+                    "new_string": "def answer():\n    return 42",
+                },
+                root,
+            )
+
+            self.assertEqual(result["ok"], True)
+            self.assertEqual(target.read_text(encoding="utf-8"), "def answer():\n    return 42\n")
+
+    def test_local_model_str_replace_returns_distinct_recoverable_match_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("return 1\nreturn 2\n", encoding="utf-8")
+
+            no_match = execute_tool(
+                "str_replace",
+                {"path": "api.py", "old_string": "return 3", "new_string": "return 4"},
+                root,
+            )
+            multiple_matches = execute_tool(
+                "str_replace",
+                {"path": "api.py", "old_string": "return", "new_string": "yield"},
+                root,
+            )
+
+            self.assertFalse(no_match["ok"])
+            self.assertEqual(no_match["error_code"], "str_replace_no_match")
+            self.assertIn("no match", no_match["error"])
+            self.assertFalse(multiple_matches["ok"])
+            self.assertEqual(multiple_matches["error_code"], "str_replace_multiple_matches")
+            self.assertIn("2 matches", multiple_matches["error"])
+            self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "return 1\nreturn 2\n")
+
+    def test_local_model_write_file_is_new_file_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "new.txt"
+            target.write_text("original\n", encoding="utf-8")
+
+            result = execute_tool(
+                "write_file",
+                {"path": "new.txt", "content": "replacement\n"},
+                root,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "write_file_existing")
+            self.assertIn("only create new files", result["error"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+
+    def test_local_model_str_replace_missing_and_escaping_paths_are_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            missing = execute_tool(
+                "str_replace",
+                {"path": "missing.py", "old_string": "a", "new_string": "b"},
+                root,
+            )
+            escaping = execute_tool(
+                "str_replace",
+                {"path": "../outside.py", "old_string": "a", "new_string": "b"},
+                root,
+            )
+
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["error_code"], "file_not_found")
+            self.assertFalse(escaping["ok"])
+            self.assertEqual(escaping["error_code"], "path_error")
+
+    def test_local_model_timeout_defaults_to_600_seconds_and_is_overridable(self) -> None:
+        self.assertEqual(parse_args([]).timeout, 600)
+        self.assertEqual(parse_args(["--timeout", "7.5"]).timeout, 7.5)
 
     def test_adapter_examples_accept_no_op_preflight_without_running_agent(self) -> None:
         request = json.dumps({"preflight": True, "reuse_process": True})
@@ -241,6 +325,188 @@ class AdapterExamplesTest(unittest.TestCase):
             )
             self.assertEqual(calls[0]["messages"][1]["content"], "exact task")
             self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
+
+    def test_local_model_adapter_recovers_str_replace_from_assistant_text(self) -> None:
+        calls: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+                length = int(self.headers["Content-Length"])
+                calls.append(json.loads(self.rfile.read(length)))
+                if len(calls) == 1:
+                    response = {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": (
+                                        "<tool_call>"
+                                        '{"name":"str_replace","arguments":'
+                                        '{"path":"api.py","old_string":"return 1",'
+                                        '"new_string":"return 2"}}'
+                                        "</tool_call>"
+                                    ),
+                                }
+                            }
+                        ]
+                    }
+                else:
+                    response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, *_: object) -> None:
+                return
+
+        class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            allow_reuse_address = True
+
+        with Server(("127.0.0.1", 0), Handler) as server, tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("return 1\n", encoding="utf-8")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+            completed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER), "--url", url, "--timeout", "5"],
+                cwd=directory,
+                input=json.dumps(
+                    {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "hardware": "m4-pro",
+                        "instruction": "exact task",
+                        "view": {"actionable": []},
+                    }
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            server.shutdown()
+            thread.join(timeout=5)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(json.loads(completed.stdout)["response"], "done")
+            self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "return 2\n")
+            self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
+
+    def test_local_model_adapter_elides_older_file_and_edit_content_from_history(self) -> None:
+        calls: list[dict] = []
+        source = "".join(f"line {index:05d}\n" for index in range(5_000))
+        replacement = source.replace("line 02500", "edited 02500")
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+                length = int(self.headers["Content-Length"])
+                calls.append(json.loads(self.rfile.read(length)))
+                if len(calls) == 1:
+                    message = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "read-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps({"path": "api.py"}),
+                                },
+                            }
+                        ],
+                    }
+                elif len(calls) == 2:
+                    message = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "replace-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "str_replace",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "api.py",
+                                            "old_string": source,
+                                            "new_string": replacement,
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                elif len(calls) == 3:
+                    message = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "command-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "run_command",
+                                    "arguments": json.dumps({"command": ["true"]}),
+                                },
+                            }
+                        ],
+                    }
+                else:
+                    message = {"role": "assistant", "content": "done"}
+                encoded = json.dumps({"choices": [{"message": message}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, *_: object) -> None:
+                return
+
+        class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            allow_reuse_address = True
+
+        with Server(("127.0.0.1", 0), Handler) as server, tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text(source, encoding="utf-8")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+            completed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER), "--url", url, "--timeout", "5", "--max-turns", "5"],
+                cwd=directory,
+                input=json.dumps(
+                    {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "hardware": "m4-pro",
+                        "instruction": "exact task",
+                        "view": {"actionable": []},
+                    }
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            server.shutdown()
+            thread.join(timeout=5)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(json.loads(completed.stdout)["response"], "done")
+            self.assertEqual((root / "api.py").read_text(encoding="utf-8"), replacement)
+            self.assertEqual(len(calls), 4)
+
+            fourth_messages = calls[3]["messages"]
+            older_history = json.dumps(fourth_messages[2:6])
+            self.assertIn("[read_file content elided from history]", older_history)
+            self.assertNotIn(source, older_history)
+            self.assertNotIn(replacement, older_history)
+            older_edit = json.dumps(fourth_messages[4:6])
+            self.assertIn("[edit content elided from history]", older_edit)
+            self.assertNotIn(source, older_edit)
+            self.assertNotIn(replacement, older_edit)
+            self.assertEqual(fourth_messages[-2]["tool_calls"][0]["function"]["name"], "run_command")
 
     def test_coding_agent_adapter_supports_claude_code_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:

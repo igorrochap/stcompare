@@ -83,19 +83,21 @@ stbench:
   agent: local-model
   model: my-local-code-model
   hardware: local-machine
-  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 300 --max-turns 20
+  adapter: python /absolute/path/to/stcompare/examples/stbench/local_model_adapter.py --url http://127.0.0.1:8000/v1/chat/completions --timeout 600 --max-turns 20
 ```
 
 Use an absolute script path when `source_dir` is not the repository root.
 If the local server requires authentication, keep the credential in
 `STBENCH_LOCAL_MODEL_API_KEY`.
 
-The scaffold exposes `list_files`, `read_file`, `write_file`, and shell-free
-`run_command` tools. Paths are confined to the API source tree, and managed
-`.local/stbench` and `.local/stcompare` state is hidden from file listing and
-write tools. `stbench init` uses `.local/stbench` by default, while an external
-state directory can be selected explicitly. The adapter sums usage reported by
-each inference response and returns `null` if a response omits usage.
+The scaffold exposes `list_files`, `read_file`, `str_replace`, `write_file`, and
+shell-free `run_command` tools. `str_replace` applies one exact, unique
+substring replacement to an existing file; `write_file` only creates new
+files. Paths are confined to the API source tree, and managed `.local/stbench`
+and `.local/stcompare` state is hidden from file listing and write tools.
+`stbench init` uses `.local/stbench` by default, while an external state
+directory can be selected explicitly. The adapter sums usage reported by each
+inference response and returns `null` if a response omits usage.
 
 ## Coding-agent CLI adapter
 
