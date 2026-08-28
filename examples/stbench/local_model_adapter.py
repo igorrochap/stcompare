@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -220,6 +221,77 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
 
+def _env_flag(name: str) -> bool:
+    """Read a boolean opt-in environment flag."""
+
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _debug(line: str) -> None:
+    """Write one trace line to stderr when STBENCH_ADAPTER_DEBUG is set.
+
+    stbench forwards adapter stderr, so the trace appears in the run output. It
+    never touches stdout, which carries the adapter's JSON protocol messages.
+    """
+
+    if _env_flag("STBENCH_ADAPTER_DEBUG"):
+        print(line, file=sys.stderr, flush=True)
+
+
+def _debug_turn(turn_number: int, max_turns: int, content: Any, tool_calls: Any) -> None:
+    if not _env_flag("STBENCH_ADAPTER_DEBUG"):
+        return
+    if isinstance(tool_calls, list) and tool_calls:
+        calls = []
+        for call in tool_calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+            calls.append(f"{name}({str(arguments)[:200]})")
+        summary = "tool_calls=" + "; ".join(calls)
+    else:
+        text = content if isinstance(content, str) else repr(content)
+        summary = f"content[{len(text)}]={text[:300]!r}"
+    _debug(f"[turn {turn_number}/{max_turns}] {summary}")
+
+
+def _debug_tool(call: Any, tool_result: Any) -> None:
+    if not _env_flag("STBENCH_ADAPTER_DEBUG"):
+        return
+    function = call.get("function") if isinstance(call, dict) else None
+    name = function.get("name") if isinstance(function, dict) else "?"
+    ok = tool_result.get("ok") if isinstance(tool_result, dict) else None
+    error = tool_result.get("error") if isinstance(tool_result, dict) else None
+    detail = f" error={error!r}" if error else ""
+    _debug(f"    -> {name}: ok={ok}{detail}")
+
+
+def _tool_call_signature(tool_calls: list[Any]) -> str:
+    """Stable identity for a turn's tool calls, used to detect a stalled loop."""
+
+    parts: list[str] = []
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        parts.append(
+            json.dumps(
+                [
+                    function.get("name") if isinstance(function, dict) else None,
+                    function.get("arguments") if isinstance(function, dict) else None,
+                ],
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+    return "\n".join(parts)
+
+
 def run_agent(
     instruction: str,
     root: Path,
@@ -249,7 +321,14 @@ def run_agent(
     final_response = ""
     current_turn_start = len(messages)
 
-    for _ in range(max_turns):
+    # Stop a run that is stuck re-issuing the same failing tool call rather than
+    # burning every remaining turn. Set STBENCH_ADAPTER_MAX_REPEATS=0 to disable.
+    max_repeats = _env_int("STBENCH_ADAPTER_MAX_REPEATS", 4)
+    stall_signature: str | None = None
+    stall_count = 0
+    stalled = False
+
+    for turn_index in range(max_turns):
         compact_history(messages, current_turn_start)
         payload = {
             "model": model,
@@ -271,6 +350,7 @@ def run_agent(
 
         content = message.get("content")
         tool_calls = message.get("tool_calls")
+        _debug_turn(turn_index + 1, max_turns, content, tool_calls)
         if not isinstance(tool_calls, list) or not tool_calls:
             recovered_calls = recover_tool_calls(content)
             if recovered_calls:
@@ -289,8 +369,12 @@ def run_agent(
         assistant_message_start = len(messages)
         messages.append(message)
 
+        any_success = False
         for call in tool_calls:
             tool_result = execute_model_tool_call(call, root)
+            _debug_tool(call, tool_result)
+            if isinstance(tool_result, dict) and tool_result.get("ok"):
+                any_success = True
             messages.append(
                 {
                     "role": "tool",
@@ -299,6 +383,23 @@ def run_agent(
                 }
             )
         current_turn_start = assistant_message_start
+
+        turn_signature = _tool_call_signature(tool_calls)
+        if not any_success and turn_signature == stall_signature:
+            stall_count += 1
+        else:
+            stall_count = 0
+            stall_signature = turn_signature
+        if max_repeats > 0 and stall_count >= max_repeats:
+            _debug(
+                f"[stall] same failing tool call repeated {stall_count + 1}x; "
+                f"stopping at turn {turn_index + 1}/{max_turns}"
+            )
+            stalled = True
+            break
+
+    if stalled:
+        return final_response, usages
 
     raise RuntimeError(f"local model reached the {max_turns}-turn limit")
 
@@ -410,6 +511,10 @@ def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
 
 def compact_history(messages: list[dict[str, Any]], current_turn_start: int) -> None:
     """Elide bulky file payloads from messages older than the current turn."""
+
+    if _env_flag("STBENCH_ADAPTER_NO_COMPACT"):
+        _debug("[compact] disabled via STBENCH_ADAPTER_NO_COMPACT")
+        return
 
     for message in messages[:current_turn_start]:
         role = message.get("role")

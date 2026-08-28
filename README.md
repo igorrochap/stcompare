@@ -859,7 +859,14 @@ installs byte-identical copies into `.local/stbench/adapters/`.
   options; keep only an optional API key in
   `STBENCH_LOCAL_MODEL_API_KEY`. Without the flag or campaign field, it uses
   temperature `0` and pins `top_p` to `1` for deterministic greedy
-  decoding. `effort` remains an independent identity field.
+  decoding. `effort` remains an independent identity field. Three optional
+  environment variables tune the scaffold loop for weaker local models:
+  `STBENCH_ADAPTER_NO_COMPACT=1` keeps full file contents in the message
+  history instead of eliding them (stops a model that re-reads the same files
+  every turn); `STBENCH_ADAPTER_MAX_REPEATS=N` ends the run cleanly after `N`
+  consecutive identical failing tool-call turns so partial edits are still
+  scored (default `4`, `0` disables); `STBENCH_ADAPTER_DEBUG=1` writes a
+  per-turn and per-tool trace to stderr.
 - `coding_agent_adapter.py` is the first-class engineering path for an
   installed Codex or Claude Code CLI. Set `agent`, `model`, `effort`, and the
   adapter type on the Candidate Campaign, then map that type to the command in
