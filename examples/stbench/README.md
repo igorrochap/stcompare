@@ -31,11 +31,16 @@ delivery boundary:
 For the bundled local-model adapter, `stbench` supplies an audit context on
 every request. The adapter creates and updates `benchmark-audit.json` beside
 the benchmark record before each inference and after each returned response.
-Each event contains the exact model payload, returned model messages, effective
-sampling settings, and stable run, iteration, and turn identities. Transport
-headers and credentials are not written to the artifact. A model-turn start is
-durable before inference, so timeouts and interrupted runs remain visibly
-partial rather than becoming zero activity.
+Each model-turn event contains the exact model payload, returned model messages,
+effective sampling settings, and stable run, iteration, and turn identities.
+Each model tool request is a separate `model_tool_call` event. Its tool name,
+arguments, provenance, result or error, status, and duration are durable. The
+adapter execution is a separate `adapter_operation` event and is not included
+in the Model Tool Call count. Transport headers and credentials are not written
+to the artifact. Activity totals are recorded for each iteration and the run.
+A model-turn or activity start is durable before inference or execution, so
+timeouts and interrupted runs remain visibly partial rather than becoming zero
+activity.
 
 Before the first comparison, `stbench` sends `{"preflight": true}`. The
 adapter must return an `ok` result for this no-op request without invoking the

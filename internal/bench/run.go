@@ -365,6 +365,13 @@ func finalizeAudit(config Config, now func() time.Time, record *benchrecord.Reco
 		applyAuditFailure(record, runErr, now, err)
 		return
 	}
+	document, err := audit.Read(config.AuditPath)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, fmt.Errorf("read finalized audit activity: %w", err))
+		return
+	}
+	activity := document.Activity
+	record.Audit.Activity = &activity
 	if partial {
 		record.Audit.Status = benchrecord.AuditStatusPartial
 	} else {
@@ -385,7 +392,7 @@ func auditCaptureIsPartial(path string, runErr error) (bool, error) {
 		return true, nil
 	}
 	for _, event := range document.Events {
-		if event.Status != "completed" {
+		if audit.EventIsIncomplete(event) {
 			return true, nil
 		}
 	}

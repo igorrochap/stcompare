@@ -2,6 +2,8 @@ package scorecard
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -103,6 +105,75 @@ func TestRenderLinksToAvailableAuditAndDoesNotInventLegacyActivity(t *testing.T)
 	}
 	if strings.Contains(legacy, "model-turn audit\" (complete)") {
 		t.Fatal("legacy scorecard invented audit activity")
+	}
+}
+
+func TestRenderShowsModelToolCallSummaryWhenAuditActivityIsAvailable(t *testing.T) {
+	document := comparisonFixture(t)
+	activity := &benchrecord.ActivitySummary{
+		Status: benchrecord.ActivityStatusComplete,
+		ModelToolCalls: benchrecord.ActivityCounts{
+			Count: 3, Completed: 2, Failed: 1, DurationMS: 125,
+		},
+		AdapterOperations: benchrecord.ActivityCounts{Count: 3, DurationMS: 120},
+	}
+	html, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
+		Status:   benchrecord.AuditStatusComplete,
+		Report:   "benchmark-audit.html",
+		Activity: activity,
+	}})
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Model Tool Call activity",
+		"Model Tool Calls</span><strong>3</strong>",
+		"Completed</span><strong>2</strong>",
+		"Failed</span><strong>1</strong>",
+		"Execution time</span><strong>125 ms</strong>",
+		"Adapter Operations: 3 (120 ms execution time)",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing activity summary %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
+	directory := t.TempDir()
+	comparisonPath := filepath.Join(directory, "comparison.json")
+	recordPath := filepath.Join(directory, "benchmark-record.json")
+	activityPath := filepath.Join(directory, "benchmark-audit.json")
+	outputPath := filepath.Join(directory, "scorecard.html")
+
+	comparisonContents, err := json.Marshal(comparisonFixture(t))
+	if err != nil {
+		t.Fatalf("marshal comparison fixture: %v", err)
+	}
+	if err := os.WriteFile(comparisonPath, comparisonContents, 0o644); err != nil {
+		t.Fatalf("write comparison fixture: %v", err)
+	}
+	if err := os.WriteFile(recordPath, []byte(`{"audit":{"status":"complete","artifact":"benchmark-audit.json"}}`), 0o644); err != nil {
+		t.Fatalf("write record fixture: %v", err)
+	}
+	if err := os.WriteFile(activityPath, []byte(`{
+  "schema_version":"1",
+  "capture":{"enabled":true,"status":"complete","complete":true},
+  "iterations":[],
+  "events":[{"type":"model_tool_call","status":"completed","duration_ms":17}]
+}`), 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	if err := Build(Input{ComparisonPath: comparisonPath, RecordPath: recordPath, OutputPath: outputPath}); err != nil {
+		t.Fatalf("build scorecard: %v", err)
+	}
+	html, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read scorecard: %v", err)
+	}
+	if !strings.Contains(string(html), "Model Tool Calls</span><strong>1</strong>") {
+		t.Fatalf("scorecard omitted referenced audit activity:\n%s", html)
 	}
 }
 

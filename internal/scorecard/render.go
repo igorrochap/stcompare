@@ -13,14 +13,16 @@ import (
 )
 
 type benchmarkView struct {
-	Agent          string
-	Model          string
-	Iterations     int
-	TotalTime      string
-	AgentFixTime   string
-	Tokens         *benchrecord.TokenUsage
-	Audit          benchrecord.AuditReference
-	AuditAvailable bool
+	Agent             string
+	Model             string
+	Iterations        int
+	TotalTime         string
+	AgentFixTime      string
+	Tokens            *benchrecord.TokenUsage
+	Audit             benchrecord.AuditReference
+	AuditAvailable    bool
+	Activity          *benchrecord.ActivitySummary
+	ActivityAvailable bool
 }
 
 // Render renders a benchmark scorecard containing the complete comparison report.
@@ -32,14 +34,16 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 
 	var section bytes.Buffer
 	view := benchmarkView{
-		Agent:          record.Agent,
-		Model:          record.Model,
-		Iterations:     record.Iterations,
-		TotalTime:      formatMilliseconds(record.TimeMS.Total),
-		AgentFixTime:   formatMilliseconds(record.TimeMS.AgentFix),
-		Tokens:         record.Tokens,
-		Audit:          record.Audit,
-		AuditAvailable: auditAvailable(record.Audit),
+		Agent:             record.Agent,
+		Model:             record.Model,
+		Iterations:        record.Iterations,
+		TotalTime:         formatMilliseconds(record.TimeMS.Total),
+		AgentFixTime:      formatMilliseconds(record.TimeMS.AgentFix),
+		Tokens:            record.Tokens,
+		Audit:             record.Audit,
+		AuditAvailable:    auditAvailable(record.Audit),
+		Activity:          record.Audit.Activity,
+		ActivityAvailable: activityAvailable(record.Audit),
 	}
 	if err := benchmarkSectionTemplate.Execute(&section, view); err != nil {
 		return "", fmt.Errorf("render benchmark run: %w", err)
@@ -58,6 +62,17 @@ func auditAvailable(reference benchrecord.AuditReference) bool {
 		return false
 	}
 	return reference.Status == benchrecord.AuditStatusComplete || reference.Status == benchrecord.AuditStatusPartial
+}
+
+func activityAvailable(reference benchrecord.AuditReference) bool {
+	if reference.Activity == nil {
+		return false
+	}
+	if reference.Status != benchrecord.AuditStatusComplete && reference.Status != benchrecord.AuditStatusPartial {
+		return false
+	}
+	activity := reference.Activity
+	return activity.Status == benchrecord.ActivityStatusComplete || activity.Status == benchrecord.ActivityStatusPartial
 }
 
 func formatMilliseconds(milliseconds int64) string {
@@ -108,6 +123,21 @@ var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse
 <div class="count"><span>Output tokens</span><strong>{{.Output}}</strong></div>
 <div class="count"><span>Total tokens</span><strong>{{.Total}}</strong></div>
 </div>
+{{else}}
+<p class="empty">not reported</p>
+{{end}}
+</div>
+<div class="category-counts">
+<h3>Model Tool Call activity{{with .Activity}} <small>({{.Status}} evidence)</small>{{end}}</h3>
+{{if .ActivityAvailable}}
+<div class="counts">
+<div class="count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong></div>
+<div class="count"><span>Completed</span><strong>{{.Activity.ModelToolCalls.Completed}}</strong></div>
+<div class="count"><span>Failed</span><strong>{{.Activity.ModelToolCalls.Failed}}</strong></div>
+<div class="count"><span>Incomplete</span><strong>{{.Activity.ModelToolCalls.Incomplete}}</strong></div>
+<div class="count"><span>Execution time</span><strong>{{.Activity.ModelToolCalls.DurationMS}} ms</strong></div>
+</div>
+<p>Adapter Operations: {{.Activity.AdapterOperations.Count}} ({{.Activity.AdapterOperations.DurationMS}} ms execution time)</p>
 {{else}}
 <p class="empty">not reported</p>
 {{end}}

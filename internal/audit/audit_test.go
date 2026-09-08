@@ -66,6 +66,176 @@ func TestRenderShowsChronologicalTurnsAndModelRationale(t *testing.T) {
 	}
 }
 
+func TestSummarizeActivityCountsCallsAndAdapterOperationsByIteration(t *testing.T) {
+	document := Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		Iterations: []Iteration{
+			{ID: "iteration-1", Number: 1},
+			{ID: "iteration-2", Number: 2},
+		},
+		Events: []Event{
+			{Type: "model_tool_call", IterationID: "iteration-1", Status: "completed", DurationMS: 11},
+			{Type: "model_tool_call", IterationID: "iteration-1", Status: "failed", DurationMS: 7},
+			{Type: "model_tool_call", IterationID: "iteration-1", Status: "started"},
+			{Type: "adapter_operation", IterationID: "iteration-1", Status: "completed", DurationMS: 5},
+			{Type: "adapter_operation", IterationID: "iteration-1", Status: "failed", DurationMS: 3},
+			{Type: "model_tool_call", IterationID: "iteration-2", Status: "completed", DurationMS: 13},
+			{Type: "adapter_operation", IterationID: "iteration-2", Status: "completed", DurationMS: 9},
+		},
+	}
+
+	summary := SummarizeActivity(document)
+	if summary.Status != "partial" {
+		t.Fatalf("activity status = %q, want partial for started evidence", summary.Status)
+	}
+	if got := summary.ModelToolCalls; got.Count != 4 || got.Completed != 2 || got.Failed != 1 || got.Incomplete != 1 || got.DurationMS != 24 {
+		t.Fatalf("model tool calls = %#v, want four calls with complete, failed, and incomplete outcomes", got)
+	}
+	if got := summary.AdapterOperations; got.Count != 3 || got.Completed != 2 || got.Failed != 1 || got.Incomplete != 0 || got.DurationMS != 14 {
+		t.Fatalf("adapter operations = %#v, want three separate operations", got)
+	}
+
+	iteration := summarizeIterationActivity(document, "iteration-1")
+	if iteration.ModelToolCalls.Count != 3 || iteration.AdapterOperations.Count != 2 {
+		t.Fatalf("iteration activity = %#v, want iteration-1-only counts", iteration)
+	}
+}
+
+func TestReadDoesNotInventCompleteZeroForMissingActivityEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
+	contents := []byte(`{
+  "schema_version": "1",
+  "capture": {"enabled": true, "status": "complete", "complete": true},
+  "iterations": [],
+  "events": [{"type": "model_turn", "status": "completed"}]
+}`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	document, err := Read(path)
+	if err != nil {
+		t.Fatalf("read audit fixture: %v", err)
+	}
+	if document.Activity.Status != "not_reported" || document.Activity.ModelToolCalls.Count != 0 {
+		t.Fatalf("activity = %#v, want not-reported evidence", document.Activity)
+	}
+	html, err := Render(document)
+	if err != nil {
+		t.Fatalf("render audit fixture: %v", err)
+	}
+	if !strings.Contains(html, "Activity evidence: not reported.") ||
+		strings.Contains(html, "Model Tool Calls</span><strong>0</strong>") {
+		t.Fatalf("rendered audit misrepresented missing activity evidence:\n%s", html)
+	}
+}
+
+func TestRenderShowsExpandableToolActivityAndIncompleteEvidence(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Run:           Run{ID: "run-activity"},
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		Iterations:    []Iteration{{ID: "iteration-1", Number: 1}},
+		Events: []Event{
+			{
+				Sequence:    1,
+				Type:        "model_tool_call",
+				ID:          "model-tool-call-1",
+				Iteration:   1,
+				IterationID: "iteration-1",
+				TurnID:      "iteration-1-turn-1",
+				ToolName:    "read_file",
+				Arguments:   json.RawMessage(`{"path":"api.py"}`),
+				Request:     json.RawMessage(`{"function":{"name":"read_file"}}`),
+				Result:      json.RawMessage(`{"ok":true,"content":"source"}`),
+				Status:      "completed",
+				StartedAt:   "2026-01-01T00:00:00Z",
+				EndedAt:     "2026-01-01T00:00:00.100Z",
+				DurationMS:  100,
+			},
+			{
+				Sequence:        2,
+				Type:            "adapter_operation",
+				ID:              "adapter-operation-2",
+				Iteration:       1,
+				IterationID:     "iteration-1",
+				TurnID:          "iteration-1-turn-1",
+				ModelToolCallID: "model-tool-call-1",
+				Operation:       "execute_model_tool_call",
+				Status:          "completed",
+				DurationMS:      99,
+			},
+			{
+				Sequence:    3,
+				Type:        "model_tool_call",
+				ID:          "model-tool-call-3",
+				Iteration:   1,
+				IterationID: "iteration-1",
+				TurnID:      "iteration-1-turn-2",
+				ToolName:    "write_file",
+				Arguments:   json.RawMessage(`{"path":"new.py"}`),
+				Status:      "started",
+				StartedAt:   "2026-01-01T00:00:01Z",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render activity audit: %v", err)
+	}
+	for _, fragment := range []string{
+		"Activity summary",
+		"Model Tool Calls",
+		"Adapter Operations",
+		"<details>",
+		"Tool arguments",
+		"api.py",
+		"Tool result",
+		"Execution time",
+		"Incomplete Model Tool Call",
+		"partial evidence",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("activity audit HTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestFinalizePersistsActivitySummary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
+	contents := []byte(`{
+  "schema_version": "1",
+  "run": {"id": "run-activity"},
+  "capture": {"enabled": true, "status": "in_progress", "complete": false},
+  "iterations": [{"id": "iteration-1", "number": 1, "turn_ids": []}],
+  "events": [
+    {"type": "model_tool_call", "iteration_id": "iteration-1", "status": "failed", "duration_ms": 12},
+    {"type": "adapter_operation", "iteration_id": "iteration-1", "status": "failed", "duration_ms": 10}
+  ]
+}`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+	if err := Finalize(path, "converged", time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC), false, ""); err != nil {
+		t.Fatalf("finalize audit: %v", err)
+	}
+
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read finalized audit: %v", err)
+	}
+	var document Artifact
+	if err := json.Unmarshal(updated, &document); err != nil {
+		t.Fatalf("decode finalized audit: %v", err)
+	}
+	if document.Activity.Status != "complete" || document.Activity.ModelToolCalls.Count != 1 || document.Activity.ModelToolCalls.Failed != 1 {
+		t.Fatalf("final activity = %#v, want complete failed-call summary", document.Activity)
+	}
+	if document.Iterations[0].Activity.AdapterOperations.DurationMS != 0 {
+		t.Fatalf("iteration activity = %#v, want no failed-operation duration", document.Iterations[0].Activity)
+	}
+}
+
 func TestRenderReconstructsSharedModelInput(t *testing.T) {
 	document := Artifact{
 		SchemaVersion: SchemaVersion,

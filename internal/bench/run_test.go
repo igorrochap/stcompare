@@ -162,6 +162,10 @@ func TestRunFinalizesAvailableAuditAfterSuccessfulRun(t *testing.T) {
 	if record.Audit.Status != benchrecord.AuditStatusComplete {
 		t.Fatalf("audit status = %q, want complete", record.Audit.Status)
 	}
+	if record.Audit.Activity == nil || record.Audit.Activity.Status != benchrecord.ActivityStatusNotReported ||
+		record.Audit.Activity.ModelToolCalls.Count != 0 {
+		t.Fatalf("audit activity = %#v, want not-reported activity evidence", record.Audit.Activity)
+	}
 	document, err := audit.Read(auditPath)
 	if err != nil {
 		t.Fatalf("read finalized audit: %v", err)
@@ -197,6 +201,30 @@ func TestRunKeepsAuditCompleteWhenRunFailsAfterCapturedTurns(t *testing.T) {
 	}
 	if document.Capture.Status != "complete" || !document.Capture.Complete {
 		t.Fatalf("capture = %#v, want complete capture", document.Capture)
+	}
+}
+
+func TestAuditCaptureTreatsTerminalToolFailuresAsCompleteEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
+	contents := []byte(`{
+  "schema_version": "1",
+  "capture": {"enabled": true, "status": "in_progress", "complete": false},
+  "events": [
+    {"type": "model_turn", "status": "completed"},
+    {"type": "model_tool_call", "status": "failed"},
+    {"type": "adapter_operation", "status": "failed"}
+  ]
+}`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	partial, err := auditCaptureIsPartial(path, nil)
+	if err != nil {
+		t.Fatalf("inspect audit capture: %v", err)
+	}
+	if partial {
+		t.Fatal("terminal tool failures were treated as incomplete capture")
 	}
 }
 
