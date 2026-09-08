@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -23,42 +25,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Check formatting
+      - name: Install quality gate tools
         run: |
-          mapfile -t go_files < <(git ls-files '*.go')
-          unformatted="$(gofmt -l "${go_files[@]}")"
-          if [ -n "$unformatted" ]; then
-            echo "The following Go files are not formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+          curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Check shell scripts
-        run: shellcheck scripts/*.sh
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Check module files
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
-
-      - name: Check evaluator boundary
-        run: |
-          if go list -deps ./internal/bench | grep -Fx 'stcompare/internal/comparison'; then
-            echo 'internal/bench must communicate with stcompare through its CLI contract.'
-            exit 1
-          fi
-
-      - name: Test installer
-        run: scripts/install_test.sh
-
-      - name: Test
-        run: go test ./...
-
-      - name: Test with race detector
-        run: go test -race ./...
+      - name: Run quality gates
+        run: scripts/quality.sh
 
   prepare-release:
     name: Prepare semantic release

@@ -72,3 +72,35 @@ tolerates _Inconclusive_ problems, so a converged comparison may still contain
 unverified problems and is not a claim that every baseline problem was positively
 confirmed fixed.
 _Avoid_: 100% fixed, Fix rate 100%, Passed
+
+**Fix Quality Assessment**:
+A researcher's evidence-backed judgment of whether a candidate's changes
+address the underlying Schemathesis problem or merely work around its observed
+failure. It is distinct from the replay-backed Problem Outcome; a Fixed outcome
+alone does not establish fix quality.
+_Avoid_: Problem Outcome, Fix rate
+
+**Edit Attempt**:
+One requested edit during a benchmark run, including requests that fail or
+leave file contents unchanged.
+_Avoid_: File Modification
+
+**File Modification**:
+One successful edit operation's actual change to a file's contents during a
+benchmark run, including a change that is later overwritten or reverted.
+_Avoid_: Edit Attempt, Files Changed at the End
+
+**Files Changed at the End**:
+The distinct files whose contents at the end of a benchmark run differ from
+their contents at its start, including created and deleted files.
+_Avoid_: File Modifications, Edit Attempts
+
+**Model Tool Call**:
+One tool request issued by the model during a benchmark run, including failed
+requests, unknown tool names, and requests recovered from the model's text.
+_Avoid_: Adapter Operation
+
+**Adapter Operation**:
+An action performed by the adapter to deliver inputs or process model output,
+such as preparing a source snapshot or validating and applying a returned patch.
+It is distinct from a Model Tool Call.
