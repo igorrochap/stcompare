@@ -18,9 +18,12 @@ sys.path.insert(0, str(EXAMPLES))
 
 from adapter import apply_patch, tracked_snapshot
 from local_model_adapter import (
+    AuditCaptureError,
+    AuditWriter,
     NUDGE_PROMPT,
     SYSTEM_PROMPT,
     TOOLS,
+    reconstruct_input,
     execute_tool,
     list_files,
     parse_args,
@@ -100,6 +103,186 @@ class AdapterExamplesTest(unittest.TestCase):
 
         self.assertEqual(response, "done")
         self.assertEqual(post_json.call_count, 1)
+
+    def test_local_model_audit_captures_exact_inputs_and_returned_messages(self) -> None:
+        requests: list[dict] = []
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "write_file",
+                                        "arguments": json.dumps(
+                                            {"path": "fixed.txt", "content": "fixed\n"}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "I changed the file because the failing behavior required it.",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            },
+        ]
+
+        def respond(_url: str, payload: dict, _timeout: float, *, metadata: dict | None = None) -> dict:
+            del metadata
+            requests.append(json.loads(json.dumps(payload)))
+            return responses[len(requests) - 1]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-1",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {
+                "agent": "local-model",
+                "model": "local-model",
+                "effort": "high",
+                "hardware": "test-machine",
+            }
+            AuditWriter.create(request, metadata)
+            context = {
+                **request["audit"],
+                "iteration": 2,
+                "iteration_id": "iteration-2",
+            }
+            with patch("local_model_adapter.post_json", side_effect=respond):
+                response, usages = run_agent(
+                    "exact task",
+                    root,
+                    url="http://model.invalid",
+                    model="local-model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value=context,
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(response, responses[1]["choices"][0]["message"]["content"])
+            self.assertEqual(usages, [{"input": 3, "output": 4, "total": 7}, {"input": 5, "output": 2, "total": 7}])
+            self.assertEqual(len(document["events"]), 2)
+            self.assertEqual(document["iterations"], [{"id": "iteration-2", "number": 2, "turn_ids": ["iteration-2-turn-1", "iteration-2-turn-2"]}])
+            for index, event in enumerate(document["events"]):
+                self.assertEqual(event["run_id"], "run-1")
+                self.assertEqual(event["sequence"], index + 1)
+                self.assertEqual(reconstruct_input(document, event), requests[index])
+                self.assertEqual(event["status"], "completed")
+                self.assertEqual(event["returned_messages"], [responses[index]["choices"][0]["message"]])
+                self.assertEqual(event["sampling"], {"temperature": 0.0, "top_p": 1})
+
+            self.assertTrue(document["shared_content"])
+            self.assertTrue(
+                any("input_content_references" in event for event in document["events"])
+            )
+
+            serialized = audit_path.read_text(encoding="utf-8")
+            self.assertNotIn("STBENCH_LOCAL_MODEL_API_KEY", serialized)
+            self.assertNotIn("Authorization", serialized)
+
+    def test_local_model_audit_writes_start_before_inference_and_retains_model_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-1",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            writer = AuditWriter.open(request)
+            assert writer is not None
+            event = writer.record_turn_started(
+                {"model": "model", "messages": [], "tools": []},
+                {**request["audit"], "iteration": 1, "iteration_id": "iteration-1"},
+            )
+            pending = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(pending["events"][0]["status"], "started")
+            self.assertEqual(pending["events"][0]["turn_id"], event["turn_id"])
+
+            writer.record_turn_failed(event, TimeoutError("inference timed out"))
+            failed = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(failed["events"][0]["status"], "failed")
+            self.assertIn("inference timed out", failed["events"][0]["error"])
+
+    def test_local_model_audit_storage_failure_is_explicit(self) -> None:
+        request = {
+            "audit": {
+                "enabled": True,
+                "path": str(Path(tempfile.gettempdir()) / "benchmark-audit.json"),
+                "run_id": "run-1",
+            }
+        }
+        metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+        with patch("local_model_adapter.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(AuditCaptureError, "cannot write audit artifact"):
+                AuditWriter.create(request, metadata)
+
+    def test_local_model_preflight_enables_audit_without_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "benchmark-audit.json"
+            completed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER)],
+                cwd=directory,
+                input=json.dumps(
+                    {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "effort": "high",
+                        "hardware": "machine",
+                        "preflight": True,
+                        "audit": {
+                            "enabled": True,
+                            "path": str(audit_path),
+                            "run_id": "run-1",
+                            "candidate": "candidate",
+                            "baseline": "baseline",
+                        },
+                    }
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(json.loads(completed.stdout)["status"], "ok")
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(document["run"]["id"], "run-1")
+            self.assertEqual(document["run"]["effort"], "high")
+            self.assertTrue(document["capture"]["enabled"])
+            self.assertEqual(document["events"], [])
 
     def test_local_model_temperature_resolution_is_explicit_and_bounded(self) -> None:
         tests = [

@@ -17,7 +17,11 @@ import (
 	"stcompare/internal/config"
 )
 
-const benchmarkRecordFilename = "benchmark-record.json"
+const (
+	benchmarkRecordFilename      = "benchmark-record.json"
+	benchmarkAuditFilename       = "benchmark-audit.json"
+	benchmarkAuditReportFilename = "benchmark-audit.html"
+)
 
 // ExitCodeError carries the process exit code selected by stbench.
 type ExitCodeError struct {
@@ -173,6 +177,9 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	}
 
 	baselineName := findBaselineName(effective)
+	reportDir := config.CampaignReportDir(effective, settings.campaign)
+	auditPath := filepath.Join(reportDir, benchmarkAuditFilename)
+	auditReportPath := filepath.Join(reportDir, benchmarkAuditReportFilename)
 	benchConfig := Config{
 		AdapterMetadata: AdapterMetadata{
 			Agent:       settings.agent,
@@ -189,6 +196,8 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		MaxIterations:     settings.maxIterations,
 		StallWindow:       settings.stallWindow,
 		HeartbeatInterval: heartbeatInterval,
+		AuditPath:         auditPath,
+		AuditReportPath:   auditReportPath,
 		BaselineExists: func() bool {
 			_, statErr := os.Stat(filepath.Join(effective.ReportsDir, baselineName, "campaign.har.json"))
 			return statErr == nil
@@ -237,7 +246,13 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 	}
 	fmt.Fprintf(command.OutOrStdout(), "wrote %s\n", settings.recordPath)
 
-	reportDir := config.CampaignReportDir(effective, settings.campaign)
+	auditBuilder := newCommandAuditBuilder(settings.stcompareBinary, configPath)
+	auditBuilder.Stdout = command.OutOrStdout()
+	emitAuditReportIfAvailable(auditBuilder, auditBuildInput{
+		AuditPath:  auditPath,
+		OutputPath: auditReportPath,
+	}, command.ErrOrStderr())
+
 	scorecardBuilder := newCommandScorecardBuilder(settings.stcompareBinary, configPath)
 	scorecardBuilder.Stdout = command.OutOrStdout()
 	emitScorecardIfRequested(settings.emitScorecard, scorecardBuilder, scorecardBuildInput{
@@ -256,6 +271,24 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		}
 	}
 	return nil
+}
+
+func emitAuditReportIfAvailable(builder auditBuilder, input auditBuildInput, warnings io.Writer) {
+	info, err := os.Stat(input.AuditPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(warnings, "warning: audit report not generated: inspect audit artifact: %v\n", err)
+		return
+	}
+	if info.IsDir() {
+		_, _ = fmt.Fprintf(warnings, "warning: audit report not generated: audit artifact %s is a directory\n", input.AuditPath)
+		return
+	}
+	if err := builder.Build(input); err != nil {
+		_, _ = fmt.Fprintf(warnings, "warning: audit report not generated: %v\n", err)
+	}
 }
 
 type runSettings struct {

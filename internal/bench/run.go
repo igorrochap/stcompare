@@ -3,6 +3,7 @@ package bench
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -12,12 +13,14 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"text/template"
 	"text/template/parse"
 	"time"
 
 	"stcompare/agentreport"
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 )
 
 //go:embed prompt.md
@@ -41,11 +44,12 @@ const (
 
 // AdapterMetadata identifies the execution configuration supplied to an adapter.
 type AdapterMetadata struct {
-	Agent       string   `json:"agent"`
-	Model       string   `json:"model"`
-	Effort      string   `json:"effort"`
-	Temperature *float64 `json:"temperature,omitempty"`
-	Hardware    string   `json:"hardware"`
+	Agent       string        `json:"agent"`
+	Model       string        `json:"model"`
+	Effort      string        `json:"effort"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	Hardware    string        `json:"hardware"`
+	Audit       *AuditContext `json:"audit,omitempty"`
 }
 
 // Config describes one benchmark run.
@@ -83,6 +87,14 @@ type Config struct {
 	// the agent fix is in flight. A zero value disables the heartbeat, keeping
 	// the loop silent between phase boundaries.
 	HeartbeatInterval time.Duration
+
+	// AuditPath enables the local-model audit protocol. A bundled adapter that
+	// understands the context writes this file incrementally.
+	AuditPath string
+	// AuditReportPath is the report path recorded alongside AuditPath.
+	AuditReportPath string
+	// RunID optionally supplies a stable identity for deterministic fixtures.
+	RunID string
 }
 
 // Dependencies contains the replaceable collaborators used by Run.
@@ -213,7 +225,12 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	if dependencies.Now == nil {
 		dependencies.Now = time.Now
 	}
-
+	startedAt := dependencies.Now()
+	runID, err := resolveRunID(config.RunID, startedAt)
+	if err != nil {
+		return benchrecord.Record{}, fmt.Errorf("create benchmark run identity: %w", err)
+	}
+	config.RunID = runID
 	if config.MaxIterations == 0 {
 		config.MaxIterations = DefaultMaxIterations
 	}
@@ -227,10 +244,20 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		config.Prompt.Version = DefaultPromptVersion
 	}
 	config.Prompt.Hash = selectedPromptHash
+	if config.AuditPath != "" {
+		config.Audit = &AuditContext{
+			Enabled:     true,
+			Path:        config.AuditPath,
+			RunID:       runID,
+			Candidate:   config.Candidate,
+			Baseline:    config.Baseline,
+			IterationID: "preflight",
+		}
+	}
 
-	startedAt := dependencies.Now()
 	record = benchrecord.Record{
 		SchemaVersion:        benchrecord.SchemaVersion,
+		RunID:                runID,
 		Agent:                config.Agent,
 		Model:                config.Model,
 		Effort:               config.Effort,
@@ -245,6 +272,14 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		AgentResponses:       []string{},
 		ProcessReuse:         config.ReuseProcess,
 		Final:                benchrecord.FinalSummary{},
+	}
+	if config.AuditPath != "" {
+		record.Audit = benchrecord.AuditReference{
+			Status:   benchrecord.AuditStatusNotReported,
+			RunID:    runID,
+			Artifact: filepath.Base(config.AuditPath),
+			Report:   auditReportReference(config.AuditReportPath),
+		}
 	}
 	defer func() {
 		if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
@@ -263,6 +298,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 				}
 			}
 		}
+		finalizeAudit(config, dependencies.Now, &record, &runErr)
 	}()
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
@@ -289,6 +325,96 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	return runIterations(config, dependencies, selectedPrompt, record, startedAt)
 }
 
+func finalizeAudit(config Config, now func() time.Time, record *benchrecord.Record, runErr *error) {
+	if config.AuditPath == "" {
+		return
+	}
+	exists, err := auditArtifactExists(config.AuditPath)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, fmt.Errorf("inspect audit artifact: %w", err))
+		return
+	}
+	if !exists {
+		markExistingAuditFailure(record, *runErr)
+		return
+	}
+
+	auditFailure := auditFailureDescription(*runErr)
+	partial, err := auditCaptureIsPartial(config.AuditPath, *runErr)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, err)
+		return
+	}
+	if err := audit.Finalize(config.AuditPath, string(record.TerminalState), now(), partial, auditFailure); err != nil {
+		applyAuditFailure(record, runErr, now, err)
+		return
+	}
+	if partial {
+		record.Audit.Status = benchrecord.AuditStatusPartial
+	} else {
+		record.Audit.Status = benchrecord.AuditStatusComplete
+	}
+}
+
+func auditCaptureIsPartial(path string, runErr error) (bool, error) {
+	document, err := audit.Read(path)
+	if err != nil {
+		return false, fmt.Errorf("read audit artifact for partial status: %w", err)
+	}
+	var auditFailure *AuditFailureError
+	if errors.As(runErr, &auditFailure) {
+		return true, nil
+	}
+	if document.Capture.Status == "partial" {
+		return true, nil
+	}
+	for _, event := range document.Events {
+		if event.Status != "completed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func auditArtifactExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func auditFailureDescription(runErr error) string {
+	var failure *AuditFailureError
+	if errors.As(runErr, &failure) {
+		return failure.Error()
+	}
+	return ""
+}
+
+func applyAuditFailure(record *benchrecord.Record, runErr *error, now func() time.Time, err error) {
+	failure := &AuditFailureError{Err: err}
+	markAuditFailure(record, failure)
+	if *runErr == nil {
+		*record = finish(*record, now(), benchrecord.TerminalStateAuditError)
+		*runErr = failure
+		return
+	}
+	*runErr = errors.Join(*runErr, failure)
+}
+
+func markExistingAuditFailure(record *benchrecord.Record, runErr error) {
+	var failure *AuditFailureError
+	if errors.As(runErr, &failure) {
+		markAuditFailure(record, failure)
+	}
+}
+
+func markAuditFailure(record *benchrecord.Record, failure *AuditFailureError) {
+	record.Audit.Status = benchrecord.AuditStatusPartial
+	record.Audit.Error = failure.Error()
+}
+
 func runIterations(
 	config Config,
 	dependencies Dependencies,
@@ -306,6 +432,9 @@ func runIterations(
 	}
 	for iteration := 1; iteration <= config.MaxIterations; iteration++ {
 		runner.record.Iterations = iteration
+		if runner.config.AuditPath != "" {
+			runner.config.Audit = runner.auditContext(iteration)
+		}
 		done, err := runner.runIteration(iteration == config.MaxIterations)
 		if done {
 			return *runner.record, err
@@ -478,6 +607,9 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 }
 
 func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) error {
+	if state == benchrecord.TerminalStateAdapterError {
+		state = adapterTerminalState(err)
+	}
 	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
 	runner.report(ProgressEvent{Phase: ProgressPhaseTerminal, State: ProgressError, Terminal: state, Err: err})
@@ -554,7 +686,7 @@ func runPreflight(
 	recordedTemperature *float64,
 ) (benchrecord.TerminalState, error) {
 	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
-		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+		return adapterTerminalState(err), fmt.Errorf("preflight adapter: %w", err)
 	}
 	if reporter, ok := dependencies.Adapter.(EffectiveTemperatureReporter); ok {
 		temperature := reporter.EffectiveTemperature()
@@ -578,6 +710,14 @@ func runPreflight(
 	return "", nil
 }
 
+func adapterTerminalState(err error) benchrecord.TerminalState {
+	var auditFailure *AuditFailureError
+	if errors.As(err, &auditFailure) {
+		return benchrecord.TerminalStateAuditError
+	}
+	return benchrecord.TerminalStateAdapterError
+}
+
 func validateTemperature(value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
 		return errors.New("temperature must be between 0 and 2")
@@ -590,6 +730,39 @@ func effectiveTemperature(temperature *float64) float64 {
 		return 0
 	}
 	return *temperature
+}
+
+func resolveRunID(configured string, startedAt time.Time) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	identity := make([]byte, 12)
+	if _, err := rand.Read(identity); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("run-%s-%x", startedAt.UTC().Format("20060102T150405.000000000Z"), identity), nil
+}
+
+func (runner *iterationRunner) auditContext(iteration int) *AuditContext {
+	if runner.config.AuditPath == "" {
+		return nil
+	}
+	return &AuditContext{
+		Enabled:     true,
+		Path:        runner.config.AuditPath,
+		RunID:       runner.config.RunID,
+		Candidate:   runner.config.Candidate,
+		Baseline:    runner.config.Baseline,
+		Iteration:   iteration,
+		IterationID: fmt.Sprintf("iteration-%d", iteration),
+	}
+}
+
+func auditReportReference(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Base(path)
 }
 
 type promptTemplateData struct {

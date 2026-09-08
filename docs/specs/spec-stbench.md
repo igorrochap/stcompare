@@ -115,6 +115,8 @@ across agents so the benchmark measures the model, not its harness.
 22. As a researcher, I want a stalled or capped run to still record the remaining
     actionable items and which were "stuck" versus newly introduced, so that I
     can see what the agent failed to fix.
+23. As a researcher, I want each local-model turn saved with its exact input and
+    returned messages, so that a benchmark result has durable model evidence.
 
 ## Implementation Decisions
 
@@ -263,6 +265,7 @@ integration test.
 ```
 {
   "schema_version": "...",
+  "run_id": "...",
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
   "temperature": N,                                     // effective adapter sampling temperature
   "hardware": "...",                                    // harness identity
@@ -276,10 +279,15 @@ integration test.
   "started_at": "...", "ended_at": "...",
   "iterations": N,
   "terminal_state": "converged" | "stalled" | "max_iterations"
-                    | "tool_error" | "adapter_error" | "lifecycle_error",
+                    | "tool_error" | "adapter_error" | "lifecycle_error" | "audit_error",
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
   "unknown_token_iterations": N,
+  "audit": {
+    "status": "complete" | "partial" | "not_reported",
+    "run_id": "...", "artifact": "benchmark-audit.json",
+    "report": "benchmark-audit.html"
+  },
   "final": {
     "converged": bool,
     "still_failing": N, "regressed": N,
@@ -289,6 +297,29 @@ integration test.
   "remaining_actionable": [ { id, kind, operation, stuck: bool } ]
 }
 ```
+
+Local-model runs also write `benchmark-audit.json` beside the benchmark
+record. It is a versioned, incrementally updated artifact with the run
+identity, ordered benchmark iterations, and ordered `model_turn` events. Each
+turn stores a stable `turn_id`, the exact model request payload (including
+tool definitions, effective sampling settings, compacted history, and any
+adapter-added instructions), the returned response and messages, and its
+completion state. The request is captured before inference begins and each
+event is durably written before the next model request starts. Authentication
+headers and credentials are never stored.
+
+The artifact is finalized with `capture.status` `complete` or `partial` and
+the benchmark terminal state. A started turn or interrupted run therefore
+remains visible as partial evidence. A required capture failure terminates
+the run as `audit_error` and is returned through the adapter/runner error
+channel before comparison work continues. Legacy records and adapters that do
+not emit the artifact are represented as `audit.status: not_reported`.
+
+The standalone command `stcompare audit render --audit <artifact> --out
+<report.html>` renders the artifact chronologically and does not require a
+comparison scorecard. When a scorecard exists, it links to the audit report;
+an HTML rendering failure is reported as a warning while the captured JSON
+evidence and benchmark result remain intact.
 
 The three per-fix arrays use the same index: instruction, rendered-instruction
 hash, and raw agent response.

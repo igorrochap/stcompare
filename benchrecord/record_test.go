@@ -9,6 +9,7 @@ import (
 func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	record := Record{
 		SchemaVersion: "1",
+		RunID:         "run-1",
 		Agent:         "agent",
 		Model:         "model",
 		Effort:        "high",
@@ -35,7 +36,14 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 			CandidateReset: 10000,
 			Compare:        30000,
 		},
-		Tokens:                 &TokenUsage{Input: 10, Output: 20, Total: 30},
+		Tokens: &TokenUsage{Input: 10, Output: 20, Total: 30},
+		Audit: AuditReference{
+			Status:   AuditStatusPartial,
+			RunID:    "run-1",
+			Artifact: "benchmark-audit.json",
+			Report:   "benchmark-audit.html",
+			Error:    "audit capture failed",
+		},
 		UnknownTokenIterations: 1,
 		Final: FinalSummary{
 			Converged:    true,
@@ -121,6 +129,7 @@ func TestTerminalStatesMarshalAsFixedValues(t *testing.T) {
 		TerminalStateToolError,
 		TerminalStateAdapterError,
 		TerminalStateLifecycleError,
+		TerminalStateAuditError,
 	} {
 		data, err := json.Marshal(Record{TerminalState: state})
 		if err != nil {

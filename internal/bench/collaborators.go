@@ -33,6 +33,15 @@ type scorecardBuildInput struct {
 	OutputPath     string
 }
 
+type auditBuildInput struct {
+	AuditPath  string
+	OutputPath string
+}
+
+type auditBuilder interface {
+	Build(auditBuildInput) error
+}
+
 type scorecardBuilder interface {
 	Build(scorecardBuildInput) error
 }
@@ -45,7 +54,16 @@ type commandScorecardBuilder struct {
 	Stdout     io.Writer
 }
 
+type commandAuditBuilder struct {
+	Binary     string
+	ConfigPath string
+	WorkingDir string
+	Env        []string
+	Stdout     io.Writer
+}
+
 var _ scorecardBuilder = (*commandScorecardBuilder)(nil)
+var _ auditBuilder = (*commandAuditBuilder)(nil)
 
 func newCommandScorecardBuilder(binary string, configPath string) *commandScorecardBuilder {
 	return &commandScorecardBuilder{Binary: binary, ConfigPath: configPath}
@@ -74,6 +92,32 @@ func (builder *commandScorecardBuilder) Build(input scorecardBuildInput) error {
 	if builder.Stdout != nil {
 		if _, err := builder.Stdout.Write(stdout); err != nil {
 			return fmt.Errorf("write stcompare scorecard output: %w", err)
+		}
+	}
+	return nil
+}
+
+func newCommandAuditBuilder(binary string, configPath string) *commandAuditBuilder {
+	return &commandAuditBuilder{Binary: binary, ConfigPath: configPath}
+}
+
+func (builder *commandAuditBuilder) Build(input auditBuildInput) error {
+	if strings.TrimSpace(builder.Binary) == "" {
+		return errors.New("stcompare binary is required")
+	}
+
+	args := make([]string, 0, 8)
+	if builder.ConfigPath != "" {
+		args = append(args, "--config", builder.ConfigPath)
+	}
+	args = append(args, "audit", "render", "--audit", input.AuditPath, "--out", input.OutputPath)
+	stdout, stderr, err := runStcompare(builder.Binary, builder.WorkingDir, builder.Env, args, nil)
+	if err != nil {
+		return fmt.Errorf("run stcompare audit render: %w%s", err, formatCommandStderr(stderr))
+	}
+	if builder.Stdout != nil {
+		if _, err := builder.Stdout.Write(stdout); err != nil {
+			return fmt.Errorf("write stcompare audit output: %w", err)
 		}
 	}
 	return nil
@@ -210,6 +254,7 @@ type AdapterResponse struct {
 	Message      string                  `json:"message"`
 	ReuseProcess bool                    `json:"reuse_process"`
 	Temperature  *float64                `json:"temperature,omitempty"`
+	AuditError   string                  `json:"audit_error,omitempty"`
 }
 
 // AdapterResult contains the result returned to the benchmark runner.
@@ -218,6 +263,32 @@ type AdapterResult struct {
 	Response     string
 	ReuseProcess bool
 	Temperature  *float64
+}
+
+// AuditContext identifies the durable artifact and the benchmark position for
+// one adapter request. It is transport metadata and is not delivered to the
+// model as task context.
+type AuditContext struct {
+	Enabled     bool   `json:"enabled"`
+	Path        string `json:"path"`
+	RunID       string `json:"run_id"`
+	Candidate   string `json:"candidate"`
+	Baseline    string `json:"baseline"`
+	Iteration   int    `json:"iteration"`
+	IterationID string `json:"iteration_id"`
+}
+
+// AuditFailureError indicates that required audit evidence could not be saved.
+type AuditFailureError struct {
+	Err error
+}
+
+func (failure *AuditFailureError) Error() string {
+	return "audit capture failed: " + failure.Err.Error()
+}
+
+func (failure *AuditFailureError) Unwrap() error {
+	return failure.Err
 }
 
 // CommandAdapter invokes a language-agnostic adapter process.
@@ -457,6 +528,9 @@ func interpretAdapterResponse(output []byte) (*AdapterResult, error) {
 	case "ok":
 		return result, nil
 	case "error":
+		if response.AuditError != "" {
+			return result, &AuditFailureError{Err: errors.New(response.AuditError)}
+		}
 		message := strings.TrimSpace(response.Message)
 		if message == "" {
 			message = "adapter returned status error"
