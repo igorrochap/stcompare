@@ -140,7 +140,7 @@ class AuditCaptureError(RuntimeError):
 
 
 class AuditWriter:
-    """Persist model-turn events without changing the model request."""
+    """Persist model-turn and activity events without changing the model request."""
 
     def __init__(self, path: Path, document: dict[str, Any]) -> None:
         self.path = path
@@ -245,6 +245,79 @@ class AuditWriter:
         event.pop("_started_monotonic", None)
         self._write()
 
+    def record_tool_call_started(
+        self,
+        call: Any,
+        turn_event: dict[str, Any],
+        provenance: str,
+    ) -> dict[str, Any]:
+        tool_name, arguments = tool_call_details(call)
+        tool_call_id = "unknown"
+        if isinstance(call, dict):
+            tool_call_id = call.get("id", "unknown")
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "model_tool_call",
+            "id": f"model-tool-call-{len(self.document['events']) + 1}",
+            "run_id": turn_event["run_id"],
+            "iteration_id": turn_event["iteration_id"],
+            "iteration": turn_event["iteration"],
+            "turn_id": turn_event["turn_id"],
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "provenance": provenance,
+            "arguments": copy.deepcopy(arguments),
+            "request": copy.deepcopy(call),
+            "status": "started",
+            "started_at": utc_now(),
+        }
+        self.document["events"].append(event)
+        self._write()
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_tool_call_completed(self, event: dict[str, Any], result: dict[str, Any]) -> None:
+        finish_activity_event(event, result)
+        self._write()
+
+    def record_tool_call_failed(self, event: dict[str, Any], error: Exception) -> None:
+        finish_activity_event(event, error=error)
+        self._write()
+
+    def record_adapter_operation_started(self, tool_event: dict[str, Any]) -> dict[str, Any]:
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "adapter_operation",
+            "id": f"adapter-operation-{len(self.document['events']) + 1}",
+            "run_id": tool_event["run_id"],
+            "iteration_id": tool_event["iteration_id"],
+            "iteration": tool_event["iteration"],
+            "turn_id": tool_event["turn_id"],
+            "model_tool_call_id": tool_event["id"],
+            "tool_call_id": tool_event["tool_call_id"],
+            "tool_name": tool_event["tool_name"],
+            "operation": "execute_model_tool_call",
+            "arguments": copy.deepcopy(tool_event["arguments"]),
+            "status": "started",
+            "started_at": utc_now(),
+        }
+        self.document["events"].append(event)
+        self._write()
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_adapter_operation_completed(
+        self,
+        event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        finish_activity_event(event, result)
+        self._write()
+
+    def record_adapter_operation_failed(self, event: dict[str, Any], error: Exception) -> None:
+        finish_activity_event(event, error=error)
+        self._write()
+
     def _ensure_iteration(self, iteration_id: str, number: int, turn_id: str) -> None:
         for iteration in self.document["iterations"]:
             if iteration.get("id") == iteration_id:
@@ -254,6 +327,7 @@ class AuditWriter:
 
     def _write(self) -> None:
         try:
+            refresh_activity(self.document)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
             with temporary.open("w", encoding="utf-8", newline="") as output:
@@ -312,6 +386,108 @@ def elapsed_milliseconds(event: dict[str, Any]) -> int:
     if not isinstance(started, float):
         return 0
     return round((time.monotonic() - started) * 1000)
+
+
+def tool_call_details(call: Any) -> tuple[str, Any]:
+    if not isinstance(call, dict):
+        return "unknown", None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return "unknown", None
+    name = function.get("name")
+    tool_name = "unknown"
+    if isinstance(name, str) and name:
+        tool_name = name
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            return tool_name, json.loads(arguments)
+        except json.JSONDecodeError:
+            return tool_name, arguments
+    return tool_name, arguments
+
+
+def finish_activity_event(
+    event: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    *,
+    error: Exception | None = None,
+) -> None:
+    successful = error is None and result is not None and result.get("ok") is True
+    event["status"] = "completed"
+    if not successful:
+        event["status"] = "failed"
+    event["ended_at"] = utc_now()
+    event["duration_ms"] = elapsed_milliseconds(event)
+    if result is not None:
+        event["result"] = copy.deepcopy(result)
+        if event["status"] == "failed":
+            event["error"] = str(result.get("error", "tool execution failed"))
+    if error is not None:
+        event["error"] = str(error)
+    event.pop("_started_monotonic", None)
+
+
+def activity_summary(events: list[dict[str, Any]], status: str) -> dict[str, Any]:
+    summary = {
+        "status": status,
+        "model_tool_calls": activity_counts(),
+        "adapter_operations": activity_counts(),
+    }
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "model_tool_call":
+            counts = summary["model_tool_calls"]
+        elif event_type == "adapter_operation":
+            counts = summary["adapter_operations"]
+        else:
+            continue
+        counts["count"] += 1
+        event_status = event.get("status")
+        if event_status == "completed":
+            counts["completed"] += 1
+            counts["duration_ms"] += int(event.get("duration_ms", 0) or 0)
+        elif event_status == "failed":
+            counts["failed"] += 1
+        else:
+            counts["incomplete"] += 1
+    return summary
+
+
+def activity_counts() -> dict[str, int]:
+    return {"count": 0, "completed": 0, "failed": 0, "incomplete": 0, "duration_ms": 0}
+
+
+def is_activity_event(event: dict[str, Any]) -> bool:
+    return event.get("type") in {"model_tool_call", "adapter_operation"}
+
+
+def event_is_incomplete(event: dict[str, Any]) -> bool:
+    event_type = event.get("type")
+    if event_type == "model_turn":
+        return event.get("status") != "completed"
+    if not is_activity_event(event):
+        return False
+    return event.get("status") not in {"completed", "failed"}
+
+
+def refresh_activity(document: dict[str, Any]) -> None:
+    events = document.get("events", [])
+    if not any(is_activity_event(event) for event in events):
+        document.pop("activity", None)
+        for iteration in document.get("iterations", []):
+            iteration.pop("activity", None)
+        return
+    capture = document.get("capture", {})
+    status = "partial"
+    capture_is_complete = capture.get("status") == "complete" and capture.get("complete") is True
+    if capture_is_complete and not any(event_is_incomplete(event) for event in events):
+        status = "complete"
+    document["activity"] = activity_summary(events, status)
+    for iteration in document.get("iterations", []):
+        iteration_id = iteration.get("id")
+        iteration_events = [event for event in events if event.get("iteration_id") == iteration_id]
+        iteration["activity"] = activity_summary(iteration_events, status)
 
 
 def capture_shared_content(
@@ -643,6 +819,7 @@ def run_agent(
                 message = dict(message)
                 message["tool_calls"] = recovered_calls
                 tool_calls = recovered_calls
+                tool_call_provenance = "model_text_recovery"
             else:
                 messages.append(message)
                 if isinstance(content, str) and content.strip():
@@ -651,13 +828,31 @@ def run_agent(
                 messages.append({"role": "user", "content": NUDGE_PROMPT})
                 current_turn_start = len(messages) - 2
                 continue
+        else:
+            tool_call_provenance = "model_response"
 
         assistant_message_start = len(messages)
         messages.append(message)
 
         any_success = False
         for call in tool_calls:
-            tool_result = execute_model_tool_call(call, root)
+            tool_event = None
+            operation_event = None
+            if audit is not None and turn_event is not None:
+                tool_event = audit.record_tool_call_started(call, turn_event, tool_call_provenance)
+                operation_event = audit.record_adapter_operation_started(tool_event)
+            try:
+                tool_result = execute_model_tool_call(call, root)
+            except Exception as error:
+                if audit is not None and operation_event is not None:
+                    audit.record_adapter_operation_failed(operation_event, error)
+                if audit is not None and tool_event is not None:
+                    audit.record_tool_call_failed(tool_event, error)
+                raise
+            if audit is not None and operation_event is not None:
+                audit.record_adapter_operation_completed(operation_event, tool_result)
+            if audit is not None and tool_event is not None:
+                audit.record_tool_call_completed(tool_event, tool_result)
             _debug_tool(call, tool_result)
             if isinstance(tool_result, dict) and tool_result.get("ok"):
                 any_success = True
@@ -711,24 +906,49 @@ def execute_model_tool_call(call: Any, root: Path) -> dict[str, Any]:
 
 
 def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
-    """Recover registered JSON tool calls that a model emitted as text."""
+    """Recover JSON tool requests, including unknown names, emitted as text."""
 
     if not isinstance(content, str) or not content.strip():
         return []
 
-    candidates = [
+    tagged_candidates = [
         match.group("plain_body") or match.group("special_body") or match.group("alternate_body")
         for match in TOOL_CALL_TAG.finditer(content)
     ]
-    candidates.append(content)
     decoder = json.JSONDecoder()
     recovered: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add_candidate(candidate: Any) -> None:
+    def add_recovered_call(
+        name: str,
+        arguments: Any,
+        *,
+        serialized_arguments: str | None = None,
+        deduplicate: bool = True,
+    ) -> None:
+        identity = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+        if deduplicate and identity in seen:
+            return
+        if deduplicate:
+            seen.add(identity)
+        encoded_arguments = serialized_arguments
+        if encoded_arguments is None:
+            encoded_arguments = json.dumps(arguments, ensure_ascii=False)
+        recovered.append(
+            {
+                "id": f"recovered-{len(recovered) + 1}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": encoded_arguments,
+                },
+            }
+        )
+
+    def add_candidate(candidate: Any, *, deduplicate: bool = True) -> None:
         if isinstance(candidate, list):
             for item in candidate:
-                add_candidate(item)
+                add_candidate(item, deduplicate=deduplicate)
             return
         if not isinstance(candidate, dict):
             return
@@ -742,55 +962,74 @@ def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
                 arguments = json.loads(arguments)
             except json.JSONDecodeError:
                 return
-        if not isinstance(name, str) or name not in TOOL_NAMES or not isinstance(arguments, dict):
+        if not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict):
             return
-        identity = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
-        if identity in seen:
-            return
-        seen.add(identity)
-        recovered.append(
-            {
-                "id": f"recovered-{len(recovered) + 1}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                },
-            }
+        add_recovered_call(name, arguments, deduplicate=deduplicate)
+
+    def add_malformed_candidate(candidate: Any, *, deduplicate: bool = True) -> None:
+        if isinstance(candidate, dict):
+            name = candidate.get("name", candidate.get("tool", "unknown"))
+            arguments = candidate.get(
+                "arguments",
+                candidate.get("parameters", candidate.get("args")),
+            )
+        else:
+            name = "unknown"
+            arguments = candidate
+        if not isinstance(name, str) or not name.strip():
+            name = "unknown"
+        serialized_arguments = arguments if isinstance(arguments, str) else None
+        add_recovered_call(
+            name,
+            arguments,
+            serialized_arguments=serialized_arguments,
+            deduplicate=deduplicate,
         )
 
-    for candidate in candidates:
+    for candidate in tagged_candidates:
         try:
-            add_candidate(json.loads(candidate.strip()))
+            decoded = json.loads(candidate.strip())
+        except json.JSONDecodeError:
+            add_malformed_candidate(candidate)
+            continue
+        before = len(recovered)
+        add_candidate(decoded, deduplicate=False)
+        if len(recovered) == before:
+            add_malformed_candidate(decoded, deduplicate=False)
+
+    if not tagged_candidates:
+        try:
+            add_candidate(json.loads(content.strip()))
         except json.JSONDecodeError:
             pass
 
-    # A prose wrapper may surround the JSON object. Scan each possible object
-    # without interpreting arbitrary JSON: only a registered name plus an
-    # arguments object qualifies as a recovered tool call.
-    for start, character in enumerate(content):
-        if character != "{":
-            continue
-        try:
-            candidate, _ = decoder.raw_decode(content[start:])
-        except json.JSONDecodeError:
-            continue
-        add_candidate(candidate)
-
-    # Some instruction-tuned servers put a function name in the text and
-    # follow it with a JSON argument object, for example
-    # ``str_replace({"path": "api.py", ...})``. Recover that form too, but
-    # only for names in the registered tool set.
-    for name in sorted(TOOL_NAMES):
-        for match in re.finditer(rf"(?<![\w-]){re.escape(name)}\s*(?:\(|:)?\s*", content):
-            start = match.end()
-            if start >= len(content) or content[start] != "{":
+    if not tagged_candidates:
+        # A prose wrapper may surround the JSON object. Scan each possible
+        # object without interpreting arbitrary JSON: only a tool-shaped name
+        # plus an arguments object qualifies as a recovered tool call.
+        for start, character in enumerate(content):
+            if character != "{":
                 continue
             try:
-                arguments, _ = decoder.raw_decode(content[start:])
+                candidate, _ = decoder.raw_decode(content[start:])
             except json.JSONDecodeError:
                 continue
-            add_candidate({"name": name, "arguments": arguments})
+            add_candidate(candidate)
+
+        # Some instruction-tuned servers put a function name in the text and
+        # follow it with a JSON argument object, for example
+        # ``str_replace({"path": "api.py", ...})``. Recover that form too,
+        # but only for names in the registered tool set.
+        for name in sorted(TOOL_NAMES):
+            for match in re.finditer(rf"(?<![\w-]){re.escape(name)}\s*(?:\(|:)?\s*", content):
+                start = match.end()
+                if start >= len(content) or content[start] != "{":
+                    continue
+                try:
+                    arguments, _ = decoder.raw_decode(content[start:])
+                except json.JSONDecodeError:
+                    continue
+                add_candidate({"name": name, "arguments": arguments})
 
     return recovered
 

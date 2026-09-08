@@ -286,7 +286,16 @@ integration test.
   "audit": {
     "status": "complete" | "partial" | "not_reported",
     "run_id": "...", "artifact": "benchmark-audit.json",
-    "report": "benchmark-audit.html"
+    "report": "benchmark-audit.html",
+    "activity": {
+      "status": "complete" | "partial" | "not_reported",
+      "model_tool_calls": { "count": N, "completed": N,
+                             "failed": N, "incomplete": N,
+                             "duration_ms": N },
+      "adapter_operations": { "count": N, "completed": N,
+                               "failed": N, "incomplete": N,
+                               "duration_ms": N }
+    }
   },
   "final": {
     "converged": bool,
@@ -307,6 +316,18 @@ adapter-added instructions), the returned response and messages, and its
 completion state. The request is captured before inference begins and each
 event is durably written before the next model request starts. Authentication
 headers and credentials are never stored.
+
+The event stream also contains one `model_tool_call` event for every individual
+tool request and one separate `adapter_operation` event for the adapter's
+execution of that request. Both events carry the run, benchmark iteration, and
+model-turn identities, tool identity, arguments, start and end timestamps,
+duration, result or error, and completion state. A text-recovered request is
+marked with its recovery provenance and is counted once; the source model text
+is not another call. Failed and unknown requests are counted, while a started
+event without a terminal result remains incomplete. The artifact stores
+`activity` totals at run and iteration scope, including Model Tool Call count,
+completed, failed, incomplete, and execution-time totals; partial status keeps
+missing evidence distinguishable from a complete zero.
 
 The artifact is finalized with `capture.status` `complete` or `partial` and
 the benchmark terminal state. A started turn or interrupted run therefore

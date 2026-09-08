@@ -23,12 +23,15 @@ from local_model_adapter import (
     NUDGE_PROMPT,
     SYSTEM_PROMPT,
     TOOLS,
+    activity_summary,
     reconstruct_input,
+    recover_tool_calls,
     execute_tool,
     list_files,
     parse_args,
     run_agent,
     safe_path,
+    refresh_activity,
     resolve_temperature,
 )
 
@@ -38,6 +41,16 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def test_recovery_counts_identical_tagged_requests_individually(self) -> None:
+        content = (
+            '<tool_call>{"name":"list_files","arguments":{"path":"."}}</tool_call>'
+            '<tool_call>{"name":"list_files","arguments":{"path":"."}}</tool_call>'
+        )
+
+        calls = recover_tool_calls(content)
+
+        self.assertEqual(len(calls), 2)
+
     def test_local_model_prompts_are_task_neutral_and_advertise_final_tools(self) -> None:
         tool_names = [tool["function"]["name"] for tool in TOOLS]
         self.assertEqual(tool_names, ["list_files", "read_file", "write_file", "str_replace"])
@@ -63,6 +76,57 @@ class AdapterExamplesTest(unittest.TestCase):
         self.assertNotIn("test", NUDGE_PROMPT.lower())
         self.assertNotIn("map each", NUDGE_PROMPT.lower())
         self.assertNotIn("status code", NUDGE_PROMPT.lower())
+
+    def test_local_model_audit_does_not_invent_activity_without_tool_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-no-activity",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            writer = AuditWriter.create(request, metadata)
+            self.assertIsNotNone(writer)
+            created = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertNotIn("activity", created)
+
+            assert writer is not None
+            writer.record_turn_started(
+                {"model": "model", "messages": [], "tools": []},
+                {**request["audit"], "iteration": 1, "iteration_id": "iteration-1"},
+            )
+            updated = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertNotIn("activity", updated)
+
+    def test_local_model_activity_keeps_started_calls_partial_after_capture(self) -> None:
+        document = {
+            "capture": {"enabled": True, "status": "complete", "complete": True},
+            "iterations": [{"id": "iteration-1", "number": 1}],
+            "events": [{"type": "model_tool_call", "status": "started", "iteration_id": "iteration-1"}],
+        }
+
+        refresh_activity(document)
+
+        self.assertEqual(document["activity"]["status"], "partial")
+        self.assertEqual(document["activity"]["model_tool_calls"]["incomplete"], 1)
+
+    def test_local_model_activity_duration_excludes_failed_events(self) -> None:
+        summary = activity_summary(
+            [
+                {"type": "model_tool_call", "status": "completed", "duration_ms": 11},
+                {"type": "model_tool_call", "status": "failed", "duration_ms": 7},
+                {"type": "adapter_operation", "status": "completed", "duration_ms": 5},
+                {"type": "adapter_operation", "status": "failed", "duration_ms": 3},
+            ],
+            "complete",
+        )
+
+        self.assertEqual(summary["model_tool_calls"]["duration_ms"], 11)
+        self.assertEqual(summary["adapter_operations"]["duration_ms"], 5)
 
     def test_local_model_adapter_nudges_only_empty_non_tool_turns(self) -> None:
         responses = [
@@ -187,11 +251,19 @@ class AdapterExamplesTest(unittest.TestCase):
             document = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertEqual(response, responses[1]["choices"][0]["message"]["content"])
             self.assertEqual(usages, [{"input": 3, "output": 4, "total": 7}, {"input": 5, "output": 2, "total": 7}])
-            self.assertEqual(len(document["events"]), 2)
-            self.assertEqual(document["iterations"], [{"id": "iteration-2", "number": 2, "turn_ids": ["iteration-2-turn-1", "iteration-2-turn-2"]}])
-            for index, event in enumerate(document["events"]):
+            turn_events = [event for event in document["events"] if event["type"] == "model_turn"]
+            self.assertEqual(len(turn_events), 2)
+            self.assertEqual(document["iterations"][0]["id"], "iteration-2")
+            self.assertEqual(document["iterations"][0]["number"], 2)
+            self.assertEqual(
+                document["iterations"][0]["turn_ids"],
+                ["iteration-2-turn-1", "iteration-2-turn-2"],
+            )
+            self.assertEqual(document["activity"]["model_tool_calls"]["count"], 1)
+            self.assertEqual(document["activity"]["adapter_operations"]["count"], 1)
+            self.assertEqual([event["sequence"] for event in turn_events], [1, 4])
+            for index, event in enumerate(turn_events):
                 self.assertEqual(event["run_id"], "run-1")
-                self.assertEqual(event["sequence"], index + 1)
                 self.assertEqual(reconstruct_input(document, event), requests[index])
                 self.assertEqual(event["status"], "completed")
                 self.assertEqual(event["returned_messages"], [responses[index]["choices"][0]["message"]])
@@ -235,6 +307,236 @@ class AdapterExamplesTest(unittest.TestCase):
             failed = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertEqual(failed["events"][0]["status"], "failed")
             self.assertIn("inference timed out", failed["events"][0]["error"])
+
+    def test_local_model_audit_counts_each_call_and_separates_adapter_operations(self) -> None:
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "read-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "list_files",
+                                        "arguments": json.dumps({"path": "."}),
+                                    },
+                                },
+                                {
+                                    "id": "unknown-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "missing_tool",
+                                        "arguments": "{}",
+                                    },
+                                },
+                                {
+                                    "id": "malformed-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{not-json",
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-activity",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                response, _ = run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            operations = [event for event in document["events"] if event["type"] == "adapter_operation"]
+            self.assertEqual(response, "done")
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(operations), 3)
+            self.assertEqual(
+                [event["status"] for event in calls],
+                ["completed", "failed", "failed"],
+            )
+            self.assertEqual(document["activity"]["model_tool_calls"]["count"], 3)
+            self.assertEqual(document["activity"]["model_tool_calls"]["completed"], 1)
+            self.assertEqual(document["activity"]["model_tool_calls"]["failed"], 2)
+            self.assertEqual(document["activity"]["adapter_operations"]["count"], 3)
+            self.assertEqual(calls[0]["arguments"], {"path": "."})
+            self.assertEqual(calls[1]["tool_name"], "missing_tool")
+            self.assertEqual(calls[2]["arguments"], "{not-json")
+            self.assertIn("unknown tool", calls[1]["error"])
+            self.assertIn("invalid JSON arguments", calls[2]["error"])
+            self.assertTrue(all(event["turn_id"] == "iteration-1-turn-1" for event in calls))
+            self.assertTrue(all(event["model_tool_call_id"] in {call["id"] for call in calls} for event in operations))
+            self.assertTrue(all("duration_ms" in event for event in calls + operations))
+
+    def test_local_model_audit_keeps_one_recovered_call_with_provenance(self) -> None:
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": '<tool_call>{"name":"list_files","arguments":{"path":"."}}</tool_call>',
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-recovery",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["provenance"], "model_text_recovery")
+            self.assertEqual(document["activity"]["model_tool_calls"]["count"], 1)
+            self.assertEqual(document["activity"]["adapter_operations"]["count"], 1)
+
+    def test_local_model_audit_recovers_malformed_tagged_request_as_failure(self) -> None:
+        responses = [
+            {"choices": [{"message": {"role": "assistant", "content": "<tool_call>{not-json</tool_call>"}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-malformed-recovery",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["status"], "failed")
+            self.assertEqual(calls[0]["provenance"], "model_text_recovery")
+            self.assertEqual(calls[0]["arguments"], "{not-json")
+            self.assertIn("invalid JSON arguments", calls[0]["error"])
+
+    def test_local_model_audit_keeps_started_activity_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-incomplete",
+                    "candidate": "candidate",
+                    "baseline": "baseline",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            writer = AuditWriter.create(request, metadata)
+            assert writer is not None
+            turn = writer.record_turn_started(
+                {"model": "model", "messages": [], "tools": []},
+                {**request["audit"], "iteration": 1, "iteration_id": "iteration-1"},
+            )
+            writer.record_tool_call_started(
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": json.dumps({"path": "api.py"})},
+                },
+                turn,
+                "model_response",
+            )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            call = next(event for event in document["events"] if event["type"] == "model_tool_call")
+            self.assertEqual(call["status"], "started")
+            self.assertNotIn("result", call)
+            self.assertEqual(document["activity"]["model_tool_calls"]["incomplete"], 1)
+            self.assertEqual(document["activity"]["status"], "partial")
 
     def test_local_model_audit_storage_failure_is_explicit(self) -> None:
         request = {

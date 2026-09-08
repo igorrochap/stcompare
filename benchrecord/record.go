@@ -90,11 +90,40 @@ const (
 // AuditReference links a benchmark record to its local model-turn evidence.
 // Paths are relative to the benchmark record's directory.
 type AuditReference struct {
-	Status   AuditStatus `json:"status"`
-	RunID    string      `json:"run_id,omitempty"`
-	Artifact string      `json:"artifact,omitempty"`
-	Report   string      `json:"report,omitempty"`
-	Error    string      `json:"error,omitempty"`
+	Status   AuditStatus      `json:"status"`
+	RunID    string           `json:"run_id,omitempty"`
+	Artifact string           `json:"artifact,omitempty"`
+	Report   string           `json:"report,omitempty"`
+	Error    string           `json:"error,omitempty"`
+	Activity *ActivitySummary `json:"activity,omitempty"`
+}
+
+// ActivityStatus describes the availability of activity evidence.
+type ActivityStatus string
+
+const (
+	// ActivityStatusComplete identifies complete activity evidence.
+	ActivityStatusComplete ActivityStatus = "complete"
+	// ActivityStatusPartial identifies activity evidence from an incomplete capture.
+	ActivityStatusPartial ActivityStatus = "partial"
+	// ActivityStatusNotReported identifies activity that was not captured.
+	ActivityStatusNotReported ActivityStatus = "not_reported"
+)
+
+// ActivitySummary contains counts and execution time for one audit scope.
+type ActivitySummary struct {
+	Status            ActivityStatus `json:"status"`
+	ModelToolCalls    ActivityCounts `json:"model_tool_calls"`
+	AdapterOperations ActivityCounts `json:"adapter_operations"`
+}
+
+// ActivityCounts contains one activity category's measurable outcomes.
+type ActivityCounts struct {
+	Count      int   `json:"count"`
+	Completed  int   `json:"completed"`
+	Failed     int   `json:"failed"`
+	Incomplete int   `json:"incomplete"`
+	DurationMS int64 `json:"duration_ms"`
 }
 
 // PromptIdentity identifies the fixed task prompt used by a run.

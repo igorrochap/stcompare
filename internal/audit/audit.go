@@ -19,12 +19,13 @@ const SchemaVersion = "1"
 
 // Artifact is the durable local-model audit document.
 type Artifact struct {
-	SchemaVersion string                     `json:"schema_version"`
-	Run           Run                        `json:"run"`
-	Capture       Capture                    `json:"capture"`
-	Iterations    []Iteration                `json:"iterations"`
-	SharedContent map[string]json.RawMessage `json:"shared_content,omitempty"`
-	Events        []Event                    `json:"events"`
+	SchemaVersion string                      `json:"schema_version"`
+	Run           Run                         `json:"run"`
+	Capture       Capture                     `json:"capture"`
+	Iterations    []Iteration                 `json:"iterations"`
+	SharedContent map[string]json.RawMessage  `json:"shared_content,omitempty"`
+	Activity      benchrecord.ActivitySummary `json:"activity"`
+	Events        []Event                     `json:"events"`
 }
 
 // Run identifies the benchmark run associated with the audit.
@@ -50,11 +51,13 @@ type Capture struct {
 	FinishedAt string `json:"finished_at,omitempty"`
 }
 
-// Iteration identifies an ordered benchmark iteration and its model turns.
+// Iteration identifies an ordered benchmark iteration, its model turns, and
+// its activity summary.
 type Iteration struct {
-	ID      string   `json:"id"`
-	Number  int      `json:"number"`
-	TurnIDs []string `json:"turn_ids"`
+	ID       string                      `json:"id"`
+	Number   int                         `json:"number"`
+	TurnIDs  []string                    `json:"turn_ids"`
+	Activity benchrecord.ActivitySummary `json:"activity"`
 }
 
 // ContentReference identifies shared message content used by one model input.
@@ -63,9 +66,9 @@ type ContentReference struct {
 	ID   string `json:"id"`
 }
 
-// Event is one model-turn lifecycle record in chronological order. Input is
-// reconstructable from its shared-content references, and Returned retains its
-// exact JSON value from the adapter boundary.
+// Event is one chronological model-turn or activity record. Model-turn input
+// is reconstructable from its shared-content references, and Returned retains
+// its exact JSON value from the adapter boundary.
 type Event struct {
 	Sequence               int                     `json:"sequence"`
 	Type                   string                  `json:"type"`
@@ -84,6 +87,15 @@ type Event struct {
 	ReturnedMessages       []json.RawMessage       `json:"returned_messages,omitempty"`
 	Tokens                 *benchrecord.TokenUsage `json:"tokens,omitempty"`
 	Error                  string                  `json:"error,omitempty"`
+	ID                     string                  `json:"id,omitempty"`
+	ToolCallID             string                  `json:"tool_call_id,omitempty"`
+	ModelToolCallID        string                  `json:"model_tool_call_id,omitempty"`
+	ToolName               string                  `json:"tool_name,omitempty"`
+	Operation              string                  `json:"operation,omitempty"`
+	Provenance             string                  `json:"provenance,omitempty"`
+	Arguments              json.RawMessage         `json:"arguments,omitempty"`
+	Request                json.RawMessage         `json:"request,omitempty"`
+	Result                 json.RawMessage         `json:"result,omitempty"`
 }
 
 // Read loads and validates a versioned audit artifact.
@@ -104,7 +116,100 @@ func Read(path string) (Artifact, error) {
 			SchemaVersion,
 		)
 	}
+	document.Activity = SummarizeActivity(document)
+	for index := range document.Iterations {
+		document.Iterations[index].Activity = summarizeIterationActivity(document, document.Iterations[index].ID)
+	}
 	return document, nil
+}
+
+// SummarizeActivity returns the measurable model-tool and adapter activity in
+// an audit. The status remains partial when the capture cannot establish a
+// complete zero, so absent evidence is not mistaken for no activity.
+func SummarizeActivity(document Artifact) benchrecord.ActivitySummary {
+	if !activityEvidenceReported(document) {
+		return notReportedActivity()
+	}
+	return summarizeEvents(document.Capture, document.Events, "")
+}
+
+func summarizeIterationActivity(document Artifact, iterationID string) benchrecord.ActivitySummary {
+	if !activityEvidenceReported(document) {
+		return notReportedActivity()
+	}
+	return summarizeEvents(document.Capture, document.Events, iterationID)
+}
+
+func activityEvidenceReported(document Artifact) bool {
+	return document.Capture.Enabled && hasActivityEvents(document.Events)
+}
+
+func hasActivityEvents(events []Event) bool {
+	for _, event := range events {
+		if event.Type == "model_tool_call" || event.Type == "adapter_operation" {
+			return true
+		}
+	}
+	return false
+}
+
+func notReportedActivity() benchrecord.ActivitySummary {
+	return benchrecord.ActivitySummary{Status: benchrecord.ActivityStatusNotReported}
+}
+
+func summarizeEvents(capture Capture, events []Event, iterationID string) benchrecord.ActivitySummary {
+	summary := benchrecord.ActivitySummary{Status: activityStatus(capture, events)}
+	for _, event := range events {
+		if iterationID != "" && event.IterationID != iterationID {
+			continue
+		}
+		switch event.Type {
+		case "model_tool_call":
+			addActivityCount(&summary.ModelToolCalls, event)
+		case "adapter_operation":
+			addActivityCount(&summary.AdapterOperations, event)
+		}
+	}
+	return summary
+}
+
+func activityStatus(capture Capture, events []Event) benchrecord.ActivityStatus {
+	if !capture.Enabled {
+		return benchrecord.ActivityStatusNotReported
+	}
+	if capture.Status != "complete" || !capture.Complete {
+		return benchrecord.ActivityStatusPartial
+	}
+	for _, event := range events {
+		if EventIsIncomplete(event) {
+			return benchrecord.ActivityStatusPartial
+		}
+	}
+	return benchrecord.ActivityStatusComplete
+}
+
+func addActivityCount(counts *benchrecord.ActivityCounts, event Event) {
+	counts.Count++
+	switch event.Status {
+	case "completed":
+		counts.Completed++
+		counts.DurationMS += event.DurationMS
+	case "failed":
+		counts.Failed++
+	default:
+		counts.Incomplete++
+	}
+}
+
+// EventIsIncomplete reports whether an audit event lacks a terminal outcome.
+func EventIsIncomplete(event Event) bool {
+	if event.Type == "model_turn" {
+		return event.Status != "completed"
+	}
+	if event.Type != "model_tool_call" && event.Type != "adapter_operation" {
+		return false
+	}
+	return event.Status != "completed" && event.Status != "failed"
 }
 
 // Finalize marks an existing audit with the benchmark's terminal state. The
@@ -144,9 +249,46 @@ func Finalize(path string, terminalState string, endedAt time.Time, partial bool
 	run["terminal_state"] = rawString(terminalState)
 	document["run"] = mustMarshal(run)
 
+	if err := refreshRawActivity(document); err != nil {
+		return fmt.Errorf("finalize audit activity: %w", err)
+	}
 	if err := writeAtomically(path, mustMarshal(document)); err != nil {
 		return fmt.Errorf("write finalized audit artifact: %w", err)
 	}
+	return nil
+}
+
+func refreshRawActivity(document map[string]json.RawMessage) error {
+	var artifact Artifact
+	if err := json.Unmarshal(mustMarshal(document), &artifact); err != nil {
+		return fmt.Errorf("parse activity events: %w", err)
+	}
+	document["activity"] = mustMarshal(SummarizeActivity(artifact))
+
+	rawIterations, ok := document["iterations"]
+	if !ok {
+		return nil
+	}
+	var iterations []json.RawMessage
+	if err := json.Unmarshal(rawIterations, &iterations); err != nil {
+		return fmt.Errorf("parse activity iterations: %w", err)
+	}
+	for index, rawIteration := range iterations {
+		var iteration map[string]json.RawMessage
+		if err := json.Unmarshal(rawIteration, &iteration); err != nil {
+			return fmt.Errorf("parse activity iteration %d: %w", index, err)
+		}
+		var iterationID string
+		if rawID, exists := iteration["id"]; exists {
+			if err := json.Unmarshal(rawID, &iterationID); err != nil {
+				return fmt.Errorf("parse activity iteration %d identity: %w", index, err)
+			}
+		}
+		iterationActivity := summarizeIterationActivity(artifact, iterationID)
+		iteration["activity"] = mustMarshal(iterationActivity)
+		iterations[index] = mustMarshal(iteration)
+	}
+	document["iterations"] = mustMarshal(iterations)
 	return nil
 }
 
@@ -173,38 +315,79 @@ func Build(auditPath, outputPath string) error {
 func Render(document Artifact) (string, error) {
 	status := captureStatus(document)
 	view := pageView{
-		SchemaVersion:  document.SchemaVersion,
-		Run:            document.Run,
-		Status:         status,
-		StatusClass:    strings.ReplaceAll(status, " ", "-"),
-		Partial:        auditIsPartial(document),
-		CaptureFailure: document.Capture.Failure,
-		Iterations:     document.Iterations,
-		Events:         make([]eventView, 0, len(document.Events)),
+		SchemaVersion:    document.SchemaVersion,
+		Run:              document.Run,
+		Status:           status,
+		StatusClass:      strings.ReplaceAll(status, " ", "-"),
+		Partial:          auditIsPartial(document),
+		CaptureFailure:   document.Capture.Failure,
+		Activity:         SummarizeActivity(document),
+		ActivityReported: activityEvidenceReported(document),
+		CaptureEnabled:   document.Capture.Enabled,
+		Iterations:       make([]iterationView, 0, len(document.Iterations)),
+	}
+	for _, iteration := range document.Iterations {
+		view.Iterations = append(view.Iterations, iterationView{
+			ID:               iteration.ID,
+			Number:           iteration.Number,
+			Activity:         summarizeIterationActivity(document, iteration.ID),
+			ActivityReported: activityEvidenceReported(document),
+			Events:           []eventView{},
+		})
 	}
 	for _, event := range document.Events {
 		eventView, err := newEventView(event, document.SharedContent)
 		if err != nil {
 			return "", err
 		}
-		view.Events = append(view.Events, eventView)
+		iterationIndex := view.ensureIteration(event.IterationID, event.Iteration)
+		view.Iterations[iterationIndex].Events = append(view.Iterations[iterationIndex].Events, eventView)
+	}
+	for index := range view.Iterations {
+		view.Iterations[index].Activity = summarizeIterationActivity(document, view.Iterations[index].ID)
 	}
 	return executeTemplate(view)
 }
 
+func (view *pageView) ensureIteration(iterationID string, number int) int {
+	for index, iteration := range view.Iterations {
+		if iteration.ID == iterationID {
+			return index
+		}
+	}
+	view.Iterations = append(view.Iterations, iterationView{
+		ID:               iterationID,
+		Number:           number,
+		ActivityReported: view.ActivityReported,
+		Events:           []eventView{},
+	})
+	return len(view.Iterations) - 1
+}
+
 type pageView struct {
-	SchemaVersion  string
-	Run            Run
-	Status         string
-	StatusClass    string
-	Partial        bool
-	CaptureFailure string
-	Iterations     []Iteration
-	Events         []eventView
+	SchemaVersion    string
+	Run              Run
+	Status           string
+	StatusClass      string
+	Partial          bool
+	CaptureFailure   string
+	Activity         benchrecord.ActivitySummary
+	ActivityReported bool
+	CaptureEnabled   bool
+	Iterations       []iterationView
+}
+
+type iterationView struct {
+	ID               string
+	Number           int
+	Activity         benchrecord.ActivitySummary
+	ActivityReported bool
+	Events           []eventView
 }
 
 type eventView struct {
 	Sequence         int
+	Type             string
 	Iteration        int
 	IterationID      string
 	TurnID           string
@@ -212,12 +395,24 @@ type eventView struct {
 	StartedAt        string
 	EndedAt          string
 	DurationMS       int64
+	DurationReported bool
 	Sampling         string
 	Input            string
 	Returned         string
 	ReturnedMessages []messageView
 	Error            string
 	Partial          bool
+	ModelToolCall    bool
+	AdapterOperation bool
+	ID               string
+	ToolCallID       string
+	ModelToolCallID  string
+	ToolName         string
+	Operation        string
+	Provenance       string
+	Arguments        string
+	Request          string
+	Result           string
 }
 
 type messageView struct {
@@ -232,19 +427,32 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		return eventView{}, err
 	}
 	view := eventView{
-		Sequence:    event.Sequence,
-		Iteration:   event.Iteration,
-		IterationID: event.IterationID,
-		TurnID:      event.TurnID,
-		Status:      event.Status,
-		StartedAt:   event.StartedAt,
-		EndedAt:     event.EndedAt,
-		DurationMS:  event.DurationMS,
-		Sampling:    formatJSON(mustMarshal(event.Sampling)),
-		Input:       formatJSON(input),
-		Returned:    formatJSON(event.Returned),
-		Error:       event.Error,
-		Partial:     event.Status != "completed",
+		Sequence:         event.Sequence,
+		Type:             event.Type,
+		Iteration:        event.Iteration,
+		IterationID:      event.IterationID,
+		TurnID:           event.TurnID,
+		Status:           event.Status,
+		StartedAt:        event.StartedAt,
+		EndedAt:          event.EndedAt,
+		DurationMS:       event.DurationMS,
+		DurationReported: event.EndedAt != "" || event.Status == "completed" || event.Status == "failed",
+		Sampling:         formatJSON(mustMarshal(event.Sampling)),
+		Input:            formatJSON(input),
+		Returned:         formatJSON(event.Returned),
+		Error:            event.Error,
+		Partial:          EventIsIncomplete(event),
+		ModelToolCall:    event.Type == "model_tool_call",
+		AdapterOperation: event.Type == "adapter_operation",
+		ID:               event.ID,
+		ToolCallID:       event.ToolCallID,
+		ModelToolCallID:  event.ModelToolCallID,
+		ToolName:         event.ToolName,
+		Operation:        event.Operation,
+		Provenance:       event.Provenance,
+		Arguments:        formatJSON(event.Arguments),
+		Request:          formatJSON(event.Request),
+		Result:           formatJSON(event.Result),
 	}
 	for _, rawMessage := range event.ReturnedMessages {
 		message := messageView{JSON: formatJSON(rawMessage)}
@@ -385,7 +593,7 @@ func auditIsPartial(document Artifact) bool {
 		return true
 	}
 	for _, event := range document.Events {
-		if event.Status != "completed" {
+		if EventIsIncomplete(event) {
 			return true
 		}
 	}
@@ -487,6 +695,14 @@ header { border-bottom: 1px solid #d0d7de; padding-bottom: 1rem; }
 .iteration { border-top: 3px solid #0969da; padding-top: .5rem; }
 .turn { border: 1px solid #d0d7de; border-radius: .4rem; padding: 1rem; }
 .turn.partial { border-color: #bf8700; }
+.activity-entry { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
+.activity-entry.partial { border-color: #bf8700; }
+.activity-entry summary { cursor: pointer; font-weight: 700; }
+.activity-summary, .iteration-activity { border: 1px solid #d0d7de; border-radius: .4rem; padding: 1rem; }
+.activity-counts { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.activity-count { background: #f6f8fa; border-radius: .3rem; padding: .65rem; }
+.activity-count span, .activity-count small { color: #57606a; display: block; }
+.activity-count strong { display: block; font-size: 1.3rem; }
 pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75rem; white-space: pre-wrap; word-break: break-word; }
 .rationale { border-left: 4px solid #8250df; padding-left: .75rem; }
 .label { color: #8250df; font-weight: 700; }
@@ -509,10 +725,73 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 </div>
 {{if .Partial}}<p class="empty">This audit is partial. Unfinished activity and incomplete capture are shown as evidence, not as zero activity.</p>{{end}}
 </header>
-{{if .Events}}
-{{range .Events}}
+{{if .ActivityReported}}
+<section class="activity-summary">
+<h2>Activity summary <small>({{.Activity.Status}} evidence)</small></h2>
+<div class="activity-counts">
+<div class="activity-count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong><small>{{.Activity.ModelToolCalls.Completed}} completed · {{.Activity.ModelToolCalls.Failed}} failed · {{.Activity.ModelToolCalls.Incomplete}} incomplete</small><small>{{.Activity.ModelToolCalls.DurationMS}} ms execution time</small></div>
+<div class="activity-count"><span>Adapter Operations</span><strong>{{.Activity.AdapterOperations.Count}}</strong><small>{{.Activity.AdapterOperations.Completed}} completed · {{.Activity.AdapterOperations.Failed}} failed · {{.Activity.AdapterOperations.Incomplete}} incomplete</small><small>{{.Activity.AdapterOperations.DurationMS}} ms execution time</small></div>
+</div>
+</section>
+{{else if .CaptureEnabled}}
+<section class="activity-summary">
+<h2>Activity summary <small>(not reported)</small></h2>
+<p class="empty">Activity evidence: not reported.</p>
+</section>
+{{end}}
+{{if .Iterations}}
+{{range .Iterations}}
 <section class="iteration">
-<h2>Iteration {{.Iteration}} <small>({{.IterationID}})</small></h2>
+<h2>Iteration {{.Number}} <small>({{.ID}})</small></h2>
+{{if .ActivityReported}}
+<div class="iteration-activity">
+<strong>Iteration activity</strong>
+<div class="activity-counts">
+<div class="activity-count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong><small>{{.Activity.ModelToolCalls.DurationMS}} ms execution time</small></div>
+<div class="activity-count"><span>Adapter Operations</span><strong>{{.Activity.AdapterOperations.Count}}</strong><small>{{.Activity.AdapterOperations.DurationMS}} ms execution time</small></div>
+</div>
+</div>
+{{end}}
+{{range .Events}}
+{{if .ModelToolCall}}
+<article class="activity-entry {{if .Partial}}partial{{end}}">
+<details>
+<summary>Model Tool Call {{.ID}} — {{.ToolName}} — {{.Status}}</summary>
+<div class="turn-meta">
+<div><span>Chronological sequence</span><strong>{{.Sequence}}</strong></div>
+<div><span>Model turn</span><strong>{{.TurnID}}</strong></div>
+{{with .ToolCallID}}<div><span>Tool call ID</span><strong>{{.}}</strong></div>{{end}}
+{{with .Provenance}}<div><span>Provenance</span><strong>{{.}}</strong></div>{{end}}
+<div><span>Started</span><strong>{{.StartedAt}}</strong></div>
+{{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
+{{if .DurationReported}}<div><span>Execution time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
+</div>
+<h4>Tool arguments</h4><pre>{{.Arguments}}</pre>
+<h4>Tool request</h4><pre>{{.Request}}</pre>
+<h4>Tool result</h4><pre>{{.Result}}</pre>
+{{with .Error}}<p>Tool error: {{.}}</p>{{end}}
+{{if .Partial}}<p class="empty">Incomplete Model Tool Call: execution did not produce a terminal result.</p>{{end}}
+</details>
+</article>
+{{else if .AdapterOperation}}
+<article class="activity-entry {{if .Partial}}partial{{end}}">
+<details>
+<summary>Adapter Operation {{.ID}} — {{.Operation}} — {{.Status}}</summary>
+<div class="turn-meta">
+<div><span>Chronological sequence</span><strong>{{.Sequence}}</strong></div>
+<div><span>Model Tool Call</span><strong>{{.ModelToolCallID}}</strong></div>
+{{with .ToolName}}<div><span>Tool</span><strong>{{.}}</strong></div>{{end}}
+<div><span>Started</span><strong>{{.StartedAt}}</strong></div>
+{{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
+{{if .DurationReported}}<div><span>Execution time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
+</div>
+<h4>Operation arguments</h4><pre>{{.Arguments}}</pre>
+<h4>Operation result</h4><pre>{{.Result}}</pre>
+{{with .Error}}<p>Operation error: {{.}}</p>{{end}}
+{{if .Partial}}<p class="empty">Incomplete Adapter Operation: execution did not produce a terminal result.</p>{{end}}
+</details>
+</article>
+{{else}}
 <article class="turn {{if .Partial}}partial{{end}}">
 <h3>Model turn {{.TurnID}} — {{.Status}}</h3>
 <div class="turn-meta">
@@ -535,6 +814,8 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .Error}}<p>Turn error: {{.}}</p>{{end}}
 {{if .Partial}}<p class="empty">Partial turn: inference or capture did not complete.</p>{{end}}
 </article>
+{{end}}
+{{end}}
 </section>
 {{end}}
 {{else}}
