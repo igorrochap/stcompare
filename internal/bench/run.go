@@ -231,29 +231,8 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		return benchrecord.Record{}, fmt.Errorf("create benchmark run identity: %w", err)
 	}
 	config.RunID = runID
-	if config.MaxIterations == 0 {
-		config.MaxIterations = DefaultMaxIterations
-	}
-	if config.StallWindow == 0 {
-		config.StallWindow = DefaultStallWindow
-	}
-	if config.Prompt.ID == "" {
-		config.Prompt.ID = DefaultPromptID
-	}
-	if config.Prompt.Version == "" {
-		config.Prompt.Version = DefaultPromptVersion
-	}
+	applyRunDefaults(&config)
 	config.Prompt.Hash = selectedPromptHash
-	if config.AuditPath != "" {
-		config.Audit = &AuditContext{
-			Enabled:     true,
-			Path:        config.AuditPath,
-			RunID:       runID,
-			Candidate:   config.Candidate,
-			Baseline:    config.Baseline,
-			IterationID: "preflight",
-		}
-	}
 
 	record = benchrecord.Record{
 		SchemaVersion:        benchrecord.SchemaVersion,
@@ -273,32 +252,9 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		ProcessReuse:         config.ReuseProcess,
 		Final:                benchrecord.FinalSummary{},
 	}
-	if config.AuditPath != "" {
-		record.Audit = benchrecord.AuditReference{
-			Status:   benchrecord.AuditStatusNotReported,
-			RunID:    runID,
-			Artifact: filepath.Base(config.AuditPath),
-			Report:   auditReportReference(config.AuditReportPath),
-		}
-	}
+	configureRunAudit(&config, &record, runID)
 	defer func() {
-		if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
-			record.ProcessReuse = reporter.ProcessReuseActive()
-		}
-		if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
-			if err := closer.Close(); err != nil {
-				closeErr := fmt.Errorf("close adapter: %w", err)
-				if runErr == nil {
-					if record.TerminalState != benchrecord.TerminalStateConverged {
-						record = finish(record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
-					}
-					runErr = closeErr
-				} else {
-					runErr = errors.Join(runErr, closeErr)
-				}
-			}
-		}
-		finalizeAudit(config, dependencies.Now, &record, &runErr)
+		closeRunResources(config, dependencies, &record, &runErr)
 	}()
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
@@ -318,11 +274,71 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		return finish(record, dependencies.Now(), state), err
 	}
 	report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressDone})
+	record.ProcessReuse = adapterProcessReuse(dependencies.Adapter, record.ProcessReuse)
+
+	return runIterations(config, dependencies, selectedPrompt, record, startedAt)
+}
+
+func applyRunDefaults(config *Config) {
+	if config.MaxIterations == 0 {
+		config.MaxIterations = DefaultMaxIterations
+	}
+	if config.StallWindow == 0 {
+		config.StallWindow = DefaultStallWindow
+	}
+	if config.Prompt.ID == "" {
+		config.Prompt.ID = DefaultPromptID
+	}
+	if config.Prompt.Version == "" {
+		config.Prompt.Version = DefaultPromptVersion
+	}
+}
+
+func configureRunAudit(config *Config, record *benchrecord.Record, runID string) {
+	if config.AuditPath == "" {
+		return
+	}
+	config.Audit = &AuditContext{
+		Enabled:     true,
+		Path:        config.AuditPath,
+		RunID:       runID,
+		Candidate:   config.Candidate,
+		Baseline:    config.Baseline,
+		IterationID: "preflight",
+	}
+	record.Audit = benchrecord.AuditReference{
+		Status:   benchrecord.AuditStatusNotReported,
+		RunID:    runID,
+		Artifact: filepath.Base(config.AuditPath),
+		Report:   auditReportReference(config.AuditReportPath),
+	}
+}
+
+func closeRunResources(config Config, dependencies Dependencies, record *benchrecord.Record, runErr *error) {
 	if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
 		record.ProcessReuse = reporter.ProcessReuseActive()
 	}
+	if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
+		if err := closer.Close(); err != nil {
+			closeErr := fmt.Errorf("close adapter: %w", err)
+			if *runErr == nil {
+				if record.TerminalState != benchrecord.TerminalStateConverged {
+					*record = finish(*record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
+				}
+				*runErr = closeErr
+			} else {
+				*runErr = errors.Join(*runErr, closeErr)
+			}
+		}
+	}
+	finalizeAudit(config, dependencies.Now, record, runErr)
+}
 
-	return runIterations(config, dependencies, selectedPrompt, record, startedAt)
+func adapterProcessReuse(adapter Adapter, current bool) bool {
+	if reporter, ok := adapter.(ProcessReuseReporter); ok {
+		return reporter.ProcessReuseActive()
+	}
+	return current
 }
 
 func finalizeAudit(config Config, now func() time.Time, record *benchrecord.Record, runErr *error) {

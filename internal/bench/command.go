@@ -127,21 +127,8 @@ func newRunCommand(rootOptions *rootCommandOptions) *cobra.Command {
 }
 
 func runCommand(command *cobra.Command, configPath string, options runCommandOptions) error {
-	effective, err := config.Load(configPath)
+	effective, settings, err := loadRunCommandSettings(command, configPath, options)
 	if err != nil {
-		return err
-	}
-	applyRunOverrides(command, &effective, &options)
-	if err := effective.Validate(); err != nil {
-		return err
-	}
-
-	settings := defaultRunSettings(effective.Stbench)
-	applyRunSettings(&settings, options, command)
-	if err := applyCampaignSettings(effective, &settings); err != nil {
-		return err
-	}
-	if err := validateRunSettings(settings); err != nil {
 		return err
 	}
 
@@ -155,25 +142,24 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		return fmt.Errorf("source directory %s is not a directory", workingDir)
 	}
 
-	healthTimeout, err := parseDuration("health timeout", settings.healthTimeout)
-	if err != nil {
-		return err
+	var healthTimeout, healthInterval, adapterTimeout, commandTimeout, heartbeatInterval time.Duration
+	durations := []struct {
+		name   string
+		value  string
+		target *time.Duration
+	}{
+		{name: "health timeout", value: settings.healthTimeout, target: &healthTimeout},
+		{name: "health interval", value: settings.healthInterval, target: &healthInterval},
+		{name: "adapter timeout", value: settings.adapterTimeout, target: &adapterTimeout},
+		{name: "command timeout", value: settings.commandTimeout, target: &commandTimeout},
+		{name: "heartbeat interval", value: settings.heartbeatInterval, target: &heartbeatInterval},
 	}
-	healthInterval, err := parseDuration("health interval", settings.healthInterval)
-	if err != nil {
-		return err
-	}
-	adapterTimeout, err := parseDuration("adapter timeout", settings.adapterTimeout)
-	if err != nil {
-		return err
-	}
-	commandTimeout, err := parseDuration("command timeout", settings.commandTimeout)
-	if err != nil {
-		return err
-	}
-	heartbeatInterval, err := parseDuration("heartbeat interval", settings.heartbeatInterval)
-	if err != nil {
-		return err
+	for _, duration := range durations {
+		parsed, err := parseDuration(duration.name, duration.value)
+		if err != nil {
+			return err
+		}
+		*duration.target = parsed
 	}
 
 	baselineName := findBaselineName(effective)
@@ -238,10 +224,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		Reporter:        NewTextReporter(command.OutOrStdout()),
 		ChangeInspector: NewGitChangeInspector(workingDir),
 	})
-	if err := writeRecord(settings.recordPath, record); err != nil {
-		if runErr != nil {
-			return fmt.Errorf("%v; write benchmark record: %w", runErr, err)
-		}
+	if err := writeRunRecord(settings.recordPath, record, runErr); err != nil {
 		return err
 	}
 	fmt.Fprintf(command.OutOrStdout(), "wrote %s\n", settings.recordPath)
@@ -261,6 +244,45 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		OutputPath:     filepath.Join(reportDir, "scorecard.html"),
 	}, command.ErrOrStderr())
 
+	return runCommandResult(record, runErr)
+}
+
+func loadRunCommandSettings(
+	command *cobra.Command,
+	configPath string,
+	options runCommandOptions,
+) (config.Config, runSettings, error) {
+	effective, err := config.Load(configPath)
+	if err != nil {
+		return config.Config{}, runSettings{}, err
+	}
+	applyRunOverrides(command, &effective, &options)
+	if err := effective.Validate(); err != nil {
+		return config.Config{}, runSettings{}, err
+	}
+
+	settings := defaultRunSettings(effective.Stbench)
+	applyRunSettings(&settings, options, command)
+	if err := applyCampaignSettings(effective, &settings); err != nil {
+		return config.Config{}, runSettings{}, err
+	}
+	if err := validateRunSettings(settings); err != nil {
+		return config.Config{}, runSettings{}, err
+	}
+	return effective, settings, nil
+}
+
+func writeRunRecord(path string, record benchrecord.Record, runErr error) error {
+	if err := writeRecord(path, record); err != nil {
+		if runErr != nil {
+			return fmt.Errorf("%v; write benchmark record: %w", runErr, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func runCommandResult(record benchrecord.Record, runErr error) error {
 	if runErr != nil {
 		return &ExitCodeError{Code: exitCodeForState(record.TerminalState), Err: runErr}
 	}
