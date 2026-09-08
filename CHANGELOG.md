@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-08-28)
+
+### Features
+
+- **adapter**: Add tuning options for local models
+  ([`0a7fe40`](https://github.com/igorrochap/stcompare/commit/0a7fe4095810dbafecb746a3095a2fb3f5034d71))
+
+### Refactoring
+
+- **stbench**: Remove run_command tool from adapter
+  ([#75](https://github.com/igorrochap/stcompare/pull/75),
+  [`6f54f14`](https://github.com/igorrochap/stcompare/commit/6f54f143ec569b08dff121e5ebbc515a49c61dcf))
+
+
 ## v1.3.0 (2026-08-26)
 
 ### Features
