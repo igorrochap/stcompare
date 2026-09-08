@@ -83,6 +83,11 @@ def request_metadata(request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str):
             raise ValueError(f"adapter input {name} is required")
         metadata[name] = value
+    if "effort" in request:
+        effort = request["effort"]
+        if not isinstance(effort, str):
+            raise ValueError("adapter input effort must be a string")
+        metadata["effort"] = effort
     if "temperature" in request:
         metadata["temperature"] = request["temperature"]
     return metadata
@@ -116,6 +121,7 @@ def emit_result(
     message: str = "",
     reuse_process: bool = False,
     temperature: float | None = None,
+    audit_error: str = "",
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
 
@@ -128,11 +134,13 @@ def emit_result(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if audit_error:
+        payload["audit_error"] = audit_error
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def emit_error(message: str, *, response: str = "") -> None:
-    emit_result(status="error", response=response, message=message)
+def emit_error(message: str, *, response: str = "", audit_error: str = "") -> None:
+    emit_result(status="error", response=response, message=message, audit_error=audit_error)
 
 
 def handle_preflight(request: dict[str, Any]) -> bool:

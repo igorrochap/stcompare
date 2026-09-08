@@ -428,6 +428,7 @@ func TestExitCodeForBenchmarkTerminalState(t *testing.T) {
 		{state: benchrecord.TerminalStateToolError, want: 1},
 		{state: benchrecord.TerminalStateAdapterError, want: 1},
 		{state: benchrecord.TerminalStateLifecycleError, want: 1},
+		{state: benchrecord.TerminalStateAuditError, want: 1},
 	} {
 		if got := exitCodeForState(test.state); got != test.want {
 			t.Errorf("exitCodeForState(%q) = %d, want %d", test.state, got, test.want)
@@ -454,6 +455,36 @@ func TestWriteRecordCreatesParentDirectoryAndJSON(t *testing.T) {
 	}
 }
 
+func TestEmitAuditReportIfAvailableBuildsAndWarnsWithoutChangingRun(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	if err := os.WriteFile(auditPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write audit artifact: %v", err)
+	}
+	input := auditBuildInput{AuditPath: auditPath, OutputPath: filepath.Join(directory, "audit.html")}
+	var warnings strings.Builder
+	builder := &fakeAuditBuilder{}
+	emitAuditReportIfAvailable(builder, input, &warnings)
+	if len(builder.inputs) != 1 || builder.inputs[0] != input {
+		t.Fatalf("audit builder inputs = %#v, want %#v", builder.inputs, []auditBuildInput{input})
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings = %q, want none", warnings.String())
+	}
+
+	builder.err = errors.New("renderer failed")
+	emitAuditReportIfAvailable(builder, input, &warnings)
+	if !strings.Contains(warnings.String(), "warning: audit report not generated") ||
+		!strings.Contains(warnings.String(), "renderer failed") {
+		t.Fatalf("warnings = %q, want renderer warning", warnings.String())
+	}
+
+	emitAuditReportIfAvailable(builder, auditBuildInput{AuditPath: filepath.Join(directory, "missing.json")}, &warnings)
+	if len(builder.inputs) != 2 {
+		t.Fatalf("missing audit artifact invoked builder, inputs = %#v", builder.inputs)
+	}
+}
+
 type fakeScorecardBuilder struct {
 	inputs      []scorecardBuildInput
 	err         error
@@ -470,5 +501,15 @@ func (builder *fakeScorecardBuilder) Build(input scorecardBuildInput) error {
 	if builder.writeOutput {
 		return os.WriteFile(input.OutputPath, []byte("scorecard"), 0o644)
 	}
+	return builder.err
+}
+
+type fakeAuditBuilder struct {
+	inputs []auditBuildInput
+	err    error
+}
+
+func (builder *fakeAuditBuilder) Build(input auditBuildInput) error {
+	builder.inputs = append(builder.inputs, input)
 	return builder.err
 }

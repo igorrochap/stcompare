@@ -28,6 +28,15 @@ delivery boundary:
 
    Report `"tokens": null` when the agent does not expose token usage.
 
+For the bundled local-model adapter, `stbench` supplies an audit context on
+every request. The adapter creates and updates `benchmark-audit.json` beside
+the benchmark record before each inference and after each returned response.
+Each event contains the exact model payload, returned model messages, effective
+sampling settings, and stable run, iteration, and turn identities. Transport
+headers and credentials are not written to the artifact. A model-turn start is
+durable before inference, so timeouts and interrupted runs remain visibly
+partial rather than becoming zero activity.
+
 Before the first comparison, `stbench` sends `{"preflight": true}`. The
 adapter must return an `ok` result for this no-op request without invoking the
 model or editing the candidate. This lets `stbench` verify that the configured
@@ -125,6 +134,16 @@ resolved value is sent on every chat-completions request. At temperature `0`,
 the adapter also sends `top_p: 1` to keep decoding fully greedy and
 deterministic. The adapter reports the resolved value during preflight so the
 benchmark record captures the effective sampling regime.
+
+`stbench run` renders an available audit to `benchmark-audit.html` after the
+run. A researcher can render an artifact independently, including when no
+comparison or scorecard exists:
+
+```sh
+stcompare audit render \
+  --audit reports/local-model/benchmark-audit.json \
+  --out reports/local-model/benchmark-audit.html
+```
 
 ## Coding-agent CLI adapter
 

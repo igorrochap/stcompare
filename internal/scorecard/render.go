@@ -13,12 +13,14 @@ import (
 )
 
 type benchmarkView struct {
-	Agent        string
-	Model        string
-	Iterations   int
-	TotalTime    string
-	AgentFixTime string
-	Tokens       *benchrecord.TokenUsage
+	Agent          string
+	Model          string
+	Iterations     int
+	TotalTime      string
+	AgentFixTime   string
+	Tokens         *benchrecord.TokenUsage
+	Audit          benchrecord.AuditReference
+	AuditAvailable bool
 }
 
 // Render renders a benchmark scorecard containing the complete comparison report.
@@ -30,12 +32,14 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 
 	var section bytes.Buffer
 	view := benchmarkView{
-		Agent:        record.Agent,
-		Model:        record.Model,
-		Iterations:   record.Iterations,
-		TotalTime:    formatMilliseconds(record.TimeMS.Total),
-		AgentFixTime: formatMilliseconds(record.TimeMS.AgentFix),
-		Tokens:       record.Tokens,
+		Agent:          record.Agent,
+		Model:          record.Model,
+		Iterations:     record.Iterations,
+		TotalTime:      formatMilliseconds(record.TimeMS.Total),
+		AgentFixTime:   formatMilliseconds(record.TimeMS.AgentFix),
+		Tokens:         record.Tokens,
+		Audit:          record.Audit,
+		AuditAvailable: auditAvailable(record.Audit),
 	}
 	if err := benchmarkSectionTemplate.Execute(&section, view); err != nil {
 		return "", fmt.Errorf("render benchmark run: %w", err)
@@ -47,6 +51,13 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 	}
 
 	return strings.Replace(comparisonHTML, trafficSection, section.String()+trafficSection, 1), nil
+}
+
+func auditAvailable(reference benchrecord.AuditReference) bool {
+	if reference.Report == "" {
+		return false
+	}
+	return reference.Status == benchrecord.AuditStatusComplete || reference.Status == benchrecord.AuditStatusPartial
 }
 
 func formatMilliseconds(milliseconds int64) string {
@@ -101,5 +112,10 @@ var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse
 <p class="empty">not reported</p>
 {{end}}
 </div>
+{{if .AuditAvailable}}
+<p><a href="{{.Audit.Report}}">View chronological model-turn audit</a> ({{.Audit.Status}})</p>
+{{else}}
+<p class="empty">Audit evidence: not reported</p>
+{{end}}
 </section>
 `))

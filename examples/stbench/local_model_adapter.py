@@ -9,11 +9,15 @@ patch: read/write tools mutate the candidate directory directly.
 from __future__ import annotations
 
 import argparse
+import copy
+import datetime as dt
+import hashlib
 import json
 import math
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -131,6 +135,266 @@ class ToolError(ValueError):
         self.code = code
 
 
+class AuditCaptureError(RuntimeError):
+    """A required audit event could not be durably saved."""
+
+
+class AuditWriter:
+    """Persist model-turn events without changing the model request."""
+
+    def __init__(self, path: Path, document: dict[str, Any]) -> None:
+        self.path = path
+        self.document = document
+
+    @classmethod
+    def create(cls, request: dict[str, Any], metadata: dict[str, Any]) -> "AuditWriter | None":
+        context = audit_context(request)
+        if context is None:
+            return None
+        run_id = required_audit_value(context, "run_id")
+        path = Path(required_audit_value(context, "path"))
+        document = {
+            "schema_version": "1",
+            "run": {
+                "id": run_id,
+                "candidate": str(context.get("candidate", "")),
+                "baseline": str(context.get("baseline", "")),
+                "agent": metadata["agent"],
+                "model": metadata["model"],
+                "effort": str(metadata.get("effort", "")),
+                "hardware": metadata["hardware"],
+                "started_at": utc_now(),
+            },
+            "capture": {
+                "enabled": True,
+                "status": "in_progress",
+                "complete": False,
+            },
+            "iterations": [],
+            "shared_content": {},
+            "events": [],
+        }
+        writer = cls(path, document)
+        writer._write()
+        return writer
+
+    @classmethod
+    def open(cls, request: dict[str, Any]) -> "AuditWriter | None":
+        context = audit_context(request)
+        if context is None:
+            return None
+        path = Path(required_audit_value(context, "path"))
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise AuditCaptureError(f"cannot read audit artifact {path}: {error}") from error
+        if not isinstance(document, dict) or document.get("schema_version") != "1":
+            raise AuditCaptureError(f"audit artifact {path} has an unsupported schema")
+        return cls(path, document)
+
+    def record_turn_started(self, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        iteration = int(context.get("iteration", 0))
+        iteration_id = required_audit_value(context, "iteration_id")
+        turn_number = (
+            sum(
+                event.get("type") == "model_turn" and event.get("iteration_id") == iteration_id
+                for event in self.document["events"]
+            )
+            + 1
+        )
+        turn_id = f"{iteration_id}-turn-{turn_number}"
+        captured_input, input_references = capture_shared_content(
+            payload,
+            self.document.setdefault("shared_content", {}),
+        )
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "model_turn",
+            "run_id": required_audit_value(context, "run_id"),
+            "iteration_id": iteration_id,
+            "iteration": iteration,
+            "turn_id": turn_id,
+            "status": "started",
+            "started_at": utc_now(),
+            "sampling": sampling_settings(payload),
+            "input": captured_input,
+        }
+        if input_references:
+            event["input_content_references"] = input_references
+        self.document["events"].append(event)
+        self._ensure_iteration(iteration_id, iteration, turn_id)
+        self._write()
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_turn_completed(self, event: dict[str, Any], response: dict[str, Any]) -> None:
+        event["status"] = "completed"
+        event["ended_at"] = utc_now()
+        event["duration_ms"] = elapsed_milliseconds(event)
+        event["returned"] = copy.deepcopy(response)
+        event["returned_messages"] = returned_messages(response)
+        event["tokens"] = usage_to_tokens(response.get("usage"))
+        event.pop("_started_monotonic", None)
+        self._write()
+
+    def record_turn_failed(self, event: dict[str, Any], error: Exception) -> None:
+        event["status"] = "failed"
+        event["ended_at"] = utc_now()
+        event["duration_ms"] = elapsed_milliseconds(event)
+        event["error"] = str(error)
+        event.pop("_started_monotonic", None)
+        self._write()
+
+    def _ensure_iteration(self, iteration_id: str, number: int, turn_id: str) -> None:
+        for iteration in self.document["iterations"]:
+            if iteration.get("id") == iteration_id:
+                iteration["turn_ids"].append(turn_id)
+                return
+        self.document["iterations"].append({"id": iteration_id, "number": number, "turn_ids": [turn_id]})
+
+    def _write(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+            with temporary.open("w", encoding="utf-8", newline="") as output:
+                json.dump(self.document, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except (UnboundLocalError, OSError):
+                pass
+            raise AuditCaptureError(f"cannot write audit artifact {self.path}: {error}") from error
+
+
+def audit_context(request: dict[str, Any]) -> dict[str, Any] | None:
+    context = request.get("audit")
+    if not isinstance(context, dict) or context.get("enabled") is not True:
+        return None
+    return context
+
+
+def required_audit_value(context: dict[str, Any], name: str) -> str:
+    value = context.get(name)
+    if not isinstance(value, str) or not value:
+        raise AuditCaptureError(f"audit context {name} is required")
+    return value
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sampling_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = {"temperature": payload.get("temperature")}
+    if "top_p" in payload:
+        settings["top_p"] = payload["top_p"]
+    return settings
+
+
+def returned_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return messages
+    for choice in choices:
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            continue
+        messages.append(copy.deepcopy(choice["message"]))
+    return messages
+
+
+def elapsed_milliseconds(event: dict[str, Any]) -> int:
+    started = event.get("_started_monotonic")
+    if not isinstance(started, float):
+        return 0
+    return round((time.monotonic() - started) * 1000)
+
+
+def capture_shared_content(
+    payload: dict[str, Any],
+    shared_content: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    captured = copy.deepcopy(payload)
+    references: list[dict[str, str]] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}/{escape_json_pointer(key)}"
+                if key == "content":
+                    reference_id = shared_content_id(child)
+                    if reference_id not in shared_content:
+                        shared_content[reference_id] = copy.deepcopy(child)
+                    value[key] = None
+                    references.append({"path": child_path, "id": reference_id})
+                    continue
+                visit(child, child_path)
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}/{index}")
+
+    visit(captured, "")
+    return captured, references
+
+
+def reconstruct_input(document: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    reconstructed = copy.deepcopy(event["input"])
+    shared_content = document.get("shared_content", {})
+    if not isinstance(shared_content, dict):
+        raise AuditCaptureError("audit shared_content must be an object")
+    for reference in event.get("input_content_references", []):
+        if not isinstance(reference, dict):
+            raise AuditCaptureError("audit input content reference must be an object")
+        reference_id = reference.get("id")
+        path = reference.get("path")
+        if not isinstance(reference_id, str) or reference_id not in shared_content:
+            raise AuditCaptureError(f"audit content reference {reference_id!r} is missing")
+        if not isinstance(path, str):
+            raise AuditCaptureError("audit input content reference path is required")
+        set_json_pointer(reconstructed, path, copy.deepcopy(shared_content[reference_id]))
+    return reconstructed
+
+
+def shared_content_id(value: Any) -> str:
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"content-{digest}"
+
+
+def escape_json_pointer(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def set_json_pointer(document: Any, pointer: str, value: Any) -> None:
+    if not pointer.startswith("/"):
+        raise AuditCaptureError(f"audit JSON pointer {pointer!r} is invalid")
+    current = document
+    parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+            continue
+        raise AuditCaptureError(f"audit JSON pointer {pointer!r} does not exist")
+    if not parts:
+        raise AuditCaptureError("audit JSON pointer cannot replace the root")
+    last = parts[-1]
+    if isinstance(current, dict) and last in current:
+        current[last] = value
+        return
+    if isinstance(current, list) and last.isdigit() and int(last) < len(current):
+        current[int(last)] = value
+        return
+    raise AuditCaptureError(f"audit JSON pointer {pointer!r} does not exist")
+
+
 TOOL_CALL_TAG = re.compile(
     r"<tool_call>(?P<plain_body>.*?)</tool_call>"
     r"|<\|tool_call\|>(?P<special_body>.*?)<\|/tool_call\|>"
@@ -182,18 +446,22 @@ def validate_temperature(value: Any, source: str) -> float:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
+
         for request, instruction in read_requests():
             try:
                 if is_preflight_request(request):
                     if all(name in request for name in ("agent", "model", "hardware")):
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
+                        AuditWriter.create(request, metadata)
                         emit_result(status="ok", temperature=temperature)
                     else:
                         handle_preflight(request)
                     continue
+
                 metadata = request_metadata(request)
                 temperature = resolve_temperature(settings.temperature, metadata)
+                audit = AuditWriter.open(request)
                 response, usages = run_agent(
                     instruction,
                     Path.cwd(),
@@ -203,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
                     metadata=metadata,
                     timeout=settings.timeout,
                     max_turns=settings.max_turns,
+                    audit=audit,
+                    audit_context_value=audit_context(request),
                 )
                 emit_result(
                     status="ok",
@@ -210,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
                 )
+            except AuditCaptureError as error:
+                emit_error(str(error), audit_error=str(error))
             except (OSError, ValueError, RuntimeError) as error:
                 emit_error(str(error))
         return 0
@@ -302,6 +574,8 @@ def run_agent(
     max_turns: int,
     metadata: dict[str, Any] | None = None,
     temperature: float | None = None,
+    audit: AuditWriter | None = None,
+    audit_context_value: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, int] | None]]:
     if timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -339,7 +613,19 @@ def run_agent(
         }
         if temperature == DEFAULT_TEMPERATURE:
             payload["top_p"] = 1
-        result = post_json(url, payload, timeout, metadata=metadata)
+        turn_event = None
+        if audit is not None:
+            if audit_context_value is None:
+                raise AuditCaptureError("audit context is required for a model turn")
+            turn_event = audit.record_turn_started(payload, audit_context_value)
+        try:
+            result = post_json(url, payload, timeout, metadata=metadata)
+        except Exception as error:
+            if audit is not None and turn_event is not None:
+                audit.record_turn_failed(turn_event, error)
+            raise
+        if audit is not None and turn_event is not None:
+            audit.record_turn_completed(turn_event, result)
         usages.append(usage_to_tokens(result.get("usage")))
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):

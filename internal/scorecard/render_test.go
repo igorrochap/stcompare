@@ -80,6 +80,32 @@ func TestRenderStatesWhenTokenUsageWasNotReported(t *testing.T) {
 	}
 }
 
+func TestRenderLinksToAvailableAuditAndDoesNotInventLegacyActivity(t *testing.T) {
+	document := comparisonFixture(t)
+	audited, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
+		Status: benchrecord.AuditStatusComplete,
+		Report: "benchmark-audit.html",
+	}})
+	if err != nil {
+		t.Fatalf("render audited scorecard: %v", err)
+	}
+	if !strings.Contains(audited, `href="benchmark-audit.html"`) ||
+		!strings.Contains(audited, "View chronological model-turn audit") {
+		t.Fatalf("audited scorecard missing audit link:\n%s", audited)
+	}
+
+	legacy, err := Render(document, benchrecord.Record{})
+	if err != nil {
+		t.Fatalf("render legacy scorecard: %v", err)
+	}
+	if !strings.Contains(legacy, "Audit evidence: not reported") {
+		t.Fatalf("legacy scorecard missing not-reported audit state:\n%s", legacy)
+	}
+	if strings.Contains(legacy, "model-turn audit\" (complete)") {
+		t.Fatal("legacy scorecard invented audit activity")
+	}
+}
+
 func comparisonFixture(t *testing.T) comparison.Report {
 	t.Helper()
 

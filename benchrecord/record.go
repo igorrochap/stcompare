@@ -20,6 +20,8 @@ const (
 	TerminalStateAdapterError TerminalState = "adapter_error"
 	// TerminalStateLifecycleError indicates that candidate lifecycle management failed.
 	TerminalStateLifecycleError TerminalState = "lifecycle_error"
+	// TerminalStateAuditError indicates that required audit evidence could not be saved.
+	TerminalStateAuditError TerminalState = "audit_error"
 )
 
 // LifecyclePhase identifies the phase that failed while preparing a run.
@@ -43,6 +45,7 @@ const (
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
 	SchemaVersion string `json:"schema_version"`
+	RunID         string `json:"run_id"`
 	Agent         string `json:"agent"`
 	Model         string `json:"model"`
 	Effort        string `json:"effort"`
@@ -64,10 +67,34 @@ type Record struct {
 	LifecyclePhase LifecyclePhase `json:"lifecycle_phase,omitempty"`
 	TimeMS         TimeBreakdown  `json:"time_ms"`
 	Tokens         *TokenUsage    `json:"tokens"`
+	Audit          AuditReference `json:"audit"`
 	// UnknownTokenIterations counts fix iterations without reported token usage.
 	UnknownTokenIterations int              `json:"unknown_token_iterations"`
 	Final                  FinalSummary     `json:"final"`
 	RemainingActionable    []ActionableItem `json:"remaining_actionable"`
+}
+
+// AuditStatus describes the availability of model-turn audit evidence.
+type AuditStatus string
+
+const (
+	// AuditStatusComplete identifies a run whose captured evidence is complete.
+	AuditStatusComplete AuditStatus = "complete"
+	// AuditStatusPartial identifies evidence retained from an unfinished run or
+	// an incomplete capture.
+	AuditStatusPartial AuditStatus = "partial"
+	// AuditStatusNotReported identifies legacy records and unsupported adapters.
+	AuditStatusNotReported AuditStatus = "not_reported"
+)
+
+// AuditReference links a benchmark record to its local model-turn evidence.
+// Paths are relative to the benchmark record's directory.
+type AuditReference struct {
+	Status   AuditStatus `json:"status"`
+	RunID    string      `json:"run_id,omitempty"`
+	Artifact string      `json:"artifact,omitempty"`
+	Report   string      `json:"report,omitempty"`
+	Error    string      `json:"error,omitempty"`
 }
 
 // PromptIdentity identifies the fixed task prompt used by a run.

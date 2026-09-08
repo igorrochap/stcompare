@@ -907,6 +907,12 @@ Scorecard generation is best-effort: a missing comparison or builder failure
 prints a warning without changing the benchmark's terminal state or exit code.
 Without `--emit-scorecard`, no scorecard subprocess runs.
 
+Bundled local-model runs also write `benchmark-audit.json` incrementally and
+render `benchmark-audit.html` when the artifact is available. The audit report
+can be rendered independently with `stcompare audit render`, so it remains
+available when comparison or scorecard output was never produced. Unsupported
+adapters and legacy records show audit evidence as `not reported`.
+
 To build the same artifact manually:
 
 ```sh
