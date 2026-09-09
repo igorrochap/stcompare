@@ -283,6 +283,13 @@ func TestRunFinalizesAvailableAuditAfterSuccessfulRun(t *testing.T) {
 		record.Audit.Activity.ModelToolCalls.Count != 0 {
 		t.Fatalf("audit activity = %#v, want not-reported activity evidence", record.Audit.Activity)
 	}
+	if record.Efficiency.Turns != 1 || record.Efficiency.TokenStatus != benchrecord.TokenStatusUnknown ||
+		record.Efficiency.MeasuredInferenceTurns != 1 {
+		t.Fatalf("record efficiency = %#v, want one measured unknown-token turn", record.Efficiency)
+	}
+	if len(record.IterationEfficiency) != 1 || record.IterationEfficiency[0].Turns != 1 {
+		t.Fatalf("iteration efficiency = %#v, want one aggregate with one turn", record.IterationEfficiency)
+	}
 	document, err := audit.Read(auditPath)
 	if err != nil {
 		t.Fatalf("read finalized audit: %v", err)
@@ -1364,7 +1371,7 @@ type invalidArtifactAdapter struct {
 
 func (adapter *artifactAdapter) Preflight(metadata AdapterMetadata) error {
 	if metadata.Audit != nil {
-		contents := []byte(`{"schema_version":"1","run":{"id":"run-complete"},"capture":{"enabled":true,"status":"in_progress","complete":false},"iterations":[],"events":[{"sequence":1,"type":"model_turn","status":"completed","input":{}}]}`)
+		contents := []byte(`{"schema_version":"1","run":{"id":"run-complete"},"capture":{"enabled":true,"status":"in_progress","complete":false},"iterations":[{"id":"iteration-1","number":1,"turn_ids":["iteration-1-turn-1"]}],"events":[{"sequence":1,"type":"model_turn","iteration_id":"iteration-1","status":"completed","input":{}}]}`)
 		if err := os.WriteFile(metadata.Audit.Path, contents, 0o644); err != nil {
 			return err
 		}

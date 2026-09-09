@@ -3,6 +3,7 @@ package benchrecord
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,22 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 			Compare:        30000,
 		},
 		Tokens: &TokenUsage{Input: 10, Output: 20, Total: 30},
+		Efficiency: EfficiencySummary{
+			Status:                 EfficiencyStatusPartial,
+			Turns:                  3,
+			Tokens:                 &TokenUsage{Input: 10, Output: 20, Total: 30},
+			TokenStatus:            TokenStatusPartial,
+			KnownTokenTurns:        2,
+			UnknownTokenTurns:      1,
+			InferenceMS:            450,
+			MeasuredInferenceTurns: 3,
+			RecordingOverheadMS:    18,
+		},
+		IterationEfficiency: []EfficiencySummary{{
+			Status:      EfficiencyStatusComplete,
+			Turns:       2,
+			InferenceMS: 300,
+		}},
 		Audit: AuditReference{
 			Status:   AuditStatusPartial,
 			RunID:    "run-1",
@@ -84,6 +101,12 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	}
 	if string(fields["temperature"]) != `0.65` {
 		t.Fatalf("temperature = %s, want 0.65", fields["temperature"])
+	}
+	if !strings.Contains(string(fields["efficiency"]), `"token_status":"partial"`) {
+		t.Fatalf("efficiency = %s, want partial token status", fields["efficiency"])
+	}
+	if !strings.Contains(string(fields["iteration_efficiency"]), `"turns":2`) {
+		t.Fatalf("iteration_efficiency = %s, want iteration aggregate", fields["iteration_efficiency"])
 	}
 }
 

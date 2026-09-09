@@ -254,7 +254,12 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		RenderedPromptHashes: []string{},
 		AgentResponses:       []string{},
 		ProcessReuse:         config.ReuseProcess,
-		Final:                benchrecord.FinalSummary{},
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:      benchrecord.EfficiencyStatusNotReported,
+			TokenStatus: benchrecord.TokenStatusNotReported,
+		},
+		IterationEfficiency: []benchrecord.EfficiencySummary{},
+		Final:               benchrecord.FinalSummary{},
 	}
 	configureRunAudit(&config, &record, runID)
 	runnerEvidence := newRunnerAuditEvidence(config)
@@ -388,6 +393,11 @@ func finalizeAudit(config Config, now func() time.Time, record *benchrecord.Reco
 	}
 	activity := document.Activity
 	record.Audit.Activity = &activity
+	record.Efficiency = document.Efficiency
+	record.IterationEfficiency = make([]benchrecord.EfficiencySummary, 0, len(document.Iterations))
+	for _, iteration := range document.Iterations {
+		record.IterationEfficiency = append(record.IterationEfficiency, iteration.Efficiency)
+	}
 	if partial {
 		record.Audit.Status = benchrecord.AuditStatusPartial
 	} else {

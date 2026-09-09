@@ -83,6 +83,39 @@ func TestRenderStatesWhenTokenUsageWasNotReported(t *testing.T) {
 	}
 }
 
+func TestRenderShowsEfficiencySummaryWithPartialKnownTokens(t *testing.T) {
+	record := benchrecord.Record{
+		Tokens: &benchrecord.TokenUsage{Input: 9, Output: 3, Total: 12},
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:                 benchrecord.EfficiencyStatusComplete,
+			Turns:                  3,
+			InferenceMS:            49,
+			MeasuredInferenceTurns: 3,
+			RecordingOverheadMS:    12,
+			Tokens:                 &benchrecord.TokenUsage{Input: 9, Output: 3, Total: 12},
+			TokenStatus:            benchrecord.TokenStatusPartial,
+			KnownTokenTurns:        2,
+			UnknownTokenTurns:      1,
+		},
+	}
+	html, err := Render(comparisonFixture(t), record)
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Efficiency summary",
+		"Model turns</span><strong>3</strong>",
+		"Inference time</span><strong>49 ms</strong>",
+		"Audit-recording overhead</span><strong>12 ms</strong>",
+		"Token evidence</span><strong>partial</strong>",
+		"Known token subtotal: 9 input · 3 output · 12 total (partial).",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing efficiency fragment %q:\n%s", fragment, html)
+		}
+	}
+}
+
 func TestRenderLinksToAvailableAuditAndDoesNotInventLegacyActivity(t *testing.T) {
 	document := comparisonFixture(t)
 	audited, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
@@ -194,7 +227,10 @@ func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
   "capture":{"enabled":true,"status":"complete","complete":true},
   "iterations":[],
   "final_source":{"status":"complete","files_changed_at_end":3,"starting":{"status":"complete"},"final":{"status":"complete"}},
-  "events":[{"type":"model_tool_call","status":"completed","duration_ms":17}]
+  "events":[
+    {"type":"model_turn","status":"completed","duration_ms":21,"ended_at":"done","tokens":{"input":8,"output":3,"total":11}},
+    {"type":"model_tool_call","status":"completed","duration_ms":17}
+  ]
 }`), 0o644); err != nil {
 		t.Fatalf("write audit fixture: %v", err)
 	}
@@ -211,6 +247,10 @@ func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
 	}
 	if !strings.Contains(string(html), "Files Changed at the End</span><strong>3</strong>") {
 		t.Fatalf("scorecard omitted referenced final source evidence:\n%s", html)
+	}
+	if !strings.Contains(string(html), "Inference time</span><strong>21 ms</strong>") ||
+		!strings.Contains(string(html), "Token evidence</span><strong>complete</strong>") {
+		t.Fatalf("scorecard omitted referenced efficiency evidence:\n%s", html)
 	}
 }
 

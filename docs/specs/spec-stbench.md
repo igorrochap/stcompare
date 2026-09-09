@@ -283,6 +283,27 @@ integration test.
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
   "unknown_token_iterations": N,
+  "efficiency": {
+    "status": "complete" | "partial" | "not_reported",
+    "turns": N, "completed_turns": N, "failed_turns": N,
+    "incomplete_turns": N,
+    "tokens": { "input": N, "output": N, "total": N } | null,
+    "token_status": "complete" | "partial" | "unknown" | "not_reported",
+    "known_token_turns": N, "unknown_token_turns": N,
+    "inference_ms": N, "measured_inference_turns": N,
+    "unknown_inference_turns": N,
+    "recording_overhead_ms": N
+  },
+  "iteration_efficiency": [
+    { "status": "complete" | "partial" | "not_reported",
+      "turns": N, "completed_turns": N, "failed_turns": N,
+      "incomplete_turns": N,
+      "tokens": { "input": N, "output": N, "total": N } | null,
+      "token_status": "complete" | "partial" | "unknown" | "not_reported",
+      "known_token_turns": N, "unknown_token_turns": N,
+      "inference_ms": N, "measured_inference_turns": N,
+      "unknown_inference_turns": N, "recording_overhead_ms": N }
+  ],
   "audit": {
     "status": "complete" | "partial" | "not_reported",
     "run_id": "...", "artifact": "benchmark-audit.json",
@@ -316,6 +337,25 @@ adapter-added instructions), the returned response and messages, and its
 completion state. The request is captured before inference begins and each
 event is durably written before the next model request starts. Authentication
 headers and credentials are never stored.
+
+Each `model_turn` stores `tokens` only when the inference server response
+contains valid usage values. A missing usage field remains `null`, even when a
+returned model message claims a token count. `duration_ms` on a model turn is
+the measured inference boundary: it starts after the request audit write and
+ends when the server response or request error is received, before completion
+capture is written. Failed requests therefore retain a duration when the
+clock reached the error boundary but do not receive fabricated usage. The
+artifact exposes `efficiency` totals on the run and every iteration. Token
+totals are known subtotals; `token_status: "partial"` identifies a subtotal
+with one or more unknown turns, and `token_status: "unknown"` identifies an
+all-unknown set of turns.
+
+Capture writes are timed separately as `recording_overhead_ms`. This is audit
+recording work around model requests, not inference time, and is never added
+to a model-turn `duration_ms`. Existing `time_ms.total`, `time_ms.agent_fix`,
+and other wall-clock phase fields retain their existing meanings and include
+both inference and capture work inside their phase boundaries; they should not
+be added to or replaced by `efficiency.inference_ms`.
 
 The event stream also contains one `model_tool_call` event for every individual
 tool request and one separate `adapter_operation` event for the adapter's
@@ -381,7 +421,17 @@ hash, and raw agent response.
   `unknown_token_iterations` counts fix iterations whose usage was unknown.
   `tokens` is `null` only when no iteration reported known usage, which
   distinguishes an all-unknown run from a run with a retained partial sum.
+- `efficiency.tokens` is the known server-reported model-turn subtotal and its
+  `token_status` distinguishes complete, partial, and all-unknown turn sets.
 - `remaining_actionable` is empty on a converged run.
+
+The overhead evidence uses a representative deterministic local-model fixture:
+the same canned model responses are delivered with repeated context and file
+content, once through the reference path and once with audit capture enabled.
+The experiment compares request counts and payloads before comparing timing;
+it adds no model requests and does not rewrite the task. This makes the
+reported capture overhead attributable to recording rather than to a changed
+workload.
 
 **Configuration/CLI:** Candidate identity is declared on Candidate Campaign
 entries. The `stbench:` block contains only fixed harness infrastructure, with

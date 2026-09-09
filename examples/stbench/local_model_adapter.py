@@ -34,6 +34,7 @@ from _protocol import (
     is_preflight_request,
     metadata_headers,
     read_requests,
+    usage_summary,
     request_metadata,
     usage_to_tokens,
 )
@@ -147,6 +148,9 @@ class AuditWriter:
     def __init__(self, path: Path, document: dict[str, Any]) -> None:
         self.path = path
         self.document = document
+        capture = document.get("capture", {})
+        self._recording_overhead_base_ms = int(capture.get("recording_overhead_ms", 0) or 0)
+        self._recording_overhead_seconds = 0.0
 
     @classmethod
     def create(cls, request: dict[str, Any], metadata: dict[str, Any]) -> "AuditWriter | None":
@@ -171,6 +175,7 @@ class AuditWriter:
                 "enabled": True,
                 "status": "in_progress",
                 "complete": False,
+                "recording_overhead_ms": 0,
             },
             "iterations": [],
             "shared_content": {},
@@ -227,24 +232,32 @@ class AuditWriter:
         self.document["events"].append(event)
         self._ensure_iteration(iteration_id, iteration, turn_id)
         self._write()
+        # Inference begins after this write. Its duration is already included
+        # in capture-level overhead and must not be attributed to the turn.
         event["_started_monotonic"] = time.monotonic()
         return event
 
     def record_turn_completed(self, event: dict[str, Any], response: dict[str, Any]) -> None:
+        recording_started = time.monotonic()
+        inference_ended = recording_started
         event["status"] = "completed"
         event["ended_at"] = utc_now()
-        event["duration_ms"] = elapsed_milliseconds(event)
+        event["duration_ms"] = elapsed_milliseconds(event, inference_ended)
         event["returned"] = copy.deepcopy(response)
         event["returned_messages"] = returned_messages(response)
         event["tokens"] = usage_to_tokens(response.get("usage"))
+        event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
         event.pop("_started_monotonic", None)
         self._write()
 
-    def record_turn_failed(self, event: dict[str, Any], error: Exception) -> None:
+    def record_turn_failed(self, event: dict[str, Any], error: BaseException) -> None:
+        recording_started = time.monotonic()
+        inference_ended = recording_started
         event["status"] = "failed"
         event["ended_at"] = utc_now()
-        event["duration_ms"] = elapsed_milliseconds(event)
+        event["duration_ms"] = elapsed_milliseconds(event, inference_ended)
         event["error"] = str(error)
+        event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
         event.pop("_started_monotonic", None)
         self._write()
 
@@ -369,8 +382,12 @@ class AuditWriter:
         self.document["iterations"].append({"id": iteration_id, "number": number, "turn_ids": [turn_id]})
 
     def _write(self) -> None:
+        recording_started = time.monotonic()
+        self.document.setdefault("capture", {})[
+            "recording_overhead_ms"
+        ] = self.recording_overhead_ms()
+        refresh_activity(self.document)
         try:
-            refresh_activity(self.document)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
             with temporary.open("w", encoding="utf-8", newline="") as output:
@@ -379,12 +396,25 @@ class AuditWriter:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, self.path)
+            self._recording_overhead_seconds += time.monotonic() - recording_started
         except OSError as error:
             try:
                 temporary.unlink()
             except (UnboundLocalError, OSError):
                 pass
             raise AuditCaptureError(f"cannot write audit artifact {self.path}: {error}") from error
+
+    def recording_overhead_ms(self) -> int:
+        """Return measured audit work, excluding model inference time."""
+
+        return self._recording_overhead_base_ms + round(self._recording_overhead_seconds * 1000)
+
+    def finalize_measurements(self) -> None:
+        """Persist the current efficiency and capture-overhead measurements."""
+
+        self.document.setdefault("capture", {})["recording_overhead_ms"] = self.recording_overhead_ms()
+        refresh_activity(self.document)
+        self._write()
 
 
 def audit_context(request: dict[str, Any]) -> dict[str, Any] | None:
@@ -424,11 +454,13 @@ def returned_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
-def elapsed_milliseconds(event: dict[str, Any]) -> int:
+def elapsed_milliseconds(event: dict[str, Any], ended: float | None = None) -> int:
     started = event.get("_started_monotonic")
     if not isinstance(started, float):
         return 0
-    return round((time.monotonic() - started) * 1000)
+    if ended is None:
+        ended = time.monotonic()
+    return round((ended - started) * 1000)
 
 
 def tool_call_details(call: Any) -> tuple[str, Any]:
@@ -515,6 +547,68 @@ def activity_summary(
     return summary
 
 
+def efficiency_summary(
+    events: list[dict[str, Any]],
+    capture: dict[str, Any],
+    iteration_id: str = "",
+) -> dict[str, Any]:
+    """Summarize model-turn usage, timing, and capture overhead for a scope."""
+
+    turns = [
+        event
+        for event in events
+        if event.get("type") == "model_turn"
+        and (not iteration_id or event.get("iteration_id") == iteration_id)
+    ]
+    summary = {
+        "status": efficiency_status(turns, capture),
+        "turns": len(turns),
+        "completed_turns": sum(event.get("status") == "completed" for event in turns),
+        "failed_turns": sum(event.get("status") == "failed" for event in turns),
+        "incomplete_turns": sum(
+            event.get("status") not in {"completed", "failed"} for event in turns
+        ),
+        "tokens": None,
+        "token_status": "not_reported",
+        "known_token_turns": 0,
+        "unknown_token_turns": 0,
+        "inference_ms": 0,
+        "measured_inference_turns": 0,
+        "unknown_inference_turns": 0,
+        "recording_overhead_ms": int(capture.get("recording_overhead_ms", 0) or 0)
+        if not iteration_id
+        else sum(int(event.get("recording_overhead_ms", 0) or 0) for event in events),
+    }
+    usages = [event.get("tokens") for event in turns]
+    usage = usage_summary(usages)
+    summary.update(
+        {
+            "tokens": usage["tokens"],
+            "token_status": usage["token_status"],
+            "known_token_turns": usage["known_token_turns"],
+            "unknown_token_turns": usage["unknown_token_turns"],
+        }
+    )
+    for event in turns:
+        has_duration = event.get("ended_at") or event.get("status") in {"completed", "failed"}
+        if has_duration:
+            summary["inference_ms"] += int(event.get("duration_ms", 0) or 0)
+            summary["measured_inference_turns"] += 1
+        else:
+            summary["unknown_inference_turns"] += 1
+    return summary
+
+
+def efficiency_status(turns: list[dict[str, Any]], capture: dict[str, Any]) -> str:
+    if not turns:
+        return "not_reported"
+    if capture.get("status") != "complete" or capture.get("complete") is not True:
+        return "partial"
+    if any(event.get("status") not in {"completed", "failed"} for event in turns):
+        return "partial"
+    return "complete"
+
+
 def activity_counts() -> dict[str, int]:
     return {"count": 0, "completed": 0, "failed": 0, "incomplete": 0, "duration_ms": 0}
 
@@ -537,10 +631,24 @@ def refresh_activity(document: dict[str, Any]) -> None:
     modifications = document.get("file_modifications", [])
     has_activity = any(is_activity_event(event) for event in events)
     has_modifications = isinstance(modifications, list) and bool(modifications)
+    has_model_turns = any(event.get("type") == "model_turn" for event in events)
     if not has_activity and not has_modifications:
         document.pop("activity", None)
+        if not has_model_turns:
+            document.pop("efficiency", None)
         for iteration in document.get("iterations", []):
             iteration.pop("activity", None)
+            if not has_model_turns:
+                iteration.pop("efficiency", None)
+        if has_model_turns:
+            capture = document.get("capture", {})
+            document["efficiency"] = efficiency_summary(events, capture)
+            for iteration in document.get("iterations", []):
+                iteration_id = iteration.get("id")
+                iteration_events = [
+                    event for event in events if event.get("iteration_id") == iteration_id
+                ]
+                iteration["efficiency"] = efficiency_summary(iteration_events, capture, iteration_id)
         return
     capture = document.get("capture", {})
     status = "partial"
@@ -548,10 +656,12 @@ def refresh_activity(document: dict[str, Any]) -> None:
     if capture_is_complete and not any(event_is_incomplete(event) for event in events):
         status = "complete"
     document["activity"] = activity_summary(events, status, modifications)
+    document["efficiency"] = efficiency_summary(events, capture)
     for iteration in document.get("iterations", []):
         iteration_id = iteration.get("id")
         iteration_events = [event for event in events if event.get("iteration_id") == iteration_id]
         iteration["activity"] = activity_summary(iteration_events, status, modifications, iteration_id)
+        iteration["efficiency"] = efficiency_summary(iteration_events, capture, iteration_id)
 
 
 def capture_shared_content(
@@ -714,6 +824,8 @@ def main(argv: list[str] | None = None) -> int:
                     audit=audit,
                     audit_context_value=audit_context(request),
                 )
+                if audit is not None:
+                    audit.finalize_measurements()
                 emit_result(
                     status="ok",
                     response=response,
@@ -860,7 +972,7 @@ def run_agent(
             turn_event = audit.record_turn_started(payload, audit_context_value)
         try:
             result = post_json(url, payload, timeout, metadata=metadata)
-        except Exception as error:
+        except BaseException as error:
             if audit is not None and turn_event is not None:
                 audit.record_turn_failed(turn_event, error)
             raise
