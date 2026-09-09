@@ -403,6 +403,406 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertTrue(all(event["model_tool_call_id"] in {call["id"] for call in calls} for event in operations))
             self.assertTrue(all("duration_ms" in event for event in calls + operations))
 
+    def test_edit_tools_distinguish_attempts_from_actual_modifications(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "api.py"
+            path.write_text("before\n", encoding="utf-8")
+
+            changed = execute_tool(
+                "str_replace",
+                {"path": "api.py", "old_string": "before", "new_string": "after"},
+                root,
+            )
+            self.assertEqual(changed["outcome"], "modified")
+            self.assertEqual(len(changed["file_modifications"]), 1)
+            modification = changed["file_modifications"][0]
+            self.assertEqual(modification["path"], "api.py")
+            self.assertEqual(modification["before"], "before\n")
+            self.assertEqual(modification["after"], "after\n")
+            self.assertIn("-before", modification["diff"])
+            self.assertIn("+after", modification["diff"])
+
+            no_op = execute_tool(
+                "str_replace",
+                {"path": "api.py", "old_string": "after", "new_string": "after"},
+                root,
+            )
+            self.assertEqual(no_op["outcome"], "no_change")
+            self.assertEqual(no_op["file_modifications"], [])
+
+            failed = execute_tool(
+                "str_replace",
+                {"path": "api.py", "old_string": "missing", "new_string": "never"},
+                root,
+            )
+            self.assertFalse(failed["ok"])
+            self.assertNotIn("file_modifications", failed)
+
+    def test_local_model_audit_counts_edit_attempts_and_links_modifications(self) -> None:
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "edit-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "str_replace",
+                                        "arguments": json.dumps(
+                                            {"path": "api.py", "old_string": "before", "new_string": "after"}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "edit-2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "str_replace",
+                                        "arguments": json.dumps(
+                                            {"path": "api.py", "old_string": "after", "new_string": "after"}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "edit-3",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "str_replace",
+                                        "arguments": json.dumps(
+                                            {"path": "api.py", "old_string": "missing", "new_string": "never"}
+                                        ),
+                                    },
+                                },
+                                {
+                                    "id": "edit-4",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "str_replace",
+                                        "arguments": json.dumps(
+                                            {
+                                                "path": "ambiguous.py",
+                                                "old_string": "duplicate",
+                                                "new_string": "unique",
+                                            }
+                                        ),
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("before\n", encoding="utf-8")
+            (root / "ambiguous.py").write_text("duplicate\nduplicate\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-edits",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=4,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            operations = [event for event in document["events"] if event["type"] == "adapter_operation"]
+            modifications = document["file_modifications"]
+            self.assertEqual(document["activity"]["edit_attempts"], 4)
+            self.assertEqual(document["activity"]["file_modifications"], 1)
+            self.assertEqual(
+                [event["status"] for event in calls],
+                ["completed", "completed", "failed", "failed"],
+            )
+            self.assertEqual(
+                [event["result"].get("outcome") for event in operations],
+                ["modified", "no_change", None, None],
+            )
+            self.assertIn("str_replace found no match", operations[2]["error"])
+            self.assertIn("str_replace found 2 matches", operations[3]["error"])
+            self.assertEqual(len(modifications), 1)
+            self.assertEqual(modifications[0]["path"], "api.py")
+            self.assertEqual(modifications[0]["model_tool_call_id"], calls[0]["id"])
+            self.assertEqual(modifications[0]["adapter_operation_id"], operations[0]["id"])
+            self.assertEqual(modifications[0]["turn_id"], calls[0]["turn_id"])
+            self.assertEqual(modifications[0]["iteration_id"], "iteration-1")
+            self.assertEqual(modifications[0]["before"], "before\n")
+            self.assertEqual(modifications[0]["after"], "after\n")
+
+    def test_local_model_audit_preserves_creation_and_repeated_modifications(self) -> None:
+        responses = []
+        edits = [
+            {"old_string": "one", "new_string": "two"},
+            {"old_string": "two", "new_string": "three"},
+            {"old_string": "three", "new_string": "two"},
+            {"old_string": "two", "new_string": "one"},
+        ]
+        for index, edit in enumerate(edits, start=1):
+            responses.append(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": f"edit-{index}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "str_replace",
+                                            "arguments": json.dumps(
+                                                {"path": "api.py", **edit}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
+        responses.append({"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("one\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-history"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=5,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            modifications = document["file_modifications"]
+            self.assertEqual(document["activity"]["edit_attempts"], 4)
+            self.assertEqual(document["activity"]["file_modifications"], 4)
+            self.assertEqual(
+                [(item["before"], item["after"]) for item in modifications],
+                [("one\n", "two\n"), ("two\n", "three\n"), ("three\n", "two\n"), ("two\n", "one\n")],
+            )
+            self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "one\n")
+
+    def test_local_model_audit_records_new_file_modification(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "create-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps({"path": "new.txt", "content": "created\n"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-create"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch(
+                "local_model_adapter.post_json",
+                side_effect=[response, {"choices": [{"message": {"role": "assistant", "content": "done"}}]}],
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            modification = document["file_modifications"][0]
+            self.assertIsNone(modification["before"])
+            self.assertEqual(modification["after"], "created\n")
+            self.assertIn("--- /dev/null", modification["diff"])
+            self.assertTrue(modification["created"])
+            self.assertEqual(document["activity"]["edit_attempts"], 1)
+            self.assertEqual(document["activity"]["file_modifications"], 1)
+
+    def test_local_model_audit_preserves_edit_before_later_inference_failure(self) -> None:
+        edit_response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "edit-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "str_replace",
+                                    "arguments": json.dumps(
+                                        {"path": "api.py", "old_string": "before", "new_string": "after"}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "api.py").write_text("before\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-late-failure"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch(
+                "local_model_adapter.post_json",
+                side_effect=[edit_response, TimeoutError("inference stopped")],
+            ):
+                with self.assertRaisesRegex(TimeoutError, "inference stopped"):
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="model",
+                        timeout=5,
+                        max_turns=2,
+                        metadata=metadata,
+                        audit=AuditWriter.open(request),
+                        audit_context_value={
+                            **request["audit"],
+                            "iteration": 1,
+                            "iteration_id": "iteration-1",
+                        },
+                    )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(document["file_modifications"]), 1)
+            self.assertEqual(document["file_modifications"][0]["after"], "after\n")
+            turns = [event for event in document["events"] if event["type"] == "model_turn"]
+            self.assertEqual([turn["status"] for turn in turns], ["completed", "failed"])
+
+    def test_local_model_audit_does_not_report_unfinished_edit_as_modification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "api.py"
+            path.write_text("before\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-uncertain"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            writer = AuditWriter.create(request, metadata)
+            assert writer is not None
+            turn = writer.record_turn_started(
+                {"model": "model", "messages": [], "tools": []},
+                {**request["audit"], "iteration": 1, "iteration_id": "iteration-1"},
+            )
+            tool = writer.record_tool_call_started(
+                {
+                    "id": "edit-1",
+                    "type": "function",
+                    "function": {
+                        "name": "str_replace",
+                        "arguments": json.dumps(
+                            {"path": "api.py", "old_string": "before", "new_string": "after"}
+                        ),
+                    },
+                },
+                turn,
+                "model_response",
+            )
+            writer.record_adapter_operation_started(tool)
+            path.write_text("after\n", encoding="utf-8")
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(document["file_modifications"], [])
+            self.assertEqual(document["activity"]["edit_attempts"], 1)
+            self.assertEqual(document["activity"]["file_modifications"], 0)
+
     def test_local_model_audit_keeps_one_recovered_call_with_provenance(self) -> None:
         responses = [
             {

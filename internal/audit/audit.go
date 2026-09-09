@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,13 +20,14 @@ const SchemaVersion = "1"
 
 // Artifact is the durable local-model audit document.
 type Artifact struct {
-	SchemaVersion string                      `json:"schema_version"`
-	Run           Run                         `json:"run"`
-	Capture       Capture                     `json:"capture"`
-	Iterations    []Iteration                 `json:"iterations"`
-	SharedContent map[string]json.RawMessage  `json:"shared_content,omitempty"`
-	Activity      benchrecord.ActivitySummary `json:"activity"`
-	Events        []Event                     `json:"events"`
+	SchemaVersion     string                      `json:"schema_version"`
+	Run               Run                         `json:"run"`
+	Capture           Capture                     `json:"capture"`
+	Iterations        []Iteration                 `json:"iterations"`
+	SharedContent     map[string]json.RawMessage  `json:"shared_content,omitempty"`
+	Activity          benchrecord.ActivitySummary `json:"activity"`
+	FileModifications []FileModification          `json:"file_modifications,omitempty"`
+	Events            []Event                     `json:"events"`
 }
 
 // Run identifies the benchmark run associated with the audit.
@@ -66,6 +68,26 @@ type ContentReference struct {
 	ID   string `json:"id"`
 }
 
+// FileModification is one content-changing file operation. Before and After
+// retain JSON strings, or null when the file did not exist at that point.
+type FileModification struct {
+	Sequence           int             `json:"sequence"`
+	ID                 string          `json:"id"`
+	Path               string          `json:"path"`
+	Operation          string          `json:"operation"`
+	ToolName           string          `json:"tool_name"`
+	RunID              string          `json:"run_id"`
+	ModelToolCallID    string          `json:"model_tool_call_id"`
+	AdapterOperationID string          `json:"adapter_operation_id"`
+	TurnID             string          `json:"turn_id"`
+	IterationID        string          `json:"iteration_id"`
+	Iteration          int             `json:"iteration"`
+	Before             json.RawMessage `json:"before"`
+	After              json.RawMessage `json:"after"`
+	Diff               string          `json:"diff"`
+	Created            bool            `json:"created"`
+}
+
 // Event is one chronological model-turn or activity record. Model-turn input
 // is reconstructable from its shared-content references, and Returned retains
 // its exact JSON value from the adapter boundary.
@@ -96,6 +118,8 @@ type Event struct {
 	Arguments              json.RawMessage         `json:"arguments,omitempty"`
 	Request                json.RawMessage         `json:"request,omitempty"`
 	Result                 json.RawMessage         `json:"result,omitempty"`
+	EditAttempt            bool                    `json:"edit_attempt,omitempty"`
+	FileModificationIDs    []string                `json:"file_modification_ids,omitempty"`
 }
 
 // Read loads and validates a versioned audit artifact.
@@ -123,25 +147,25 @@ func Read(path string) (Artifact, error) {
 	return document, nil
 }
 
-// SummarizeActivity returns the measurable model-tool and adapter activity in
-// an audit. The status remains partial when the capture cannot establish a
+// SummarizeActivity returns model-tool, adapter, and file-edit activity in an
+// audit. The status remains partial when the capture cannot establish a
 // complete zero, so absent evidence is not mistaken for no activity.
 func SummarizeActivity(document Artifact) benchrecord.ActivitySummary {
 	if !activityEvidenceReported(document) {
 		return notReportedActivity()
 	}
-	return summarizeEvents(document.Capture, document.Events, "")
+	return summarizeEvents(document.Capture, document.Events, document.FileModifications, "")
 }
 
 func summarizeIterationActivity(document Artifact, iterationID string) benchrecord.ActivitySummary {
 	if !activityEvidenceReported(document) {
 		return notReportedActivity()
 	}
-	return summarizeEvents(document.Capture, document.Events, iterationID)
+	return summarizeEvents(document.Capture, document.Events, document.FileModifications, iterationID)
 }
 
 func activityEvidenceReported(document Artifact) bool {
-	return document.Capture.Enabled && hasActivityEvents(document.Events)
+	return document.Capture.Enabled && (hasActivityEvents(document.Events) || len(document.FileModifications) > 0)
 }
 
 func hasActivityEvents(events []Event) bool {
@@ -157,20 +181,51 @@ func notReportedActivity() benchrecord.ActivitySummary {
 	return benchrecord.ActivitySummary{Status: benchrecord.ActivityStatusNotReported}
 }
 
-func summarizeEvents(capture Capture, events []Event, iterationID string) benchrecord.ActivitySummary {
+func summarizeEvents(
+	capture Capture,
+	events []Event,
+	modifications []FileModification,
+	iterationID string,
+) benchrecord.ActivitySummary {
 	summary := benchrecord.ActivitySummary{Status: activityStatus(capture, events)}
 	for _, event := range events {
-		if iterationID != "" && event.IterationID != iterationID {
+		if !eventMatchesIteration(event, iterationID) {
 			continue
 		}
-		switch event.Type {
-		case "model_tool_call":
-			addActivityCount(&summary.ModelToolCalls, event)
-		case "adapter_operation":
-			addActivityCount(&summary.AdapterOperations, event)
+		addEventActivity(&summary, event)
+	}
+	summary.FileModifications = countFileModifications(modifications, iterationID)
+	return summary
+}
+
+func eventMatchesIteration(event Event, iterationID string) bool {
+	return iterationID == "" || event.IterationID == iterationID
+}
+
+func addEventActivity(summary *benchrecord.ActivitySummary, event Event) {
+	switch event.Type {
+	case "model_tool_call":
+		addActivityCount(&summary.ModelToolCalls, event)
+		if event.EditAttempt {
+			summary.EditAttempts++
+		}
+	case "adapter_operation":
+		addActivityCount(&summary.AdapterOperations, event)
+		if event.EditAttempt && event.ModelToolCallID == "" {
+			summary.EditAttempts++
 		}
 	}
-	return summary
+}
+
+func countFileModifications(modifications []FileModification, iterationID string) int {
+	count := 0
+	for _, modification := range modifications {
+		if iterationID != "" && modification.IterationID != iterationID {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func activityStatus(capture Capture, events []Event) benchrecord.ActivityStatus {
@@ -325,6 +380,7 @@ func Render(document Artifact) (string, error) {
 		ActivityReported: activityEvidenceReported(document),
 		CaptureEnabled:   document.Capture.Enabled,
 		Iterations:       make([]iterationView, 0, len(document.Iterations)),
+		FileHistories:    fileHistories(document.FileModifications),
 	}
 	for _, iteration := range document.Iterations {
 		view.Iterations = append(view.Iterations, iterationView{
@@ -375,6 +431,7 @@ type pageView struct {
 	ActivityReported bool
 	CaptureEnabled   bool
 	Iterations       []iterationView
+	FileHistories    []fileHistoryView
 }
 
 type iterationView struct {
@@ -419,6 +476,80 @@ type messageView struct {
 	JSON    string
 	Content string
 	HasText bool
+}
+
+type fileHistoryView struct {
+	Path          string
+	Modifications []modificationView
+}
+
+type modificationView struct {
+	Sequence           int
+	ID                 string
+	Path               string
+	Operation          string
+	ToolName           string
+	ModelToolCallID    string
+	AdapterOperationID string
+	TurnID             string
+	IterationID        string
+	Iteration          int
+	Before             string
+	After              string
+	Diff               string
+	Created            bool
+}
+
+func fileHistories(modifications []FileModification) []fileHistoryView {
+	ordered := append([]FileModification(nil), modifications...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		return ordered[left].Sequence < ordered[right].Sequence
+	})
+	histories := make([]fileHistoryView, 0)
+	indices := make(map[string]int)
+	for _, modification := range ordered {
+		index, exists := indices[modification.Path]
+		if !exists {
+			index = len(histories)
+			indices[modification.Path] = index
+			histories = append(histories, fileHistoryView{Path: modification.Path})
+		}
+		histories[index].Modifications = append(
+			histories[index].Modifications,
+			newModificationView(modification),
+		)
+	}
+	return histories
+}
+
+func newModificationView(modification FileModification) modificationView {
+	return modificationView{
+		Sequence:           modification.Sequence,
+		ID:                 modification.ID,
+		Path:               modification.Path,
+		Operation:          modification.Operation,
+		ToolName:           modification.ToolName,
+		ModelToolCallID:    modification.ModelToolCallID,
+		AdapterOperationID: modification.AdapterOperationID,
+		TurnID:             modification.TurnID,
+		IterationID:        modification.IterationID,
+		Iteration:          modification.Iteration,
+		Before:             formatFileContent(modification.Before),
+		After:              formatFileContent(modification.After),
+		Diff:               modification.Diff,
+		Created:            modification.Created,
+	}
+}
+
+func formatFileContent(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "File did not exist"
+	}
+	var content string
+	if err := json.Unmarshal(raw, &content); err == nil {
+		return content
+	}
+	return formatJSON(raw)
 }
 
 func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventView, error) {
@@ -698,6 +829,8 @@ header { border-bottom: 1px solid #d0d7de; padding-bottom: 1rem; }
 .activity-entry { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
 .activity-entry.partial { border-color: #bf8700; }
 .activity-entry summary { cursor: pointer; font-weight: 700; }
+.file-history { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
+.file-history summary { cursor: pointer; font-weight: 700; }
 .activity-summary, .iteration-activity { border: 1px solid #d0d7de; border-radius: .4rem; padding: 1rem; }
 .activity-counts { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .activity-count { background: #f6f8fa; border-radius: .3rem; padding: .65rem; }
@@ -731,12 +864,41 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <div class="activity-counts">
 <div class="activity-count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong><small>{{.Activity.ModelToolCalls.Completed}} completed · {{.Activity.ModelToolCalls.Failed}} failed · {{.Activity.ModelToolCalls.Incomplete}} incomplete</small><small>{{.Activity.ModelToolCalls.DurationMS}} ms execution time</small></div>
 <div class="activity-count"><span>Adapter Operations</span><strong>{{.Activity.AdapterOperations.Count}}</strong><small>{{.Activity.AdapterOperations.Completed}} completed · {{.Activity.AdapterOperations.Failed}} failed · {{.Activity.AdapterOperations.Incomplete}} incomplete</small><small>{{.Activity.AdapterOperations.DurationMS}} ms execution time</small></div>
+<div class="activity-count"><span>Edit Attempts</span><strong>{{.Activity.EditAttempts}}</strong></div>
+<div class="activity-count"><span>File Modifications</span><strong>{{.Activity.FileModifications}}</strong></div>
 </div>
 </section>
 {{else if .CaptureEnabled}}
 <section class="activity-summary">
 <h2>Activity summary <small>(not reported)</small></h2>
 <p class="empty">Activity evidence: not reported.</p>
+</section>
+{{end}}
+{{if .FileHistories}}
+<section class="file-histories">
+<h2>File modification history</h2>
+{{range .FileHistories}}
+<article class="file-history">
+<h3>{{.Path}}</h3>
+{{range .Modifications}}
+<details>
+<summary>File Modification {{.Sequence}} — {{if .Created}}created{{else}}modified{{end}}</summary>
+<div class="turn-meta">
+<div><span>Modification ID</span><strong>{{.ID}}</strong></div>
+{{with .Operation}}<div><span>Operation</span><strong>{{.}}</strong></div>{{end}}
+{{with .ToolName}}<div><span>Tool</span><strong>{{.}}</strong></div>{{end}}
+<div><span>Model turn</span><strong>{{.TurnID}}</strong></div>
+<div><span>Iteration</span><strong>{{.Iteration}}</strong></div>
+{{with .ModelToolCallID}}<div><span>Model Tool Call</span><strong>{{.}}</strong></div>{{end}}
+{{with .AdapterOperationID}}<div><span>Adapter Operation</span><strong>{{.}}</strong></div>{{end}}
+</div>
+<h4>Before</h4><pre>{{.Before}}</pre>
+<h4>After</h4><pre>{{.After}}</pre>
+<h4>Exact diff</h4><pre>{{.Diff}}</pre>
+</details>
+{{end}}
+</article>
+{{end}}
 </section>
 {{end}}
 {{if .Iterations}}
@@ -749,6 +911,8 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <div class="activity-counts">
 <div class="activity-count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong><small>{{.Activity.ModelToolCalls.DurationMS}} ms execution time</small></div>
 <div class="activity-count"><span>Adapter Operations</span><strong>{{.Activity.AdapterOperations.Count}}</strong><small>{{.Activity.AdapterOperations.DurationMS}} ms execution time</small></div>
+<div class="activity-count"><span>Edit Attempts</span><strong>{{.Activity.EditAttempts}}</strong></div>
+<div class="activity-count"><span>File Modifications</span><strong>{{.Activity.FileModifications}}</strong></div>
 </div>
 </div>
 {{end}}

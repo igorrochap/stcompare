@@ -137,6 +137,10 @@ var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse
 <div class="count"><span>Incomplete</span><strong>{{.Activity.ModelToolCalls.Incomplete}}</strong></div>
 <div class="count"><span>Execution time</span><strong>{{.Activity.ModelToolCalls.DurationMS}} ms</strong></div>
 </div>
+<div class="counts">
+<div class="count"><span>Edit Attempts</span><strong>{{.Activity.EditAttempts}}</strong></div>
+<div class="count"><span>File Modifications</span><strong>{{.Activity.FileModifications}}</strong></div>
+</div>
 <p>Adapter Operations: {{.Activity.AdapterOperations.Count}} ({{.Activity.AdapterOperations.DurationMS}} ms execution time)</p>
 {{else}}
 <p class="empty">not reported</p>

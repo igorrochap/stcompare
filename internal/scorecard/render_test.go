@@ -116,6 +116,8 @@ func TestRenderShowsModelToolCallSummaryWhenAuditActivityIsAvailable(t *testing.
 			Count: 3, Completed: 2, Failed: 1, DurationMS: 125,
 		},
 		AdapterOperations: benchrecord.ActivityCounts{Count: 3, DurationMS: 120},
+		EditAttempts:      4,
+		FileModifications: 3,
 	}
 	html, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
 		Status:   benchrecord.AuditStatusComplete,
@@ -131,6 +133,8 @@ func TestRenderShowsModelToolCallSummaryWhenAuditActivityIsAvailable(t *testing.
 		"Completed</span><strong>2</strong>",
 		"Failed</span><strong>1</strong>",
 		"Execution time</span><strong>125 ms</strong>",
+		"Edit Attempts</span><strong>4</strong>",
+		"File Modifications</span><strong>3</strong>",
 		"Adapter Operations: 3 (120 ms execution time)",
 	} {
 		if !strings.Contains(html, fragment) {

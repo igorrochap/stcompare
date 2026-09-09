@@ -115,6 +115,8 @@ type ActivitySummary struct {
 	Status            ActivityStatus `json:"status"`
 	ModelToolCalls    ActivityCounts `json:"model_tool_calls"`
 	AdapterOperations ActivityCounts `json:"adapter_operations"`
+	EditAttempts      int            `json:"edit_attempts"`
+	FileModifications int            `json:"file_modifications"`
 }
 
 // ActivityCounts contains one activity category's measurable outcomes.

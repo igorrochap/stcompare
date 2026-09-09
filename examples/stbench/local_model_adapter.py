@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as dt
+import difflib
 import hashlib
 import json
 import math
@@ -46,6 +47,7 @@ MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
 EDIT_HISTORY_PLACEHOLDER = "[edit content elided from history]"
+EDIT_TOOL_NAMES = frozenset({"str_replace", "write_file"})
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
 Available tools: list_files, read_file, str_replace, and write_file.
@@ -172,6 +174,7 @@ class AuditWriter:
             },
             "iterations": [],
             "shared_content": {},
+            "file_modifications": [],
             "events": [],
         }
         writer = cls(path, document)
@@ -265,6 +268,7 @@ class AuditWriter:
             "turn_id": turn_event["turn_id"],
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
+            "edit_attempt": tool_name in EDIT_TOOL_NAMES,
             "provenance": provenance,
             "arguments": copy.deepcopy(arguments),
             "request": copy.deepcopy(call),
@@ -296,6 +300,7 @@ class AuditWriter:
             "model_tool_call_id": tool_event["id"],
             "tool_call_id": tool_event["tool_call_id"],
             "tool_name": tool_event["tool_name"],
+            "edit_attempt": tool_event.get("edit_attempt", False),
             "operation": "execute_model_tool_call",
             "arguments": copy.deepcopy(tool_event["arguments"]),
             "status": "started",
@@ -312,11 +317,49 @@ class AuditWriter:
         result: dict[str, Any],
     ) -> None:
         finish_activity_event(event, result)
+        self._record_file_modifications(event, result)
         self._write()
 
     def record_adapter_operation_failed(self, event: dict[str, Any], error: Exception) -> None:
         finish_activity_event(event, error=error)
         self._write()
+
+    def _record_file_modifications(
+        self,
+        operation_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        if result.get("ok") is not True:
+            return
+        changes = result.get("file_modifications", [])
+        if not isinstance(changes, list) or not changes:
+            return
+        modifications = self.document.setdefault("file_modifications", [])
+        modification_ids: list[str] = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            modification = {
+                "sequence": len(modifications) + 1,
+                "id": f"file-modification-{len(modifications) + 1}",
+                "path": change.get("path", ""),
+                "operation": operation_event.get("operation", ""),
+                "tool_name": operation_event.get("tool_name", ""),
+                "run_id": operation_event.get("run_id", ""),
+                "model_tool_call_id": operation_event.get("model_tool_call_id", ""),
+                "adapter_operation_id": operation_event.get("id", ""),
+                "turn_id": operation_event.get("turn_id", ""),
+                "iteration_id": operation_event.get("iteration_id", ""),
+                "iteration": operation_event.get("iteration", 0),
+                "before": copy.deepcopy(change.get("before")),
+                "after": copy.deepcopy(change.get("after")),
+                "diff": change.get("diff", ""),
+                "created": change.get("before") is None,
+            }
+            modifications.append(modification)
+            modification_ids.append(modification["id"])
+        if modification_ids:
+            operation_event["file_modification_ids"] = modification_ids
 
     def _ensure_iteration(self, iteration_id: str, number: int, turn_id: str) -> None:
         for iteration in self.document["iterations"]:
@@ -428,18 +471,29 @@ def finish_activity_event(
     event.pop("_started_monotonic", None)
 
 
-def activity_summary(events: list[dict[str, Any]], status: str) -> dict[str, Any]:
+def activity_summary(
+    events: list[dict[str, Any]],
+    status: str,
+    file_modifications: list[dict[str, Any]] | None = None,
+    iteration_id: str = "",
+) -> dict[str, Any]:
     summary = {
         "status": status,
         "model_tool_calls": activity_counts(),
         "adapter_operations": activity_counts(),
+        "edit_attempts": 0,
+        "file_modifications": 0,
     }
     for event in events:
         event_type = event.get("type")
         if event_type == "model_tool_call":
             counts = summary["model_tool_calls"]
+            if event.get("edit_attempt") is True or event.get("tool_name") in EDIT_TOOL_NAMES:
+                summary["edit_attempts"] += 1
         elif event_type == "adapter_operation":
             counts = summary["adapter_operations"]
+            if event.get("edit_attempt") is True and not event.get("model_tool_call_id"):
+                summary["edit_attempts"] += 1
         else:
             continue
         counts["count"] += 1
@@ -451,6 +505,13 @@ def activity_summary(events: list[dict[str, Any]], status: str) -> dict[str, Any
             counts["failed"] += 1
         else:
             counts["incomplete"] += 1
+    recorded_modifications = file_modifications if isinstance(file_modifications, list) else []
+    for modification in recorded_modifications:
+        if not isinstance(modification, dict):
+            continue
+        if iteration_id and modification.get("iteration_id") != iteration_id:
+            continue
+        summary["file_modifications"] += 1
     return summary
 
 
@@ -473,7 +534,10 @@ def event_is_incomplete(event: dict[str, Any]) -> bool:
 
 def refresh_activity(document: dict[str, Any]) -> None:
     events = document.get("events", [])
-    if not any(is_activity_event(event) for event in events):
+    modifications = document.get("file_modifications", [])
+    has_activity = any(is_activity_event(event) for event in events)
+    has_modifications = isinstance(modifications, list) and bool(modifications)
+    if not has_activity and not has_modifications:
         document.pop("activity", None)
         for iteration in document.get("iterations", []):
             iteration.pop("activity", None)
@@ -483,11 +547,11 @@ def refresh_activity(document: dict[str, Any]) -> None:
     capture_is_complete = capture.get("status") == "complete" and capture.get("complete") is True
     if capture_is_complete and not any(event_is_incomplete(event) for event in events):
         status = "complete"
-    document["activity"] = activity_summary(events, status)
+    document["activity"] = activity_summary(events, status, modifications)
     for iteration in document.get("iterations", []):
         iteration_id = iteration.get("id")
         iteration_events = [event for event in events if event.get("iteration_id") == iteration_id]
-        iteration["activity"] = activity_summary(iteration_events, status)
+        iteration["activity"] = activity_summary(iteration_events, status, modifications, iteration_id)
 
 
 def capture_shared_content(
@@ -856,11 +920,12 @@ def run_agent(
             _debug_tool(call, tool_result)
             if isinstance(tool_result, dict) and tool_result.get("ok"):
                 any_success = True
+            model_tool_result = tool_result_for_model(tool_result)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call.get("id", "unknown") if isinstance(call, dict) else "unknown",
-                    "content": json.dumps(tool_result, ensure_ascii=False),
+                    "content": json.dumps(model_tool_result, ensure_ascii=False),
                 }
             )
         current_turn_start = assistant_message_start
@@ -1171,6 +1236,16 @@ def tool_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": message, "error_code": code}
 
 
+def tool_result_for_model(result: Any) -> Any:
+    """Keep audit-only file contents out of the model's subsequent context."""
+
+    if not isinstance(result, dict) or "file_modifications" not in result:
+        return result
+    model_result = copy.deepcopy(result)
+    model_result.pop("file_modifications", None)
+    return model_result
+
+
 def list_files(root: Path, relative: str) -> dict[str, Any]:
     root = root.resolve()
     directory = safe_path(root, relative)
@@ -1215,7 +1290,13 @@ def write_file(root: Path, relative: str, content: str) -> dict[str, Any]:
             output.write(content)
     except FileExistsError as error:
         raise ToolError("write_file_existing", f"write_file can only create new files: {relative}") from error
-    return {"ok": True, "path": relative, "bytes": len(content.encode("utf-8"))}
+    return {
+        "ok": True,
+        "path": relative,
+        "bytes": len(content.encode("utf-8")),
+        "outcome": "modified",
+        "file_modifications": [build_file_modification(relative, None, content)],
+    }
 
 
 def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> dict[str, Any]:
@@ -1248,9 +1329,45 @@ def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> 
             "str_replace_multiple_matches",
             f"str_replace found {matches} matches in {relative}; the match must be unique",
         )
+    replacement = text.replace(old_string, new_string, 1)
+    if replacement == text:
+        return {
+            "ok": True,
+            "path": relative,
+            "replacements": 1,
+            "outcome": "no_change",
+            "file_modifications": [],
+        }
     with target.open("w", encoding="utf-8", newline="") as output:
-        output.write(text.replace(old_string, new_string, 1))
-    return {"ok": True, "path": relative, "replacements": 1}
+        output.write(replacement)
+    return {
+        "ok": True,
+        "path": relative,
+        "replacements": 1,
+        "outcome": "modified",
+        "file_modifications": [build_file_modification(relative, text, replacement)],
+    }
+
+
+def build_file_modification(relative: str, before: str | None, after: str | None) -> dict[str, Any]:
+    before_lines = [] if before is None else before.splitlines(keepends=True)
+    after_lines = [] if after is None else after.splitlines(keepends=True)
+    before_name = "/dev/null" if before is None else f"a/{relative}"
+    after_name = "/dev/null" if after is None else f"b/{relative}"
+    diff = "".join(
+        difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile=before_name,
+            tofile=after_name,
+        )
+    )
+    return {
+        "path": relative,
+        "before": before,
+        "after": after,
+        "diff": diff,
+    }
 
 
 def safe_path(root: Path, relative: str) -> Path:

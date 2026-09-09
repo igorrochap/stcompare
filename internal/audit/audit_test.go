@@ -102,6 +102,41 @@ func TestSummarizeActivityCountsCallsAndAdapterOperationsByIteration(t *testing.
 	}
 }
 
+func TestSummarizeActivitySeparatesEditAttemptsFromFileModifications(t *testing.T) {
+	document := Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		Iterations: []Iteration{
+			{ID: "iteration-1", Number: 1},
+			{ID: "iteration-2", Number: 2},
+		},
+		Events: []Event{
+			{Type: "model_tool_call", ToolName: "str_replace", EditAttempt: true, IterationID: "iteration-1", Status: "completed"},
+			{Type: "model_tool_call", ToolName: "write_file", EditAttempt: true, IterationID: "iteration-1", Status: "completed"},
+			{Type: "model_tool_call", ToolName: "str_replace", EditAttempt: true, IterationID: "iteration-1", Status: "failed"},
+			{Type: "model_tool_call", ToolName: "read_file", IterationID: "iteration-2", Status: "completed"},
+			{Type: "model_tool_call", ToolName: "str_replace", IterationID: "iteration-2", Status: "completed"},
+			{Type: "adapter_operation", EditAttempt: true, IterationID: "iteration-2", Status: "completed"},
+		},
+		FileModifications: []FileModification{
+			{ID: "file-modification-1", Path: "api.py", IterationID: "iteration-1"},
+			{ID: "file-modification-2", Path: "new.py", IterationID: "iteration-1"},
+		},
+	}
+
+	summary := SummarizeActivity(document)
+	if summary.EditAttempts != 4 || summary.FileModifications != 2 {
+		t.Fatalf("edit activity = %#v, want four attempts and two modifications", summary)
+	}
+	iteration := summarizeIterationActivity(document, "iteration-1")
+	if iteration.EditAttempts != 3 || iteration.FileModifications != 2 {
+		t.Fatalf("iteration edit activity = %#v, want iteration-1 counts", iteration)
+	}
+	if got := summarizeIterationActivity(document, "iteration-2"); got.EditAttempts != 1 || got.FileModifications != 0 {
+		t.Fatalf("iteration-2 edit activity = %#v, want one patch attempt", got)
+	}
+}
+
 func TestReadDoesNotInventCompleteZeroForMissingActivityEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
 	contents := []byte(`{
@@ -198,6 +233,74 @@ func TestRenderShowsExpandableToolActivityAndIncompleteEvidence(t *testing.T) {
 		if !strings.Contains(html, fragment) {
 			t.Fatalf("activity audit HTML missing %q:\n%s", fragment, html)
 		}
+	}
+}
+
+func TestRenderShowsChronologicalFileModificationHistories(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Run:           Run{ID: "run-history"},
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		FileModifications: []FileModification{
+			{
+				Sequence:           1,
+				ID:                 "file-modification-1",
+				Path:               "api.py",
+				Operation:          "execute_model_tool_call",
+				ModelToolCallID:    "model-tool-call-1",
+				AdapterOperationID: "adapter-operation-1",
+				TurnID:             "iteration-1-turn-1",
+				IterationID:        "iteration-1",
+				Iteration:          1,
+				Before:             json.RawMessage(`"one\n"`),
+				After:              json.RawMessage(`"two\n"`),
+				Diff:               "--- a/api.py\n+++ b/api.py\n-one\n+two\n",
+			},
+			{
+				Sequence:    2,
+				ID:          "file-modification-2",
+				Path:        "api.py",
+				TurnID:      "iteration-1-turn-2",
+				IterationID: "iteration-1",
+				Iteration:   1,
+				Before:      json.RawMessage(`"two\n"`),
+				After:       json.RawMessage(`"one\n"`),
+				Diff:        "--- a/api.py\n+++ b/api.py\n-two\n+one\n",
+			},
+			{
+				Sequence:    3,
+				ID:          "file-modification-3",
+				Path:        "new.py",
+				TurnID:      "iteration-2-turn-1",
+				IterationID: "iteration-2",
+				Iteration:   2,
+				Before:      json.RawMessage(`null`),
+				After:       json.RawMessage(`"created\n"`),
+				Diff:        "--- /dev/null\n+++ b/new.py\n+created\n",
+				Created:     true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render modification history: %v", err)
+	}
+	for _, fragment := range []string{
+		"File modification history",
+		"api.py",
+		"new.py",
+		"File Modification 1",
+		"File Modification 2",
+		"--- a/api.py",
+		"-one",
+		"&#43;two",
+		"File did not exist",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("audit HTML missing %q:\n%s", fragment, html)
+		}
+	}
+	if strings.Index(html, "File Modification 1") > strings.Index(html, "File Modification 2") {
+		t.Fatal("file history does not preserve chronological order")
 	}
 }
 
