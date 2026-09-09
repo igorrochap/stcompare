@@ -14,17 +14,19 @@ import (
 )
 
 type benchmarkView struct {
-	Agent             string
-	Model             string
-	Iterations        int
-	TotalTime         string
-	AgentFixTime      string
-	Tokens            *benchrecord.TokenUsage
-	Audit             benchrecord.AuditReference
-	AuditAvailable    bool
-	Activity          *benchrecord.ActivitySummary
-	ActivityAvailable bool
-	FinalSource       *audit.FinalSource
+	Agent               string
+	Model               string
+	Iterations          int
+	TotalTime           string
+	AgentFixTime        string
+	Tokens              *benchrecord.TokenUsage
+	Efficiency          benchrecord.EfficiencySummary
+	EfficiencyAvailable bool
+	Audit               benchrecord.AuditReference
+	AuditAvailable      bool
+	Activity            *benchrecord.ActivitySummary
+	ActivityAvailable   bool
+	FinalSource         *audit.FinalSource
 }
 
 // Render renders a benchmark scorecard containing the complete comparison report.
@@ -53,16 +55,22 @@ func render(
 
 	var section bytes.Buffer
 	view := benchmarkView{
-		Agent:             record.Agent,
-		Model:             record.Model,
-		Iterations:        record.Iterations,
-		TotalTime:         formatMilliseconds(record.TimeMS.Total),
-		AgentFixTime:      formatMilliseconds(record.TimeMS.AgentFix),
-		Tokens:            record.Tokens,
-		Audit:             record.Audit,
-		AuditAvailable:    auditAvailable(record.Audit),
-		Activity:          record.Audit.Activity,
-		ActivityAvailable: activityAvailable(record.Audit),
+		Agent:               record.Agent,
+		Model:               record.Model,
+		Iterations:          record.Iterations,
+		TotalTime:           formatMilliseconds(record.TimeMS.Total),
+		AgentFixTime:        formatMilliseconds(record.TimeMS.AgentFix),
+		Tokens:              record.Tokens,
+		Efficiency:          record.Efficiency,
+		EfficiencyAvailable: efficiencyAvailable(record.Efficiency),
+		Audit:               record.Audit,
+		AuditAvailable:      auditAvailable(record.Audit),
+		Activity:            record.Audit.Activity,
+		ActivityAvailable:   activityAvailable(record.Audit),
+	}
+	if auditDocument != nil && efficiencyAvailable(auditDocument.Efficiency) {
+		view.Efficiency = auditDocument.Efficiency
+		view.EfficiencyAvailable = true
 	}
 	if auditDocument != nil && auditDocument.FinalSource.Status != "" {
 		view.FinalSource = &auditDocument.FinalSource
@@ -95,6 +103,10 @@ func activityAvailable(reference benchrecord.AuditReference) bool {
 	}
 	activity := reference.Activity
 	return activity.Status == benchrecord.ActivityStatusComplete || activity.Status == benchrecord.ActivityStatusPartial
+}
+
+func efficiencyAvailable(summary benchrecord.EfficiencySummary) bool {
+	return summary.Status == benchrecord.EfficiencyStatusComplete || summary.Status == benchrecord.EfficiencyStatusPartial
 }
 
 func formatMilliseconds(milliseconds int64) string {
@@ -149,6 +161,19 @@ var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse
 <p class="empty">not reported</p>
 {{end}}
 </div>
+{{if .EfficiencyAvailable}}
+<div class="category-counts">
+<h3>Efficiency summary <small>({{.Efficiency.Status}} evidence)</small></h3>
+<div class="counts">
+<div class="count"><span>Model turns</span><strong>{{.Efficiency.Turns}}</strong></div>
+<div class="count"><span>Inference time</span><strong>{{.Efficiency.InferenceMS}} ms</strong><small>{{.Efficiency.MeasuredInferenceTurns}} measured · {{.Efficiency.UnknownInferenceTurns}} unknown</small></div>
+<div class="count"><span>Audit-recording overhead</span><strong>{{.Efficiency.RecordingOverheadMS}} ms</strong><small>excluded from inference time</small></div>
+<div class="count"><span>Token evidence</span><strong>{{.Efficiency.TokenStatus}}</strong><small>{{.Efficiency.KnownTokenTurns}} known · {{.Efficiency.UnknownTokenTurns}} unknown</small></div>
+</div>
+{{with .Efficiency.Tokens}}<p>Known token subtotal: {{.Input}} input · {{.Output}} output · {{.Total}} total{{if eq $.Efficiency.TokenStatus "partial"}} (partial){{end}}.</p>{{else}}<p class="empty">Known token subtotal: unknown</p>{{end}}
+<p class="empty">Inference time is the server-request boundary captured by the audit. Existing total and agent-fix wall-clock fields include capture overhead.</p>
+</div>
+{{end}}
 <div class="category-counts">
 <h3>Model Tool Call activity{{with .Activity}} <small>({{.Status}} evidence)</small>{{end}}</h3>
 {{if .ActivityAvailable}}

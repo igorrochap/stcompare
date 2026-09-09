@@ -26,7 +26,9 @@ delivery boundary:
    }
    ```
 
-   Report `"tokens": null` when the agent does not expose token usage.
+   Report `"tokens": null` when the agent does not expose token usage. The
+   bundled local-model adapter stores per-turn token status and recording
+   overhead in the audit artifact rather than duplicating it in this result.
 
 For the bundled local-model adapter, `stbench` supplies an audit context on
 every request. The adapter creates and updates `benchmark-audit.json` beside
@@ -40,7 +42,11 @@ in the Model Tool Call count. Transport headers and credentials are not written
 to the artifact. Activity totals are recorded for each iteration and the run.
 A model-turn or activity start is durable before inference or execution, so
 timeouts and interrupted runs remain visibly partial rather than becoming zero
-activity.
+activity. Each model turn stores server-reported tokens and its measured
+inference duration. Inference begins after the request capture write and ends
+when the response or request error is received. Audit-recording overhead is
+reported separately and is not included in that duration; the benchmark's
+existing wall-clock fields still include both.
 
 Edit-tool requests are counted separately as Edit Attempts, including failed
 and no-op requests. Actual content changes are recorded as File Modifications
@@ -135,7 +141,9 @@ files. Paths are confined to the API source tree, and managed `.local/stbench`
 and `.local/stcompare` state is hidden from file listing and write tools.
 `stbench init` uses `.local/stbench` by default, while an external state
 directory can be selected explicitly. The adapter sums usage reported by each
-inference response and returns `null` if a response omits usage.
+inference response. Missing turns stay unknown, so a mixed response set
+returns a partial known subtotal and labels the known/unknown turn counts
+explicitly; it never estimates usage from model text.
 The local adapter's sampling temperature is resolved once per run in this
 order: `--temperature`, campaign `temperature`, then `0` (greedy). The
 flag and campaign field must be between `0` and `2`; `effort` is an

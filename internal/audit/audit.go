@@ -20,18 +20,19 @@ const SchemaVersion = "1"
 
 // Artifact is the durable local-model audit document.
 type Artifact struct {
-	SchemaVersion      string                      `json:"schema_version"`
-	Run                Run                         `json:"run"`
-	Capture            Capture                     `json:"capture"`
-	Iterations         []Iteration                 `json:"iterations"`
-	SharedContent      map[string]json.RawMessage  `json:"shared_content,omitempty"`
-	Activity           benchrecord.ActivitySummary `json:"activity"`
-	FileModifications  []FileModification          `json:"file_modifications,omitempty"`
-	FinalSource        FinalSource                 `json:"final_source,omitempty"`
-	LifecycleChanges   []SourceChange              `json:"lifecycle_changes,omitempty"`
-	ComparisonOutcomes []ComparisonOutcome         `json:"comparison_outcomes,omitempty"`
-	EditSequences      []EditSequence              `json:"edit_sequences,omitempty"`
-	Events             []Event                     `json:"events"`
+	SchemaVersion      string                        `json:"schema_version"`
+	Run                Run                           `json:"run"`
+	Capture            Capture                       `json:"capture"`
+	Iterations         []Iteration                   `json:"iterations"`
+	SharedContent      map[string]json.RawMessage    `json:"shared_content,omitempty"`
+	Activity           benchrecord.ActivitySummary   `json:"activity"`
+	Efficiency         benchrecord.EfficiencySummary `json:"efficiency"`
+	FileModifications  []FileModification            `json:"file_modifications,omitempty"`
+	FinalSource        FinalSource                   `json:"final_source,omitempty"`
+	LifecycleChanges   []SourceChange                `json:"lifecycle_changes,omitempty"`
+	ComparisonOutcomes []ComparisonOutcome           `json:"comparison_outcomes,omitempty"`
+	EditSequences      []EditSequence                `json:"edit_sequences,omitempty"`
+	Events             []Event                       `json:"events"`
 }
 
 // Run identifies the benchmark run associated with the audit.
@@ -50,20 +51,22 @@ type Run struct {
 
 // Capture describes whether the artifact contains a complete run capture.
 type Capture struct {
-	Enabled    bool   `json:"enabled"`
-	Status     string `json:"status"`
-	Complete   bool   `json:"complete"`
-	Failure    string `json:"failure,omitempty"`
-	FinishedAt string `json:"finished_at,omitempty"`
+	Enabled             bool   `json:"enabled"`
+	Status              string `json:"status"`
+	Complete            bool   `json:"complete"`
+	Failure             string `json:"failure,omitempty"`
+	FinishedAt          string `json:"finished_at,omitempty"`
+	RecordingOverheadMS int64  `json:"recording_overhead_ms"`
 }
 
 // Iteration identifies an ordered benchmark iteration, its model turns, and
 // its activity summary.
 type Iteration struct {
-	ID       string                      `json:"id"`
-	Number   int                         `json:"number"`
-	TurnIDs  []string                    `json:"turn_ids"`
-	Activity benchrecord.ActivitySummary `json:"activity"`
+	ID         string                        `json:"id"`
+	Number     int                           `json:"number"`
+	TurnIDs    []string                      `json:"turn_ids"`
+	Activity   benchrecord.ActivitySummary   `json:"activity"`
+	Efficiency benchrecord.EfficiencySummary `json:"efficiency"`
 }
 
 // ContentReference identifies shared message content used by one model input.
@@ -106,6 +109,7 @@ type Event struct {
 	StartedAt              string                  `json:"started_at"`
 	EndedAt                string                  `json:"ended_at,omitempty"`
 	DurationMS             int64                   `json:"duration_ms,omitempty"`
+	RecordingOverheadMS    int64                   `json:"recording_overhead_ms,omitempty"`
 	Sampling               map[string]any          `json:"sampling,omitempty"`
 	Input                  json.RawMessage         `json:"input"`
 	InputContentReferences []ContentReference      `json:"input_content_references,omitempty"`
@@ -145,10 +149,115 @@ func Read(path string) (Artifact, error) {
 		)
 	}
 	document.Activity = SummarizeActivity(document)
+	document.Efficiency = SummarizeEfficiency(document)
 	for index := range document.Iterations {
 		document.Iterations[index].Activity = summarizeIterationActivity(document, document.Iterations[index].ID)
+		document.Iterations[index].Efficiency = summarizeIterationEfficiency(document, document.Iterations[index].ID)
 	}
 	return document, nil
+}
+
+// SummarizeEfficiency returns server-reported token subtotals, model-turn
+// timing, and capture overhead for the requested audit scope. A missing usage
+// field remains unknown and never becomes a zero-valued usage record.
+func SummarizeEfficiency(document Artifact) benchrecord.EfficiencySummary {
+	return summarizeEfficiency(document.Capture, document.Events, "")
+}
+
+func summarizeIterationEfficiency(document Artifact, iterationID string) benchrecord.EfficiencySummary {
+	return summarizeEfficiency(document.Capture, document.Events, iterationID)
+}
+
+func summarizeEfficiency(
+	capture Capture,
+	events []Event,
+	iterationID string,
+) benchrecord.EfficiencySummary {
+	recordingOverheadMS := int64(0)
+	if iterationID == "" {
+		recordingOverheadMS = capture.RecordingOverheadMS
+	}
+	summary := benchrecord.EfficiencySummary{
+		Status:              efficiencyStatus(capture, events, iterationID),
+		TokenStatus:         benchrecord.TokenStatusNotReported,
+		RecordingOverheadMS: recordingOverheadMS,
+	}
+	for _, event := range events {
+		if !eventMatchesIteration(event, iterationID) {
+			continue
+		}
+		if event.Type == "model_turn" {
+			addTurnEfficiency(&summary, event)
+		}
+		if iterationID != "" {
+			summary.RecordingOverheadMS += event.RecordingOverheadMS
+		}
+	}
+	setTokenStatus(&summary)
+	return summary
+}
+
+func efficiencyStatus(capture Capture, events []Event, iterationID string) benchrecord.EfficiencyStatus {
+	turns := 0
+	for _, event := range events {
+		if event.Type == "model_turn" && eventMatchesIteration(event, iterationID) {
+			turns++
+			if EventIsIncomplete(event) || event.Status == "" {
+				return benchrecord.EfficiencyStatusPartial
+			}
+		}
+	}
+	if turns == 0 {
+		return benchrecord.EfficiencyStatusNotReported
+	}
+	if !capture.Enabled || capture.Status != "complete" || !capture.Complete {
+		return benchrecord.EfficiencyStatusPartial
+	}
+	return benchrecord.EfficiencyStatusComplete
+}
+
+func addTurnEfficiency(summary *benchrecord.EfficiencySummary, event Event) {
+	summary.Turns++
+	switch event.Status {
+	case "completed":
+		summary.CompletedTurns++
+	case "failed":
+		summary.FailedTurns++
+	default:
+		summary.IncompleteTurns++
+	}
+	if event.Tokens == nil {
+		summary.UnknownTokenTurns++
+	} else {
+		summary.KnownTokenTurns++
+		if summary.Tokens == nil {
+			summary.Tokens = &benchrecord.TokenUsage{}
+		}
+		summary.Tokens.Input += event.Tokens.Input
+		summary.Tokens.Output += event.Tokens.Output
+		summary.Tokens.Total += event.Tokens.Total
+	}
+	if event.EndedAt != "" || event.Status == "completed" || event.Status == "failed" {
+		summary.MeasuredInferenceTurns++
+		summary.InferenceMS += event.DurationMS
+		return
+	}
+	summary.UnknownInferenceTurns++
+}
+
+func setTokenStatus(summary *benchrecord.EfficiencySummary) {
+	if summary.Turns == 0 {
+		return
+	}
+	if summary.UnknownTokenTurns == 0 {
+		summary.TokenStatus = benchrecord.TokenStatusComplete
+		return
+	}
+	if summary.KnownTokenTurns > 0 {
+		summary.TokenStatus = benchrecord.TokenStatusPartial
+		return
+	}
+	summary.TokenStatus = benchrecord.TokenStatusUnknown
 }
 
 // SummarizeActivity returns model-tool, adapter, and file-edit activity in an
@@ -323,6 +432,7 @@ func refreshRawActivity(document map[string]json.RawMessage) error {
 		return fmt.Errorf("parse activity events: %w", err)
 	}
 	document["activity"] = mustMarshal(SummarizeActivity(artifact))
+	document["efficiency"] = mustMarshal(SummarizeEfficiency(artifact))
 
 	rawIterations, ok := document["iterations"]
 	if !ok {
@@ -345,6 +455,7 @@ func refreshRawActivity(document map[string]json.RawMessage) error {
 		}
 		iterationActivity := summarizeIterationActivity(artifact, iterationID)
 		iteration["activity"] = mustMarshal(iterationActivity)
+		iteration["efficiency"] = mustMarshal(summarizeIterationEfficiency(artifact, iterationID))
 		iterations[index] = mustMarshal(iteration)
 	}
 	document["iterations"] = mustMarshal(iterations)
@@ -373,6 +484,7 @@ func Build(auditPath, outputPath string) error {
 // Render renders the chronological audit without requiring comparison output.
 func Render(document Artifact) (string, error) {
 	status := captureStatus(document)
+	efficiency := SummarizeEfficiency(document)
 	view := pageView{
 		SchemaVersion:       document.SchemaVersion,
 		Run:                 document.Run,
@@ -382,6 +494,8 @@ func Render(document Artifact) (string, error) {
 		CaptureFailure:      document.Capture.Failure,
 		Activity:            SummarizeActivity(document),
 		ActivityReported:    activityEvidenceReported(document),
+		Efficiency:          efficiency,
+		EfficiencyReported:  efficiency.Status != benchrecord.EfficiencyStatusNotReported,
 		CaptureEnabled:      document.Capture.Enabled,
 		Iterations:          make([]iterationView, 0, len(document.Iterations)),
 		FileHistories:       fileHistories(document.FileModifications),
@@ -396,6 +510,7 @@ func Render(document Artifact) (string, error) {
 			ID:               iteration.ID,
 			Number:           iteration.Number,
 			Activity:         summarizeIterationActivity(document, iteration.ID),
+			Efficiency:       summarizeIterationEfficiency(document, iteration.ID),
 			ActivityReported: activityEvidenceReported(document),
 			Events:           []eventView{},
 		})
@@ -410,6 +525,7 @@ func Render(document Artifact) (string, error) {
 	}
 	for index := range view.Iterations {
 		view.Iterations[index].Activity = summarizeIterationActivity(document, view.Iterations[index].ID)
+		view.Iterations[index].Efficiency = summarizeIterationEfficiency(document, view.Iterations[index].ID)
 	}
 	return executeTemplate(view)
 }
@@ -438,6 +554,8 @@ type pageView struct {
 	CaptureFailure      string
 	Activity            benchrecord.ActivitySummary
 	ActivityReported    bool
+	Efficiency          benchrecord.EfficiencySummary
+	EfficiencyReported  bool
 	CaptureEnabled      bool
 	Iterations          []iterationView
 	FileHistories       []fileHistoryView
@@ -452,38 +570,42 @@ type iterationView struct {
 	ID               string
 	Number           int
 	Activity         benchrecord.ActivitySummary
+	Efficiency       benchrecord.EfficiencySummary
 	ActivityReported bool
 	Events           []eventView
 }
 
 type eventView struct {
-	Sequence         int
-	Type             string
-	Iteration        int
-	IterationID      string
-	TurnID           string
-	Status           string
-	StartedAt        string
-	EndedAt          string
-	DurationMS       int64
-	DurationReported bool
-	Sampling         string
-	Input            string
-	Returned         string
-	ReturnedMessages []messageView
-	Error            string
-	Partial          bool
-	ModelToolCall    bool
-	AdapterOperation bool
-	ID               string
-	ToolCallID       string
-	ModelToolCallID  string
-	ToolName         string
-	Operation        string
-	Provenance       string
-	Arguments        string
-	Request          string
-	Result           string
+	Sequence            int
+	Type                string
+	Iteration           int
+	IterationID         string
+	TurnID              string
+	Status              string
+	StartedAt           string
+	EndedAt             string
+	DurationMS          int64
+	DurationReported    bool
+	RecordingOverheadMS int64
+	Tokens              *benchrecord.TokenUsage
+	TokenStatus         benchrecord.TokenStatus
+	Sampling            string
+	Input               string
+	Returned            string
+	ReturnedMessages    []messageView
+	Error               string
+	Partial             bool
+	ModelToolCall       bool
+	AdapterOperation    bool
+	ID                  string
+	ToolCallID          string
+	ModelToolCallID     string
+	ToolName            string
+	Operation           string
+	Provenance          string
+	Arguments           string
+	Request             string
+	Result              string
 }
 
 type messageView struct {
@@ -710,32 +832,35 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		return eventView{}, err
 	}
 	view := eventView{
-		Sequence:         event.Sequence,
-		Type:             event.Type,
-		Iteration:        event.Iteration,
-		IterationID:      event.IterationID,
-		TurnID:           event.TurnID,
-		Status:           event.Status,
-		StartedAt:        event.StartedAt,
-		EndedAt:          event.EndedAt,
-		DurationMS:       event.DurationMS,
-		DurationReported: event.EndedAt != "" || event.Status == "completed" || event.Status == "failed",
-		Sampling:         formatJSON(mustMarshal(event.Sampling)),
-		Input:            formatJSON(input),
-		Returned:         formatJSON(event.Returned),
-		Error:            event.Error,
-		Partial:          EventIsIncomplete(event),
-		ModelToolCall:    event.Type == "model_tool_call",
-		AdapterOperation: event.Type == "adapter_operation",
-		ID:               event.ID,
-		ToolCallID:       event.ToolCallID,
-		ModelToolCallID:  event.ModelToolCallID,
-		ToolName:         event.ToolName,
-		Operation:        event.Operation,
-		Provenance:       event.Provenance,
-		Arguments:        formatJSON(event.Arguments),
-		Request:          formatJSON(event.Request),
-		Result:           formatJSON(event.Result),
+		Sequence:            event.Sequence,
+		Type:                event.Type,
+		Iteration:           event.Iteration,
+		IterationID:         event.IterationID,
+		TurnID:              event.TurnID,
+		Status:              event.Status,
+		StartedAt:           event.StartedAt,
+		EndedAt:             event.EndedAt,
+		DurationMS:          event.DurationMS,
+		DurationReported:    event.EndedAt != "" || event.Status == "completed" || event.Status == "failed",
+		RecordingOverheadMS: event.RecordingOverheadMS,
+		Tokens:              event.Tokens,
+		TokenStatus:         tokenStatus(event.Tokens),
+		Sampling:            formatJSON(mustMarshal(event.Sampling)),
+		Input:               formatJSON(input),
+		Returned:            formatJSON(event.Returned),
+		Error:               event.Error,
+		Partial:             EventIsIncomplete(event),
+		ModelToolCall:       event.Type == "model_tool_call",
+		AdapterOperation:    event.Type == "adapter_operation",
+		ID:                  event.ID,
+		ToolCallID:          event.ToolCallID,
+		ModelToolCallID:     event.ModelToolCallID,
+		ToolName:            event.ToolName,
+		Operation:           event.Operation,
+		Provenance:          event.Provenance,
+		Arguments:           formatJSON(event.Arguments),
+		Request:             formatJSON(event.Request),
+		Result:              formatJSON(event.Result),
 	}
 	for _, rawMessage := range event.ReturnedMessages {
 		message := messageView{JSON: formatJSON(rawMessage)}
@@ -749,6 +874,13 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		view.ReturnedMessages = append(view.ReturnedMessages, message)
 	}
 	return view, nil
+}
+
+func tokenStatus(tokens *benchrecord.TokenUsage) benchrecord.TokenStatus {
+	if tokens == nil {
+		return benchrecord.TokenStatusUnknown
+	}
+	return benchrecord.TokenStatusComplete
 }
 
 func reconstructInput(
@@ -1033,6 +1165,24 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <p class="empty">Activity evidence: not reported.</p>
 </section>
 {{end}}
+{{if .EfficiencyReported}}
+<section class="activity-summary">
+<h2>Efficiency summary <small>({{.Efficiency.Status}} evidence)</small></h2>
+<div class="activity-counts">
+<div class="activity-count"><span>Model turns</span><strong>{{.Efficiency.Turns}}</strong><small>{{.Efficiency.CompletedTurns}} completed · {{.Efficiency.FailedTurns}} failed · {{.Efficiency.IncompleteTurns}} incomplete</small></div>
+<div class="activity-count"><span>Inference time</span><strong>{{.Efficiency.InferenceMS}} ms</strong><small>{{.Efficiency.MeasuredInferenceTurns}} measured · {{.Efficiency.UnknownInferenceTurns}} unknown</small></div>
+<div class="activity-count"><span>Audit-recording overhead</span><strong>{{.Efficiency.RecordingOverheadMS}} ms</strong><small>excluded from inference time</small></div>
+<div class="activity-count"><span>Token evidence</span><strong>{{.Efficiency.TokenStatus}}</strong><small>{{.Efficiency.KnownTokenTurns}} known turns · {{.Efficiency.UnknownTokenTurns}} unknown turns</small></div>
+</div>
+{{with .Efficiency.Tokens}}<p>Known token subtotal: {{.Input}} input · {{.Output}} output · {{.Total}} total ({{$.Efficiency.TokenStatus}}).</p>{{else}}<p class="empty">Token usage: unknown; no server-reported usage was captured.</p>{{end}}
+<p class="empty">Inference time starts after the request audit record is durably written and ends when the server response or request error is received. Audit-recording overhead covers capture work around that boundary and is not included in inference time. Existing run wall-clock and phase totals still include both.</p>
+</section>
+{{else if .CaptureEnabled}}
+<section class="activity-summary">
+<h2>Efficiency summary <small>(not reported)</small></h2>
+<p class="empty">Model-turn efficiency evidence: not reported.</p>
+</section>
+{{end}}
 {{if .FinalSourceReported}}
 <section class="final-source">
 <h2>Final source</h2>
@@ -1182,6 +1332,17 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 </div>
 </div>
 {{end}}
+{{if ne .Efficiency.Status "not_reported"}}
+<div class="iteration-activity">
+<strong>Iteration efficiency <small>({{.Efficiency.Status}} evidence)</small></strong>
+<div class="activity-counts">
+<div class="activity-count"><span>Model turns</span><strong>{{.Efficiency.Turns}}</strong><small>{{.Efficiency.CompletedTurns}} completed · {{.Efficiency.FailedTurns}} failed · {{.Efficiency.IncompleteTurns}} incomplete</small></div>
+<div class="activity-count"><span>Inference time</span><strong>{{.Efficiency.InferenceMS}} ms</strong><small>{{.Efficiency.MeasuredInferenceTurns}} measured</small></div>
+<div class="activity-count"><span>Token status</span><strong>{{.Efficiency.TokenStatus}}</strong><small>{{.Efficiency.KnownTokenTurns}} known · {{.Efficiency.UnknownTokenTurns}} unknown</small></div>
+</div>
+{{with .Efficiency.Tokens}}<p>Known token subtotal: {{.Input}} input · {{.Output}} output · {{.Total}} total.</p>{{end}}
+</div>
+{{end}}
 {{range .Events}}
 {{if .ModelToolCall}}
 <article class="activity-entry {{if .Partial}}partial{{end}}">
@@ -1228,7 +1389,9 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <div><span>Chronological sequence</span><strong>{{.Sequence}}</strong></div>
 <div><span>Started</span><strong>{{.StartedAt}}</strong></div>
 {{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
-{{if .DurationMS}}<div><span>Inference time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
+{{if .DurationReported}}<div><span>Inference time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
+{{with .RecordingOverheadMS}}<div><span>Audit-recording overhead</span><strong>{{.}} ms</strong></div>{{end}}
+<div><span>Token usage</span><strong>{{.TokenStatus}}</strong></div>
 </div>
 <h4>Exact model input</h4>
 <pre>{{.Input}}</pre>
@@ -1241,6 +1404,7 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{if .HasText}}<div class="rationale"><p class="label">Model's stated rationale</p><pre>{{.Content}}</pre></div>{{end}}
 {{end}}
 {{end}}
+{{with .Tokens}}<p>Server-reported tokens: {{.Input}} input · {{.Output}} output · {{.Total}} total.</p>{{end}}
 {{with .Error}}<p>Turn error: {{.}}</p>{{end}}
 {{if .Partial}}<p class="empty">Partial turn: inference or capture did not complete.</p>{{end}}
 </article>

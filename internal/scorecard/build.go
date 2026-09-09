@@ -63,5 +63,8 @@ func loadAuditDocument(recordPath string, record *benchrecord.Record) *audit.Art
 		activity := document.Activity
 		record.Audit.Activity = &activity
 	}
+	if !efficiencyAvailable(record.Efficiency) {
+		record.Efficiency = document.Efficiency
+	}
 	return &document
 }

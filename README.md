@@ -828,8 +828,10 @@ false`; enabling the runner option is a verified no-op for those adapters.
 
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
-null, "temperature": N | null, "reuse_process": false }`. The adapter edits the candidate in place;
-unknown token usage must be reported as `null`. The command writes the
+null, "temperature": N | null, "reuse_process": false }`. The adapter edits
+the candidate in place; unknown token usage must remain unknown. The audit
+artifact, when enabled, is the source of per-model-turn efficiency evidence.
+The command writes the
 versioned benchmark record to the selected Candidate Campaign's derived report
 path; its `tokens` field sums known usage, while
 `unknown_token_iterations` counts fix iterations that reported `null`. If no
@@ -908,10 +910,19 @@ prints a warning without changing the benchmark's terminal state or exit code.
 Without `--emit-scorecard`, no scorecard subprocess runs.
 
 Bundled local-model runs also write `benchmark-audit.json` incrementally and
-render `benchmark-audit.html` when the artifact is available. The audit report
-can be rendered independently with `stcompare audit render`, so it remains
-available when comparison or scorecard output was never produced. Unsupported
-adapters and legacy records show audit evidence as `not reported`.
+render `benchmark-audit.html` when the artifact is available. Each audited
+model turn links its exact request and response, server-reported token usage,
+and request-boundary inference duration. The artifact includes the same
+efficiency summary at run and iteration scope. Missing usage is shown as
+`unknown`; a known subtotal with missing turns is labeled `partial`.
+Audit-recording overhead is measured separately and is excluded from inference
+duration. The audit report documents that inference begins after the request
+capture write and ends when the response or request error is received, while
+the existing benchmark wall-clock and phase totals include capture overhead.
+The audit report can be rendered independently with `stcompare audit render`,
+so it remains available when comparison or scorecard output was never
+produced. Unsupported adapters and legacy records show audit evidence as
+`not reported`.
 
 To build the same artifact manually:
 
@@ -924,9 +935,18 @@ stcompare scorecard build \
 
 The self-contained HTML includes every section from `comparison.html` plus a
 Benchmark Run section with the agent, model, iteration count, total and
-agent-fix durations, and token usage. All three paths are required. Missing or
-malformed inputs fail without writing the output file; a record whose token
-usage is `null` is shown explicitly as not reported.
+agent-fix durations, and token usage. Audited records add an Efficiency
+summary with model-turn count, inference time, known/unknown token status,
+known subtotal, and audit-recording overhead. All three paths are required.
+Missing or malformed inputs fail without writing the output file; a record
+whose token usage is `null` is shown explicitly as not reported.
+
+The bundled adapter tests include a deterministic overhead workload with
+repeated context and file content. It compares the capture-enabled and
+reference request payloads and counts before measuring capture cost; the
+experiment adds no model requests and does not alter the task. Use the
+resulting `capture.recording_overhead_ms` and efficiency fields as the
+run-specific evidence rather than comparing wall-clock totals alone.
 
 ## Caveats and troubleshooting
 

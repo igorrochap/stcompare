@@ -24,6 +24,7 @@ from local_model_adapter import (
     SYSTEM_PROMPT,
     TOOLS,
     activity_summary,
+    efficiency_summary,
     reconstruct_input,
     recover_tool_calls,
     execute_tool,
@@ -33,6 +34,7 @@ from local_model_adapter import (
     safe_path,
     refresh_activity,
     resolve_temperature,
+    usage_summary,
 )
 
 LOCAL_ADAPTER = EXAMPLES / "local_model_adapter.py"
@@ -268,6 +270,19 @@ class AdapterExamplesTest(unittest.TestCase):
                 self.assertEqual(event["status"], "completed")
                 self.assertEqual(event["returned_messages"], [responses[index]["choices"][0]["message"]])
                 self.assertEqual(event["sampling"], {"temperature": 0.0, "top_p": 1})
+                self.assertIn("duration_ms", event)
+                self.assertIn("recording_overhead_ms", event)
+
+            self.assertEqual(
+                document["efficiency"]["tokens"],
+                {"input": 8, "output": 6, "total": 14},
+            )
+            self.assertEqual(document["efficiency"]["token_status"], "complete")
+            self.assertEqual(document["efficiency"]["known_token_turns"], 2)
+            self.assertEqual(document["efficiency"]["unknown_token_turns"], 0)
+            self.assertEqual(document["efficiency"]["turns"], 2)
+            self.assertEqual(document["efficiency"]["measured_inference_turns"], 2)
+            self.assertEqual(document["iterations"][0]["efficiency"]["turns"], 2)
 
             self.assertTrue(document["shared_content"])
             self.assertTrue(
@@ -277,6 +292,207 @@ class AdapterExamplesTest(unittest.TestCase):
             serialized = audit_path.read_text(encoding="utf-8")
             self.assertNotIn("STBENCH_LOCAL_MODEL_API_KEY", serialized)
             self.assertNotIn("Authorization", serialized)
+
+    def test_local_model_audit_keeps_missing_usage_unknown_and_marks_partial_subtotals(self) -> None:
+        events = [
+            {
+                "type": "model_turn",
+                "iteration_id": "iteration-1",
+                "status": "completed",
+                "duration_ms": 17,
+                "ended_at": "2026-01-01T00:00:00Z",
+                "tokens": {"input": 4, "output": 2, "total": 6},
+            },
+            {
+                "type": "model_turn",
+                "iteration_id": "iteration-1",
+                "status": "completed",
+                "duration_ms": 23,
+                "ended_at": "2026-01-01T00:00:01Z",
+                "returned_messages": [{"content": "I used 999 tokens"}],
+            },
+        ]
+
+        summary = efficiency_summary(
+            events,
+            {"enabled": True, "status": "complete", "complete": True},
+            "iteration-1",
+        )
+
+        self.assertEqual(summary["tokens"], {"input": 4, "output": 2, "total": 6})
+        self.assertEqual(summary["token_status"], "partial")
+        self.assertEqual(summary["known_token_turns"], 1)
+        self.assertEqual(summary["unknown_token_turns"], 1)
+        self.assertEqual(summary["inference_ms"], 40)
+        self.assertNotIn("999", json.dumps(summary["tokens"]))
+
+    def test_local_model_audit_does_not_promote_textual_token_claims_to_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json",
+            return_value={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "I used 999 tokens while making this change.",
+                        }
+                    }
+                ]
+            },
+        ):
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-text-claim",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            run_agent(
+                "task",
+                root,
+                url="http://model.invalid",
+                model="model",
+                timeout=5,
+                max_turns=1,
+                audit=AuditWriter.open(request),
+                audit_context_value={
+                    **request["audit"],
+                    "iteration": 1,
+                    "iteration_id": "iteration-1",
+                },
+            )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            event = document["events"][0]
+            self.assertIsNone(event["tokens"])
+            self.assertEqual(document["efficiency"]["token_status"], "unknown")
+            self.assertEqual(document["efficiency"]["unknown_token_turns"], 1)
+
+    def test_usage_summary_does_not_estimate_an_all_unknown_run(self) -> None:
+        summary = usage_summary([None, None])
+
+        self.assertIsNone(summary["tokens"])
+        self.assertEqual(summary["token_status"], "unknown")
+        self.assertEqual(summary["known_token_turns"], 0)
+        self.assertEqual(summary["unknown_token_turns"], 2)
+
+    def test_audit_recording_delay_is_reported_separately_from_inference_duration(self) -> None:
+        response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+        real_dump = json.dump
+
+        def delayed_dump(*args, **kwargs):
+            import time as clock
+
+            clock.sleep(0.04)
+            return real_dump(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json", return_value=response
+        ), patch("local_model_adapter.json.dump", side_effect=delayed_dump):
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            document = {
+                "schema_version": "1",
+                "run": {"id": "run-overhead"},
+                "capture": {"enabled": True, "status": "in_progress", "complete": False},
+                "iterations": [],
+                "events": [],
+            }
+            writer = AuditWriter(audit_path, document)
+            context = {"run_id": "run-overhead", "iteration": 1, "iteration_id": "iteration-1"}
+            run_agent(
+                "fixed task with repeated context",
+                root,
+                url="http://model.invalid",
+                model="local-model",
+                timeout=5,
+                max_turns=1,
+                audit=writer,
+                audit_context_value=context,
+            )
+            writer.finalize_measurements()
+
+            saved = json.loads(audit_path.read_text(encoding="utf-8"))
+            event = saved["events"][0]
+            self.assertGreaterEqual(saved["capture"]["recording_overhead_ms"], 35)
+            self.assertLess(event["recording_overhead_ms"], saved["capture"]["recording_overhead_ms"])
+            self.assertLess(event["duration_ms"], saved["capture"]["recording_overhead_ms"])
+
+    def test_representative_overhead_workload_preserves_requests_and_reports_capture_cost(self) -> None:
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "read-repeated-file",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": json.dumps({"path": "repeated.txt"}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+            },
+            {
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13},
+            },
+        ]
+
+        def run_workload(root: Path, audit: AuditWriter | None) -> tuple[list[dict], Path | None]:
+            requests: list[dict] = []
+
+            def respond(_url: str, payload: dict, _timeout: float, *, metadata: dict | None = None) -> dict:
+                del metadata
+                requests.append(json.loads(json.dumps(payload)))
+                return responses[len(requests) - 1]
+
+            with patch("local_model_adapter.post_json", side_effect=respond):
+                run_agent(
+                    "Inspect repeated.txt and make the requested deterministic change.",
+                    root,
+                    url="http://model.invalid",
+                    model="local-model",
+                    timeout=5,
+                    max_turns=2,
+                    audit=audit,
+                    audit_context_value=(
+                        {"run_id": "run-overhead", "iteration": 1, "iteration_id": "iteration-1"}
+                        if audit is not None
+                        else None
+                    ),
+                )
+            return requests, audit.path if audit is not None else None
+
+        with tempfile.TemporaryDirectory() as reference_directory, tempfile.TemporaryDirectory() as captured_directory:
+            repeated_content = "same file content\n" * 40
+            Path(reference_directory, "repeated.txt").write_text(repeated_content, encoding="utf-8")
+            Path(captured_directory, "repeated.txt").write_text(repeated_content, encoding="utf-8")
+            reference_requests, _ = run_workload(Path(reference_directory), None)
+
+            audit_path = Path(captured_directory, "benchmark-audit.json")
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-overhead"}}
+            metadata = {"agent": "local", "model": "local-model", "hardware": "test-machine"}
+            AuditWriter.create(request, metadata)
+            captured_requests, _ = run_workload(Path(captured_directory), AuditWriter.open(request))
+
+            self.assertEqual(len(reference_requests), 2)
+            self.assertEqual(captured_requests, reference_requests)
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertGreater(document["capture"]["recording_overhead_ms"], 0)
+            self.assertEqual(document["efficiency"]["turns"], 2)
+            self.assertEqual(document["efficiency"]["tokens"], {"input": 22, "output": 3, "total": 25})
 
     def test_local_model_audit_writes_start_before_inference_and_retains_model_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -306,7 +522,46 @@ class AdapterExamplesTest(unittest.TestCase):
             writer.record_turn_failed(event, TimeoutError("inference timed out"))
             failed = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertEqual(failed["events"][0]["status"], "failed")
+            self.assertIn("duration_ms", failed["events"][0])
+            self.assertGreaterEqual(failed["events"][0]["duration_ms"], 0)
+            self.assertNotIn("tokens", failed["events"][0])
             self.assertIn("inference timed out", failed["events"][0]["error"])
+
+    def test_local_model_audit_retains_timing_when_inference_is_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json", side_effect=KeyboardInterrupt("stopped")
+        ):
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-interrupted",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with self.assertRaises(KeyboardInterrupt):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=1,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            event = json.loads(audit_path.read_text(encoding="utf-8"))["events"][0]
+            self.assertEqual(event["status"], "failed")
+            self.assertGreaterEqual(event["duration_ms"], 0)
+            self.assertNotIn("tokens", event)
 
     def test_local_model_audit_counts_each_call_and_separates_adapter_operations(self) -> None:
         responses = [
@@ -402,6 +657,7 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertTrue(all(event["turn_id"] == "iteration-1-turn-1" for event in calls))
             self.assertTrue(all(event["model_tool_call_id"] in {call["id"] for call in calls} for event in operations))
             self.assertTrue(all("duration_ms" in event for event in calls + operations))
+            self.assertTrue(all("recording_overhead_ms" not in event for event in calls + operations))
 
     def test_edit_tools_distinguish_attempts_from_actual_modifications(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
