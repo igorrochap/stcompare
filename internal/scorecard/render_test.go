@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 	"stcompare/internal/comparison"
 )
 
@@ -143,6 +144,34 @@ func TestRenderShowsModelToolCallSummaryWhenAuditActivityIsAvailable(t *testing.
 	}
 }
 
+func TestRenderShowsFinalSourceCountWhenAuditEvidenceIsAvailable(t *testing.T) {
+	before := "before\n"
+	after := "after\n"
+	html, err := RenderWithAudit(
+		comparisonFixture(t),
+		benchrecord.Record{},
+		&audit.Artifact{
+			FinalSource: audit.FinalSource{
+				Status:            audit.SourceStatusComplete,
+				FilesChangedAtEnd: 2,
+				Diffs:             []audit.SourceChange{{Path: "api.py", Before: &before, After: &after}},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Final source evidence",
+		"Files Changed at the End</span><strong>2</strong>",
+		"Snapshot status</span><strong>complete</strong>",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing final source evidence %q:\n%s", fragment, html)
+		}
+	}
+}
+
 func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
 	directory := t.TempDir()
 	comparisonPath := filepath.Join(directory, "comparison.json")
@@ -164,6 +193,7 @@ func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
   "schema_version":"1",
   "capture":{"enabled":true,"status":"complete","complete":true},
   "iterations":[],
+  "final_source":{"status":"complete","files_changed_at_end":3,"starting":{"status":"complete"},"final":{"status":"complete"}},
   "events":[{"type":"model_tool_call","status":"completed","duration_ms":17}]
 }`), 0o644); err != nil {
 		t.Fatalf("write audit fixture: %v", err)
@@ -178,6 +208,9 @@ func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
 	}
 	if !strings.Contains(string(html), "Model Tool Calls</span><strong>1</strong>") {
 		t.Fatalf("scorecard omitted referenced audit activity:\n%s", html)
+	}
+	if !strings.Contains(string(html), "Files Changed at the End</span><strong>3</strong>") {
+		t.Fatalf("scorecard omitted referenced final source evidence:\n%s", html)
 	}
 }
 

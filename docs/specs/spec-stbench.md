@@ -338,6 +338,29 @@ operation, model turn, and iteration. A creation records `before: null`.
 machine-readable totals; the HTML audit groups the entries by file and keeps
 each file's modifications in chronological order inside expandable diffs.
 
+The runner also records `final_source`, `lifecycle_changes`,
+`comparison_outcomes`, and `edit_sequences`. `final_source.starting` is a
+filesystem snapshot taken after initial lifecycle preparation and before model
+work; it is not derived from Git HEAD. `final_source.final` is the last
+available source snapshot, and `final_source.diffs` is the net content diff
+between those snapshots. Created and deleted files are included, and
+`files_changed_at_end` counts distinct files whose final content differs from
+the starting content. A restored file therefore has no net entry even though
+its `file_modifications` history remains.
+
+`lifecycle_changes` records source changes observed around lifecycle commands
+such as build and remains separate from model `file_modifications`. Net diffs
+whose origin cannot be established use `origin: "unattributed"`.
+`comparison_outcomes` preserves each comparison view and exit result in
+chronological order. Each `edit_sequences` entry contains the problem input
+delivered to the model and the subsequent comparison ID, or
+`evaluation_status: "not_evaluated"` when no subsequent comparison occurred.
+These links describe chronology only; they do not assert that an individual
+edit caused a Problem Outcome. Replay-backed `Fixed` outcomes remain distinct
+from a human Fix Quality Assessment, which the tool does not store. A source
+snapshot with unreliable capture is marked `partial` or `unavailable` rather
+than presented as a complete final diff.
+
 The artifact is finalized with `capture.status` `complete` or `partial` and
 the benchmark terminal state. A started turn or interrupted run therefore
 remains visible as partial evidence. A required capture failure terminates

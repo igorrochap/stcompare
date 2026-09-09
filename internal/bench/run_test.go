@@ -3,6 +3,7 @@ package bench
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,122 @@ func TestRunPassesStableAuditContextToEachAdapterBoundary(t *testing.T) {
 	}
 	if record.RunID != "run-fixed" || record.Audit.Status != benchrecord.AuditStatusNotReported {
 		t.Fatalf("record audit identity/status = %#v, want run-fixed and not_reported for unsupported fake", record.Audit)
+	}
+}
+
+func TestRunAuditCapturesLifecycleChangesAndComparisonSequences(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	if err := os.Mkdir(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	candidate := &sourceLifecycleCandidate{
+		fakeCandidate: &fakeCandidate{},
+		path:          filepath.Join(sourceDir, "generated.py"),
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: agentreport.View{
+			Counts:     agentreport.Counts{StillFailing: 1},
+			Actionable: []agentreport.Actionable{{ID: "problem-1"}},
+		}, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true, Counts: agentreport.Counts{Fixed: 1}}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &artifactAdapter{fakeAdapter: &fakeAdapter{}}
+
+	_, err := Run(Config{
+		RunID:          "run-source-evidence",
+		Candidate:      "candidate",
+		Baseline:       "baseline",
+		SourceDir:      sourceDir,
+		AuditPath:      auditPath,
+		MaxIterations:  2,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if document.FinalSource.Status != audit.SourceStatusComplete || document.FinalSource.FilesChangedAtEnd != 1 {
+		t.Fatalf("final source = %#v, want one complete net change", document.FinalSource)
+	}
+	if got := document.FinalSource.Diffs[0].Origin; got != audit.ChangeOriginLifecycle {
+		t.Fatalf("final diff origin = %q, want lifecycle", got)
+	}
+	if len(document.LifecycleChanges) == 0 || len(document.ComparisonOutcomes) != 2 || len(document.EditSequences) != 1 {
+		t.Fatalf("audit evidence counts = lifecycle %d, comparisons %d, edit sequences %d", len(document.LifecycleChanges), len(document.ComparisonOutcomes), len(document.EditSequences))
+	}
+	if document.Activity.FileModifications != 0 || len(document.FileModifications) != 0 {
+		t.Fatalf("lifecycle changes inflated model edit counts: activity=%#v modifications=%#v", document.Activity, document.FileModifications)
+	}
+	sequence := document.EditSequences[0]
+	if sequence.ComparisonBeforeID != "comparison-1" || sequence.SubsequentComparisonID != "comparison-2" ||
+		sequence.EvaluationStatus != "evaluated" || sequence.ProblemInput != adapter.instructions[0] {
+		t.Fatalf("edit sequence = %#v, want chronological problem and outcome evidence", sequence)
+	}
+}
+
+func TestRunAuditMarksEditWithoutSubsequentComparisonAsNotEvaluated(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Counts: agentreport.Counts{StillFailing: 1}, Actionable: []agentreport.Actionable{{ID: "problem-1"}}},
+		exitCode: agentreport.ExitCodeNotConverged,
+	}}}
+	adapter := &artifactAdapter{
+		fakeAdapter: &fakeAdapter{errs: []error{errors.New("edit stopped")}},
+	}
+
+	_, err := Run(Config{
+		RunID:          "run-not-evaluated",
+		AuditPath:      auditPath,
+		MaxIterations:  2,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil {
+		t.Fatal("Run() succeeded, want adapter error")
+	}
+
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if len(document.EditSequences) != 1 || document.EditSequences[0].EvaluationStatus != "not_evaluated" ||
+		document.EditSequences[0].SubsequentComparisonID != "" {
+		t.Fatalf("edit sequence = %#v, want no subsequent comparison", document.EditSequences)
+	}
+}
+
+func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	reportDir := filepath.Join(sourceDir, "reports", "candidate")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create source/report directories: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "api.py"), []byte("source\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "comparison.json"), []byte("generated\n"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	tracker := newSourceTracker(Config{
+		SourceDir:       sourceDir,
+		AuditPath:       filepath.Join(reportDir, "benchmark-audit.json"),
+		AuditReportPath: filepath.Join(reportDir, "benchmark-audit.html"),
+	})
+	snapshot := tracker.captureCurrent()
+	if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
+		t.Fatalf("source snapshot = %#v, want source without generated reports", snapshot)
 	}
 }
 
@@ -1169,6 +1286,22 @@ type fakeCandidate struct {
 	calls     []string
 	failPhase string
 	failErr   error
+}
+
+type sourceLifecycleCandidate struct {
+	*fakeCandidate
+	path       string
+	buildCount int
+}
+
+func (candidate *sourceLifecycleCandidate) Build() error {
+	candidate.calls = append(candidate.calls, "build")
+	candidate.buildCount++
+	contents := fmt.Sprintf("build-%d\n", candidate.buildCount)
+	if err := os.WriteFile(candidate.path, []byte(contents), 0o644); err != nil {
+		return err
+	}
+	return candidate.fail("build")
 }
 
 func (f *fakeCandidate) Stop() error {

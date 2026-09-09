@@ -176,6 +176,7 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		},
 		Candidate:         settings.campaign,
 		Baseline:          baselineName,
+		SourceDir:         workingDir,
 		Prompt:            benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
 		PromptFile:        settings.promptFile,
 		ReuseProcess:      settings.reuseProcess,
