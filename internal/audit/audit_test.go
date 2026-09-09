@@ -304,6 +304,235 @@ func TestRenderShowsChronologicalFileModificationHistories(t *testing.T) {
 	}
 }
 
+func TestBuildFinalSourceUsesSnapshotsAndKeepsRestoredHistoryOutOfNetCount(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files: []SourceFile{
+			{Path: "restored.py", Content: "original\n"},
+			{Path: "deleted.py", Content: "remove me\n"},
+		},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files: []SourceFile{
+			{Path: "restored.py", Content: "original\n"},
+			{Path: "created.py", Content: "new file\n"},
+		},
+	}
+
+	result := BuildFinalSource(starting, final, nil, []FileModification{
+		{Path: "restored.py", After: json.RawMessage(`"changed\n"`)},
+		{Path: "restored.py", After: json.RawMessage(`"original\n"`)},
+	})
+
+	if result.Status != SourceStatusComplete || result.FilesChangedAtEnd != 2 {
+		t.Fatalf("final source = %#v, want complete with two net files", result)
+	}
+	if len(result.Diffs) != 2 || result.Diffs[0].Path != "created.py" || result.Diffs[1].Path != "deleted.py" {
+		t.Fatalf("final diffs = %#v, want created and deleted files only", result.Diffs)
+	}
+	if result.Diffs[0].Origin != ChangeOriginUnattributed {
+		t.Fatalf("created file origin = %q, want unattributed", result.Diffs[0].Origin)
+	}
+}
+
+func TestBuildFinalSourceAttributesObservedModelContent(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "before\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "model result\n"}},
+	}
+	result := BuildFinalSource(starting, final, nil, []FileModification{
+		{Path: "api.py", Before: json.RawMessage(`"before\n"`), After: json.RawMessage(`"model result\n"`)},
+	})
+
+	if len(result.Diffs) != 1 || result.Diffs[0].Origin != ChangeOriginModel {
+		t.Fatalf("final diff = %#v, want one model-attributed change", result.Diffs)
+	}
+}
+
+func TestBuildFinalSourceAttributesModelAndLaterLifecycleChange(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "before\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "lifecycle result\n"}},
+	}
+	modelContent := "model result\n"
+	lifecycleContent := "lifecycle result\n"
+
+	result := BuildFinalSource(starting, final, []SourceChange{{
+		Path: "api.py", Before: &modelContent, After: &lifecycleContent,
+	}}, []FileModification{{
+		Path:   "api.py",
+		Before: json.RawMessage(`"before\n"`),
+		After:  json.RawMessage(`"model result\n"`),
+	}})
+
+	if len(result.Diffs) != 1 || result.Diffs[0].Origin != ChangeOriginModelAndLifecycle {
+		t.Fatalf("final diff = %#v, want model-and-lifecycle attribution", result.Diffs)
+	}
+}
+
+func TestBuildFinalSourceAttributesASecondModelEdit(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "before\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "second model result\n"}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, []FileModification{
+		{Path: "api.py", Before: json.RawMessage(`"before\n"`), After: json.RawMessage(`"first model result\n"`)},
+		{Path: "api.py", Before: json.RawMessage(`"first model result\n"`), After: json.RawMessage(`"second model result\n"`)},
+	})
+
+	if len(result.Diffs) != 1 || result.Diffs[0].Origin != ChangeOriginModel {
+		t.Fatalf("final diff = %#v, want model attribution through the second edit", result.Diffs)
+	}
+}
+
+func TestBuildFinalSourceDoesNotAttributeUnconnectedModelHistory(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "before\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: "final\n"}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, []FileModification{{
+		Path:   "api.py",
+		Before: json.RawMessage(`"unrelated\n"`),
+		After:  json.RawMessage(`"final\n"`),
+	}})
+
+	if len(result.Diffs) != 1 || result.Diffs[0].Origin != ChangeOriginUnattributed {
+		t.Fatalf("final diff = %#v, want unattributed history", result.Diffs)
+	}
+}
+
+func TestBuildFinalSourceMarksMissingSnapshotStatusUnavailable(t *testing.T) {
+	result := BuildFinalSource(SourceSnapshot{}, SourceSnapshot{Status: SourceStatusComplete}, nil, nil)
+	if result.Status != SourceStatusUnavailable {
+		t.Fatalf("final source status = %q, want unavailable", result.Status)
+	}
+}
+
+func TestCaptureSourceIncludesUntrackedFilesAndExcludesManagedState(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(directory, ".git"), 0o755); err != nil {
+		t.Fatalf("create git state: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(directory, ".local", "stbench"), 0o755); err != nil {
+		t.Fatalf("create managed state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "untracked.py"), []byte("source\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".git", "HEAD"), []byte("head\n"), 0o644); err != nil {
+		t.Fatalf("write git state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".local", "stbench", "stop.sh"), []byte("managed\n"), 0o644); err != nil {
+		t.Fatalf("write managed state: %v", err)
+	}
+
+	snapshot := CaptureSource(directory, nil)
+	if snapshot.Status != SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "untracked.py" {
+		t.Fatalf("source snapshot = %#v, want only untracked source", snapshot)
+	}
+}
+
+func TestRenderShowsFinalSourceLifecycleAndComparisonEvidence(t *testing.T) {
+	before := "before\n"
+	after := "after\n"
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Run:           Run{ID: "run-evidence"},
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		FinalSource: FinalSource{
+			Status:            SourceStatusComplete,
+			Starting:          SourceSnapshot{Status: SourceStatusComplete},
+			Final:             SourceSnapshot{Status: SourceStatusComplete},
+			FilesChangedAtEnd: 1,
+			Diffs: []SourceChange{{
+				ID: "final-source-diff-1", Path: "api.py", Origin: ChangeOriginUnattributed,
+				Before: &before, After: &after, Diff: "--- a/api.py\n+++ b/api.py\n",
+			}},
+		},
+		LifecycleChanges: []SourceChange{{
+			Sequence: 1, ID: "lifecycle-change-1", Path: "generated.py", Phase: "build",
+			Origin: ChangeOriginLifecycle, Diff: "build diff",
+		}},
+		ComparisonOutcomes: []ComparisonOutcome{{
+			Sequence: 1, ID: "comparison-1", Iteration: 1, Status: "completed", ExitCode: 2,
+			View: json.RawMessage(`{"counts":{"still_failing":1}}`),
+		}},
+		EditSequences: []EditSequence{{
+			Sequence: 1, ID: "edit-sequence-1", Iteration: 1,
+			ProblemInput:       "Problems delivered to the model\n{\"actionable\":[{\"id\":\"problem-1\"}]}\n",
+			ComparisonBeforeID: "comparison-1", EvaluationStatus: "not_evaluated",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render evidence audit: %v", err)
+	}
+	for _, fragment := range []string{
+		"Final source", "Files Changed at the End", "unattributed", "Lifecycle changes",
+		"excluded from model edit counts", "Problems delivered to model", "problem-1",
+		"not evaluated", "Fixed is a replay-backed Problem Outcome", "Fix Quality Assessment",
+		"Git HEAD is not used",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("evidence audit HTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestAppendEvidencePreservesModelHistoryAndStoresRunnerEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
+	contents, err := json.Marshal(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "in_progress"},
+		FileModifications: []FileModification{{
+			ID: "file-modification-1", Path: "api.py", Diff: "model diff",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal audit fixture: %v", err)
+	}
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	evidence := Evidence{
+		FinalSource:        FinalSource{Status: SourceStatusUnavailable},
+		LifecycleChanges:   []SourceChange{{ID: "lifecycle-change-1", Origin: ChangeOriginLifecycle}},
+		ComparisonOutcomes: []ComparisonOutcome{{ID: "comparison-1", Status: "completed"}},
+		EditSequences:      []EditSequence{{ID: "edit-sequence-1", EvaluationStatus: "not_evaluated"}},
+	}
+	if err := AppendEvidence(path, evidence); err != nil {
+		t.Fatalf("append evidence: %v", err)
+	}
+	updated, err := Read(path)
+	if err != nil {
+		t.Fatalf("read updated audit: %v", err)
+	}
+	if len(updated.FileModifications) != 1 || len(updated.LifecycleChanges) != 1 ||
+		len(updated.ComparisonOutcomes) != 1 || len(updated.EditSequences) != 1 ||
+		updated.FinalSource.Status != SourceStatusUnavailable {
+		t.Fatalf("updated audit = %#v, want existing model history plus runner evidence", updated)
+	}
+}
+
 func TestFinalizePersistsActivitySummary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
 	contents := []byte(`{

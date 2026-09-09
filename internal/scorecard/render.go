@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 	"stcompare/internal/comparison"
 )
 
@@ -23,10 +24,28 @@ type benchmarkView struct {
 	AuditAvailable    bool
 	Activity          *benchrecord.ActivitySummary
 	ActivityAvailable bool
+	FinalSource       *audit.FinalSource
 }
 
 // Render renders a benchmark scorecard containing the complete comparison report.
 func Render(document comparison.Report, record benchrecord.Record) (string, error) {
+	return render(document, record, nil)
+}
+
+// RenderWithAudit renders a scorecard with source and comparison evidence.
+func RenderWithAudit(
+	document comparison.Report,
+	record benchrecord.Record,
+	auditDocument *audit.Artifact,
+) (string, error) {
+	return render(document, record, auditDocument)
+}
+
+func render(
+	document comparison.Report,
+	record benchrecord.Record,
+	auditDocument *audit.Artifact,
+) (string, error) {
 	comparisonHTML, err := comparison.RenderHTML(document)
 	if err != nil {
 		return "", fmt.Errorf("render comparison: %w", err)
@@ -44,6 +63,9 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 		AuditAvailable:    auditAvailable(record.Audit),
 		Activity:          record.Audit.Activity,
 		ActivityAvailable: activityAvailable(record.Audit),
+	}
+	if auditDocument != nil && auditDocument.FinalSource.Status != "" {
+		view.FinalSource = &auditDocument.FinalSource
 	}
 	if err := benchmarkSectionTemplate.Execute(&section, view); err != nil {
 		return "", fmt.Errorf("render benchmark run: %w", err)
@@ -146,6 +168,16 @@ var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse
 <p class="empty">not reported</p>
 {{end}}
 </div>
+{{with .FinalSource}}
+<div class="category-counts">
+<h3>Final source evidence</h3>
+<div class="counts">
+<div class="count"><span>Snapshot status</span><strong>{{.Status}}</strong></div>
+<div class="count"><span>Files Changed at the End</span><strong>{{.FilesChangedAtEnd}}</strong></div>
+</div>
+{{if eq .Status "unavailable"}}<p class="empty">Final source: unavailable; a complete net diff was not established.</p>{{else if eq .Status "partial"}}<p class="empty">Final source is partial; the count and diff are incomplete evidence.</p>{{end}}
+</div>
+{{end}}
 {{if .AuditAvailable}}
 <p><a href="{{.Audit.Report}}">View chronological model-turn audit</a> ({{.Audit.Status}})</p>
 {{else}}

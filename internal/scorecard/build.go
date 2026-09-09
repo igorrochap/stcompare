@@ -37,9 +37,9 @@ func Build(input Input) error {
 	if err := json.Unmarshal(recordContents, &record); err != nil {
 		return fmt.Errorf("parse benchmark record file %q: %w", input.RecordPath, err)
 	}
-	loadAuditActivity(input.RecordPath, &record)
+	auditDocument := loadAuditDocument(input.RecordPath, &record)
 
-	html, err := Render(document, record)
+	html, err := RenderWithAudit(document, record, auditDocument)
 	if err != nil {
 		return err
 	}
@@ -50,15 +50,18 @@ func Build(input Input) error {
 	return nil
 }
 
-func loadAuditActivity(recordPath string, record *benchrecord.Record) {
-	if record.Audit.Activity != nil || record.Audit.Artifact == "" {
-		return
+func loadAuditDocument(recordPath string, record *benchrecord.Record) *audit.Artifact {
+	if record.Audit.Artifact == "" {
+		return nil
 	}
 	auditPath := filepath.Join(filepath.Dir(recordPath), record.Audit.Artifact)
 	document, err := audit.Read(auditPath)
 	if err != nil {
-		return
+		return nil
 	}
-	activity := document.Activity
-	record.Audit.Activity = &activity
+	if record.Audit.Activity == nil {
+		activity := document.Activity
+		record.Audit.Activity = &activity
+	}
+	return &document
 }

@@ -20,14 +20,18 @@ const SchemaVersion = "1"
 
 // Artifact is the durable local-model audit document.
 type Artifact struct {
-	SchemaVersion     string                      `json:"schema_version"`
-	Run               Run                         `json:"run"`
-	Capture           Capture                     `json:"capture"`
-	Iterations        []Iteration                 `json:"iterations"`
-	SharedContent     map[string]json.RawMessage  `json:"shared_content,omitempty"`
-	Activity          benchrecord.ActivitySummary `json:"activity"`
-	FileModifications []FileModification          `json:"file_modifications,omitempty"`
-	Events            []Event                     `json:"events"`
+	SchemaVersion      string                      `json:"schema_version"`
+	Run                Run                         `json:"run"`
+	Capture            Capture                     `json:"capture"`
+	Iterations         []Iteration                 `json:"iterations"`
+	SharedContent      map[string]json.RawMessage  `json:"shared_content,omitempty"`
+	Activity           benchrecord.ActivitySummary `json:"activity"`
+	FileModifications  []FileModification          `json:"file_modifications,omitempty"`
+	FinalSource        FinalSource                 `json:"final_source,omitempty"`
+	LifecycleChanges   []SourceChange              `json:"lifecycle_changes,omitempty"`
+	ComparisonOutcomes []ComparisonOutcome         `json:"comparison_outcomes,omitempty"`
+	EditSequences      []EditSequence              `json:"edit_sequences,omitempty"`
+	Events             []Event                     `json:"events"`
 }
 
 // Run identifies the benchmark run associated with the audit.
@@ -370,17 +374,22 @@ func Build(auditPath, outputPath string) error {
 func Render(document Artifact) (string, error) {
 	status := captureStatus(document)
 	view := pageView{
-		SchemaVersion:    document.SchemaVersion,
-		Run:              document.Run,
-		Status:           status,
-		StatusClass:      strings.ReplaceAll(status, " ", "-"),
-		Partial:          auditIsPartial(document),
-		CaptureFailure:   document.Capture.Failure,
-		Activity:         SummarizeActivity(document),
-		ActivityReported: activityEvidenceReported(document),
-		CaptureEnabled:   document.Capture.Enabled,
-		Iterations:       make([]iterationView, 0, len(document.Iterations)),
-		FileHistories:    fileHistories(document.FileModifications),
+		SchemaVersion:       document.SchemaVersion,
+		Run:                 document.Run,
+		Status:              status,
+		StatusClass:         strings.ReplaceAll(status, " ", "-"),
+		Partial:             auditIsPartial(document),
+		CaptureFailure:      document.Capture.Failure,
+		Activity:            SummarizeActivity(document),
+		ActivityReported:    activityEvidenceReported(document),
+		CaptureEnabled:      document.Capture.Enabled,
+		Iterations:          make([]iterationView, 0, len(document.Iterations)),
+		FileHistories:       fileHistories(document.FileModifications),
+		FinalSourceReported: document.FinalSource.Status != "",
+		FinalSource:         newFinalSourceView(document.FinalSource),
+		LifecycleChanges:    sourceChangeViews(document.LifecycleChanges),
+		ComparisonOutcomes:  comparisonOutcomeViews(document.ComparisonOutcomes),
+		EditSequences:       editSequenceViews(document.EditSequences, document.ComparisonOutcomes),
 	}
 	for _, iteration := range document.Iterations {
 		view.Iterations = append(view.Iterations, iterationView{
@@ -421,17 +430,22 @@ func (view *pageView) ensureIteration(iterationID string, number int) int {
 }
 
 type pageView struct {
-	SchemaVersion    string
-	Run              Run
-	Status           string
-	StatusClass      string
-	Partial          bool
-	CaptureFailure   string
-	Activity         benchrecord.ActivitySummary
-	ActivityReported bool
-	CaptureEnabled   bool
-	Iterations       []iterationView
-	FileHistories    []fileHistoryView
+	SchemaVersion       string
+	Run                 Run
+	Status              string
+	StatusClass         string
+	Partial             bool
+	CaptureFailure      string
+	Activity            benchrecord.ActivitySummary
+	ActivityReported    bool
+	CaptureEnabled      bool
+	Iterations          []iterationView
+	FileHistories       []fileHistoryView
+	FinalSourceReported bool
+	FinalSource         finalSourceView
+	LifecycleChanges    []sourceChangeView
+	ComparisonOutcomes  []comparisonOutcomeView
+	EditSequences       []editSequenceView
 }
 
 type iterationView struct {
@@ -498,6 +512,144 @@ type modificationView struct {
 	After              string
 	Diff               string
 	Created            bool
+}
+
+type finalSourceView struct {
+	Status            string
+	StartingStatus    string
+	FinalStatus       string
+	FilesChangedAtEnd int
+	Diffs             []sourceChangeView
+}
+
+type sourceChangeView struct {
+	Sequence int
+	ID       string
+	Path     string
+	Phase    string
+	Origin   string
+	Before   string
+	After    string
+	Diff     string
+	Created  bool
+	Deleted  bool
+}
+
+type comparisonOutcomeView struct {
+	Sequence    int
+	ID          string
+	Iteration   int
+	IterationID string
+	Status      string
+	StartedAt   string
+	EndedAt     string
+	DurationMS  int64
+	ExitCode    int
+	View        string
+	Error       string
+}
+
+type editSequenceView struct {
+	Sequence               int
+	ID                     string
+	Iteration              int
+	IterationID            string
+	ProblemInput           string
+	ComparisonBeforeID     string
+	EvaluationStatus       string
+	SubsequentComparisonID string
+	SubsequentComparison   *comparisonOutcomeView
+}
+
+func newFinalSourceView(source FinalSource) finalSourceView {
+	return finalSourceView{
+		Status:            source.Status,
+		StartingStatus:    source.Starting.Status,
+		FinalStatus:       source.Final.Status,
+		FilesChangedAtEnd: source.FilesChangedAtEnd,
+		Diffs:             sourceChangeViews(source.Diffs),
+	}
+}
+
+func sourceChangeViews(changes []SourceChange) []sourceChangeView {
+	return mapViews(changes, newSourceChangeView)
+}
+
+func newSourceChangeView(change SourceChange) sourceChangeView {
+	origin := change.Origin
+	if origin == "" {
+		origin = ChangeOriginUnattributed
+	}
+	return sourceChangeView{
+		Sequence: change.Sequence,
+		ID:       change.ID,
+		Path:     change.Path,
+		Phase:    change.Phase,
+		Origin:   origin,
+		Before:   sourceContent(change.Before),
+		After:    sourceContent(change.After),
+		Diff:     change.Diff,
+		Created:  change.Created,
+		Deleted:  change.Deleted,
+	}
+}
+
+func sourceContent(content *string) string {
+	if content == nil {
+		return "File did not exist"
+	}
+	return *content
+}
+
+func comparisonOutcomeViews(outcomes []ComparisonOutcome) []comparisonOutcomeView {
+	return mapViews(outcomes, newComparisonOutcomeView)
+}
+
+func newComparisonOutcomeView(outcome ComparisonOutcome) comparisonOutcomeView {
+	return comparisonOutcomeView{
+		Sequence:    outcome.Sequence,
+		ID:          outcome.ID,
+		Iteration:   outcome.Iteration,
+		IterationID: outcome.IterationID,
+		Status:      outcome.Status,
+		StartedAt:   outcome.StartedAt,
+		EndedAt:     outcome.EndedAt,
+		DurationMS:  outcome.DurationMS,
+		ExitCode:    outcome.ExitCode,
+		View:        formatJSON(outcome.View),
+		Error:       outcome.Error,
+	}
+}
+
+func editSequenceViews(sequences []EditSequence, outcomes []ComparisonOutcome) []editSequenceView {
+	byID := make(map[string]comparisonOutcomeView, len(outcomes))
+	for _, outcome := range mapViews(outcomes, newComparisonOutcomeView) {
+		byID[outcome.ID] = outcome
+	}
+	return mapViews(sequences, func(sequence EditSequence) editSequenceView {
+		view := editSequenceView{
+			Sequence:               sequence.Sequence,
+			ID:                     sequence.ID,
+			Iteration:              sequence.Iteration,
+			IterationID:            sequence.IterationID,
+			ProblemInput:           sequence.ProblemInput,
+			ComparisonBeforeID:     sequence.ComparisonBeforeID,
+			EvaluationStatus:       sequence.EvaluationStatus,
+			SubsequentComparisonID: sequence.SubsequentComparisonID,
+		}
+		if outcome, ok := byID[sequence.SubsequentComparisonID]; ok {
+			view.SubsequentComparison = &outcome
+		}
+		return view
+	})
+}
+
+func mapViews[Source any, View any](values []Source, newView func(Source) View) []View {
+	views := make([]View, 0, len(values))
+	for _, value := range values {
+		views = append(views, newView(value))
+	}
+	return views
 }
 
 func fileHistories(modifications []FileModification) []fileHistoryView {
@@ -728,6 +880,9 @@ func auditIsPartial(document Artifact) bool {
 			return true
 		}
 	}
+	if document.FinalSource.Status == SourceStatusPartial || document.FinalSource.Status == SourceStatusUnavailable {
+		return true
+	}
 	return false
 }
 
@@ -740,7 +895,8 @@ func executeTemplate(view pageView) (string, error) {
 }
 
 func formatJSON(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return "not captured"
 	}
 	var indented bytes.Buffer
@@ -831,6 +987,9 @@ header { border-bottom: 1px solid #d0d7de; padding-bottom: 1rem; }
 .activity-entry summary { cursor: pointer; font-weight: 700; }
 .file-history { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
 .file-history summary { cursor: pointer; font-weight: 700; }
+.source-change { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
+.source-change summary { cursor: pointer; font-weight: 700; }
+.source-status.partial, .source-status.unavailable { color: #7a4b00; font-weight: 700; }
 .activity-summary, .iteration-activity { border: 1px solid #d0d7de; border-radius: .4rem; padding: 1rem; }
 .activity-counts { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .activity-count { background: #f6f8fa; border-radius: .3rem; padding: .65rem; }
@@ -872,6 +1031,113 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <section class="activity-summary">
 <h2>Activity summary <small>(not reported)</small></h2>
 <p class="empty">Activity evidence: not reported.</p>
+</section>
+{{end}}
+{{if .FinalSourceReported}}
+<section class="final-source">
+<h2>Final source</h2>
+<p>Net source diff from the actual starting source after initial lifecycle preparation to the final source. Git HEAD is not used.</p>
+<div class="activity-counts">
+<div class="activity-count"><span>Snapshot evidence</span><strong>{{.FinalSource.Status}}</strong><small>starting: {{.FinalSource.StartingStatus}} · final: {{.FinalSource.FinalStatus}}</small></div>
+<div class="activity-count"><span>Files Changed at the End</span><strong>{{.FinalSource.FilesChangedAtEnd}}</strong><small>distinct files with different final content</small></div>
+</div>
+{{if eq .FinalSource.Status "unavailable"}}
+<p class="empty">Final source: unavailable. A complete net diff could not be established.</p>
+{{else if eq .FinalSource.Status "partial"}}
+<p class="empty">Final source snapshot is partial. The displayed diff is partial evidence and is not a complete final diff.</p>
+{{end}}
+{{if .FinalSource.Diffs}}
+<h3>Net final source diff</h3>
+{{range .FinalSource.Diffs}}
+<article class="source-change">
+<details>
+<summary>{{.Path}} — origin: {{.Origin}}</summary>
+<div class="turn-meta">
+<div><span>Diff ID</span><strong>{{.ID}}</strong></div>
+{{with .Origin}}<div><span>Origin</span><strong>{{.}}</strong></div>{{end}}
+{{if .Created}}<div><span>Change</span><strong>created</strong></div>{{else if .Deleted}}<div><span>Change</span><strong>deleted</strong></div>{{else}}<div><span>Change</span><strong>modified</strong></div>{{end}}
+</div>
+<h4>Before</h4><pre>{{.Before}}</pre>
+<h4>After</h4><pre>{{.After}}</pre>
+<h4>Net diff</h4><pre>{{.Diff}}</pre>
+</details>
+</article>
+{{end}}
+{{else if eq .FinalSource.Status "complete"}}
+<p class="empty">No net source changes.</p>
+{{end}}
+</section>
+{{end}}
+{{if .LifecycleChanges}}
+<section class="lifecycle-changes">
+<h2>Lifecycle changes</h2>
+<p>These source changes were observed around lifecycle commands. They remain visible but are excluded from model edit counts.</p>
+{{range .LifecycleChanges}}
+<article class="source-change">
+<details>
+<summary>Lifecycle change {{.Sequence}} — {{.Path}} — {{.Phase}}</summary>
+<div class="turn-meta">
+<div><span>Change ID</span><strong>{{.ID}}</strong></div>
+<div><span>Origin</span><strong>{{.Origin}}</strong></div>
+<div><span>Phase</span><strong>{{.Phase}}</strong></div>
+</div>
+<h4>Before</h4><pre>{{.Before}}</pre>
+<h4>After</h4><pre>{{.After}}</pre>
+<h4>Observed diff</h4><pre>{{.Diff}}</pre>
+</details>
+</article>
+{{end}}
+</section>
+{{end}}
+{{if .EditSequences}}
+<section class="comparison-evidence">
+<h2>Model problem input and comparison outcomes</h2>
+<p>Each edit sequence shows the problems delivered to the model and the next comparison in chronological order. The report does not infer that an individual edit caused a Problem Outcome.</p>
+<p>Fixed is a replay-backed Problem Outcome. It is not a human Fix Quality Assessment, and researcher assessments are not stored here.</p>
+{{range .EditSequences}}
+<article class="source-change">
+<h3>Edit sequence {{.Sequence}} <small>({{.ID}}; iteration {{.Iteration}} — {{.IterationID}})</small></h3>
+<div class="turn-meta">
+<div><span>Comparison before edit</span><strong>{{.ComparisonBeforeID}}</strong></div>
+<div><span>Evaluation status</span><strong>{{.EvaluationStatus}}</strong></div>
+{{with .SubsequentComparisonID}}<div><span>Subsequent comparison</span><strong>{{.}}</strong></div>{{end}}
+</div>
+<h4>Problems delivered to model</h4><pre>{{.ProblemInput}}</pre>
+{{with .SubsequentComparison}}
+<h4>Subsequent comparison outcome</h4>
+<div class="turn-meta">
+<div><span>Comparison status</span><strong>{{.Status}}</strong></div>
+<div><span>Exit code</span><strong>{{.ExitCode}}</strong></div>
+{{with .DurationMS}}<div><span>Duration</span><strong>{{.}} ms</strong></div>{{end}}
+</div>
+<pre>{{.View}}</pre>
+{{with .Error}}<p>Comparison error: {{.}}</p>{{end}}
+{{else}}
+<p class="empty">Subsequent comparison: not evaluated. The run ended before this edit sequence had a comparison.</p>
+{{end}}
+</article>
+{{end}}
+</section>
+{{end}}
+{{if .ComparisonOutcomes}}
+<section class="comparison-outcomes">
+<h2>Chronological comparison outcomes</h2>
+<p>These are replay evidence records, not causal claims about individual edits.</p>
+{{range .ComparisonOutcomes}}
+<article class="activity-entry {{if eq .Status "failed"}}partial{{end}}">
+<details>
+<summary>Comparison {{.ID}} — iteration {{.Iteration}} — {{.Status}}</summary>
+<div class="turn-meta">
+<div><span>Chronological sequence</span><strong>{{.Sequence}}</strong></div>
+<div><span>Exit code</span><strong>{{.ExitCode}}</strong></div>
+{{with .StartedAt}}<div><span>Started</span><strong>{{.}}</strong></div>{{end}}
+{{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
+</div>
+<h4>Comparison view</h4><pre>{{.View}}</pre>
+{{with .Error}}<p>Comparison error: {{.}}</p>{{end}}
+</details>
+</article>
+{{end}}
 </section>
 {{end}}
 {{if .FileHistories}}
