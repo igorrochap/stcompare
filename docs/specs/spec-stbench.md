@@ -329,6 +329,15 @@ event without a terminal result remains incomplete. The artifact stores
 completed, failed, incomplete, and execution-time totals; partial status keeps
 missing evidence distinguishable from a complete zero.
 
+Edit tools also preserve an `Edit Attempt` for every requested edit, including
+failed and no-op requests. Each content-changing operation adds one
+`file_modifications` entry per changed file with its exact before and after
+content, unified diff, file path, and links to the model tool call, adapter
+operation, model turn, and iteration. A creation records `before: null`.
+`activity.edit_attempts` and `activity.file_modifications` are the separate
+machine-readable totals; the HTML audit groups the entries by file and keeps
+each file's modifications in chronological order inside expandable diffs.
+
 The artifact is finalized with `capture.status` `complete` or `partial` and
 the benchmark terminal state. A started turn or interrupted run therefore
 remains visible as partial evidence. A required capture failure terminates

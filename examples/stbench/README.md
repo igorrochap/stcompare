@@ -42,6 +42,11 @@ A model-turn or activity start is durable before inference or execution, so
 timeouts and interrupted runs remain visibly partial rather than becoming zero
 activity.
 
+Edit-tool requests are counted separately as Edit Attempts, including failed
+and no-op requests. Actual content changes are recorded as File Modifications
+with before/after content and a unified diff, one entry per changed file per
+operation, and are grouped by file in the HTML audit.
+
 Before the first comparison, `stbench` sends `{"preflight": true}`. The
 adapter must return an `ok` result for this no-op request without invoking the
 model or editing the candidate. This lets `stbench` verify that the configured
