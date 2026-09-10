@@ -632,6 +632,8 @@ type modificationView struct {
 	Iteration          int
 	Before             string
 	After              string
+	BeforeEmpty        bool
+	AfterEmpty         bool
 	Diff               string
 	Created            bool
 }
@@ -645,16 +647,18 @@ type finalSourceView struct {
 }
 
 type sourceChangeView struct {
-	Sequence int
-	ID       string
-	Path     string
-	Phase    string
-	Origin   string
-	Before   string
-	After    string
-	Diff     string
-	Created  bool
-	Deleted  bool
+	Sequence    int
+	ID          string
+	Path        string
+	Phase       string
+	Origin      string
+	Before      string
+	After       string
+	BeforeEmpty bool
+	AfterEmpty  bool
+	Diff        string
+	Created     bool
+	Deleted     bool
 }
 
 type comparisonOutcomeView struct {
@@ -703,16 +707,18 @@ func newSourceChangeView(change SourceChange) sourceChangeView {
 		origin = ChangeOriginUnattributed
 	}
 	return sourceChangeView{
-		Sequence: change.Sequence,
-		ID:       change.ID,
-		Path:     change.Path,
-		Phase:    change.Phase,
-		Origin:   origin,
-		Before:   sourceContent(change.Before),
-		After:    sourceContent(change.After),
-		Diff:     change.Diff,
-		Created:  change.Created,
-		Deleted:  change.Deleted,
+		Sequence:    change.Sequence,
+		ID:          change.ID,
+		Path:        change.Path,
+		Phase:       change.Phase,
+		Origin:      origin,
+		Before:      sourceContent(change.Before),
+		After:       sourceContent(change.After),
+		BeforeEmpty: isEmptySourceContent(change.Before),
+		AfterEmpty:  isEmptySourceContent(change.After),
+		Diff:        focusedSourceDiff(change.Path, change.Before, change.After, change.Diff),
+		Created:     change.Created,
+		Deleted:     change.Deleted,
 	}
 }
 
@@ -797,6 +803,8 @@ func fileHistories(modifications []FileModification) []fileHistoryView {
 }
 
 func newModificationView(modification FileModification) modificationView {
+	before, _ := rawFileContent(modification.Before)
+	after, _ := rawFileContent(modification.After)
 	return modificationView{
 		Sequence:           modification.Sequence,
 		ID:                 modification.ID,
@@ -810,9 +818,24 @@ func newModificationView(modification FileModification) modificationView {
 		Iteration:          modification.Iteration,
 		Before:             formatFileContent(modification.Before),
 		After:              formatFileContent(modification.After),
-		Diff:               modification.Diff,
+		BeforeEmpty:        isEmptySourceContent(before),
+		AfterEmpty:         isEmptySourceContent(after),
+		Diff:               focusedSourceDiff(modification.Path, before, after, modification.Diff),
 		Created:            modification.Created,
 	}
+}
+
+func focusedSourceDiff(path string, before, after *string, captured string) string {
+	focused := unifiedSourceDiff(path, before, after)
+	if focused == "" {
+		// Keep the captured diff when source pointers cannot establish a transition.
+		return captured
+	}
+	return focused
+}
+
+func isEmptySourceContent(content *string) bool {
+	return content != nil && *content == ""
 }
 
 func formatFileContent(raw json.RawMessage) string {
@@ -1121,6 +1144,8 @@ header { border-bottom: 1px solid #d0d7de; padding-bottom: 1rem; }
 .file-history summary { cursor: pointer; font-weight: 700; }
 .source-change { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
 .source-change summary { cursor: pointer; font-weight: 700; }
+.source-view { margin: .75rem 0; }
+.source-view summary { cursor: pointer; font-weight: 700; }
 .source-status.partial, .source-status.unavailable { color: #7a4b00; font-weight: 700; }
 .activity-summary, .iteration-activity { border: 1px solid #d0d7de; border-radius: .4rem; padding: 1rem; }
 .activity-counts { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
@@ -1207,9 +1232,17 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .Origin}}<div><span>Origin</span><strong>{{.}}</strong></div>{{end}}
 {{if .Created}}<div><span>Change</span><strong>created</strong></div>{{else if .Deleted}}<div><span>Change</span><strong>deleted</strong></div>{{else}}<div><span>Change</span><strong>modified</strong></div>{{end}}
 </div>
-<h4>Before</h4><pre>{{.Before}}</pre>
-<h4>After</h4><pre>{{.After}}</pre>
-<h4>Net diff</h4><pre>{{.Diff}}</pre>
+<h4>Focused diff</h4><pre>{{.Diff}}</pre>
+<details class="source-view">
+<summary>Before (full source)</summary>
+{{if .BeforeEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.Before}}</pre>
+</details>
+<details class="source-view">
+<summary>After (full source)</summary>
+{{if .AfterEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.After}}</pre>
+</details>
 </details>
 </article>
 {{end}}
@@ -1231,9 +1264,17 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 <div><span>Origin</span><strong>{{.Origin}}</strong></div>
 <div><span>Phase</span><strong>{{.Phase}}</strong></div>
 </div>
-<h4>Before</h4><pre>{{.Before}}</pre>
-<h4>After</h4><pre>{{.After}}</pre>
-<h4>Observed diff</h4><pre>{{.Diff}}</pre>
+<h4>Focused diff</h4><pre>{{.Diff}}</pre>
+<details class="source-view">
+<summary>Before (full source)</summary>
+{{if .BeforeEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.Before}}</pre>
+</details>
+<details class="source-view">
+<summary>After (full source)</summary>
+{{if .AfterEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.After}}</pre>
+</details>
 </details>
 </article>
 {{end}}
@@ -1308,9 +1349,17 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .ModelToolCallID}}<div><span>Model Tool Call</span><strong>{{.}}</strong></div>{{end}}
 {{with .AdapterOperationID}}<div><span>Adapter Operation</span><strong>{{.}}</strong></div>{{end}}
 </div>
-<h4>Before</h4><pre>{{.Before}}</pre>
-<h4>After</h4><pre>{{.After}}</pre>
-<h4>Exact diff</h4><pre>{{.Diff}}</pre>
+<h4>Focused diff</h4><pre>{{.Diff}}</pre>
+<details class="source-view">
+<summary>Before (full source)</summary>
+{{if .BeforeEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.Before}}</pre>
+</details>
+<details class="source-view">
+<summary>After (full source)</summary>
+{{if .AfterEmpty}}<p class="empty source-state">Empty file</p>{{end}}
+<pre>{{.After}}</pre>
+</details>
 </details>
 {{end}}
 </article>

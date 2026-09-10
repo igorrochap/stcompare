@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +304,227 @@ func TestRenderShowsChronologicalFileModificationHistories(t *testing.T) {
 	}
 	if strings.Index(html, "File Modification 1") > strings.Index(html, "File Modification 2") {
 		t.Fatal("file history does not preserve chronological order")
+	}
+}
+
+func TestRenderFocusesFileModificationHistoryForCreatedAndDeletedFiles(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		FileModifications: []FileModification{
+			{
+				Sequence: 1,
+				Path:     "created.py",
+				Before:   nil,
+				After:    json.RawMessage(`"created 1\ncreated 2\n"`),
+				Diff:     "captured created diff",
+				Created:  true,
+			},
+			{
+				Sequence: 2,
+				Path:     "deleted.py",
+				Before:   json.RawMessage(`"deleted 1\ndeleted 2\n"`),
+				After:    nil,
+				Diff:     "captured deleted diff",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render created and deleted file history: %v", err)
+	}
+	for _, capturedDiff := range []string{"captured created diff", "captured deleted diff"} {
+		if strings.Contains(html, capturedDiff) {
+			t.Fatalf("rendered file history used stored diff %q", capturedDiff)
+		}
+	}
+	for _, fragment := range []string{
+		"--- /dev/null", "&#43;&#43;&#43; b/created.py", "&#43;created 1", "&#43;created 2",
+		"--- a/deleted.py", "&#43;&#43;&#43; /dev/null", "-deleted 1", "-deleted 2",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("created and deleted file history HTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestBuildFinalSourceShowsFocusedContextForSmallEdit(t *testing.T) {
+	startingContent := strings.Join([]string{
+		"line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+		"line 7", "line 8", "line 9", "old line", "line 11", "line 12",
+		"line 13", "line 14", "line 15", "line 16", "line 17", "line 18",
+	}, "\n") + "\n"
+	finalContent := strings.Replace(startingContent, "old line", "new line", 1)
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: startingContent}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: finalContent}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, nil)
+	if len(result.Diffs) != 1 {
+		t.Fatalf("final diffs = %#v, want one changed file", result.Diffs)
+	}
+	if got, want := result.Diffs[0].Diff, "--- a/api.py\n+++ b/api.py\n@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-old line\n+new line\n line 11\n line 12\n line 13\n"; got != want {
+		t.Fatalf("focused diff = %q, want %q", got, want)
+	}
+}
+
+func TestBuildFinalSourceSeparatesDistantFocusedDiffHunks(t *testing.T) {
+	startingLines := make([]string, 24)
+	for index := range startingLines {
+		startingLines[index] = fmt.Sprintf("line %d", index+1)
+	}
+	startingContent := strings.Join(startingLines, "\n") + "\n"
+	finalContent := strings.Replace(strings.Replace(startingContent, "line 2", "first change", 1), "line 20", "second change", 1)
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: startingContent}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "api.py", Content: finalContent}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, nil)
+	if len(result.Diffs) != 1 {
+		t.Fatalf("final diffs = %#v, want one changed file", result.Diffs)
+	}
+	diff := result.Diffs[0].Diff
+	for _, hunk := range []string{"@@ -1,5 +1,5 @@", "@@ -17,7 +17,7 @@"} {
+		if !strings.Contains(diff, hunk) {
+			t.Fatalf("focused diff = %q, want hunk %q", diff, hunk)
+		}
+	}
+	if strings.Count(diff, "@@ ") != 2 {
+		t.Fatalf("focused diff = %q, want two separate hunks", diff)
+	}
+}
+
+func TestBuildFinalSourcePreservesFileExistenceAndMissingFinalNewline(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "empty.py", Content: ""}, {Path: "newline.py", Content: "line\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "empty.py", Content: ""}, {Path: "newline.py", Content: "line"}, {Path: "created.py", Content: ""}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, nil)
+	if len(result.Diffs) != 2 {
+		t.Fatalf("final diffs = %#v, want newline change and empty creation", result.Diffs)
+	}
+	newlineDiff := result.Diffs[1].Diff
+	if !strings.Contains(newlineDiff, "\\ No newline at end of file") {
+		t.Fatalf("newline diff = %q, want missing-final-newline marker", newlineDiff)
+	}
+	created := result.Diffs[0]
+	if !created.Created || created.Before != nil || created.After == nil || *created.After != "" {
+		t.Fatalf("empty creation = %#v, want absent before and exact empty after", created)
+	}
+	if !strings.Contains(created.Diff, "--- /dev/null\n+++ b/created.py") {
+		t.Fatalf("empty creation diff = %q, want absent-file header", created.Diff)
+	}
+}
+
+func TestBuildFinalSourceKeepsAllLinesForCreationAndDeletion(t *testing.T) {
+	starting := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "deleted.py", Content: "remove 1\nremove 2\nremove 3\n"}},
+	}
+	final := SourceSnapshot{
+		Status: SourceStatusComplete,
+		Files:  []SourceFile{{Path: "created.py", Content: "add 1\nadd 2\nadd 3\n"}},
+	}
+
+	result := BuildFinalSource(starting, final, nil, nil)
+	if len(result.Diffs) != 2 {
+		t.Fatalf("final diffs = %#v, want creation and deletion", result.Diffs)
+	}
+	created, deleted := result.Diffs[0], result.Diffs[1]
+	if !created.Created || !strings.Contains(created.Diff, "+add 1\n+add 2\n+add 3\n") {
+		t.Fatalf("creation diff = %q, want every added line", created.Diff)
+	}
+	if !deleted.Deleted || !strings.Contains(deleted.Diff, "-remove 1\n-remove 2\n-remove 3\n") {
+		t.Fatalf("deletion diff = %q, want every removed line", deleted.Diff)
+	}
+}
+
+func TestRenderPresentsFocusedDiffBeforeCollapsedExactSourceViews(t *testing.T) {
+	before := "line 1\nold line\nline 3\n"
+	after := "line 1\nnew line\nline 3\n"
+	historyBefore := json.RawMessage(`"line 1\nold line\nline 3\n"`)
+	historyAfter := json.RawMessage(`"line 1\nnew line\nline 3\n"`)
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		FinalSource: FinalSource{
+			Status: SourceStatusComplete,
+			Diffs: []SourceChange{{
+				Path: "final.py", Before: &before, After: &after,
+				Diff: "captured whole-file diff",
+			}},
+		},
+		LifecycleChanges: []SourceChange{{
+			Sequence: 1, Path: "lifecycle.py", Phase: "build",
+			Before: &before, After: &after, Diff: "captured lifecycle diff",
+		}},
+		FileModifications: []FileModification{{
+			Sequence: 1, Path: "history.py", Before: historyBefore, After: historyAfter,
+			Diff: "captured history diff",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render focused diff audit: %v", err)
+	}
+	for _, fragment := range []string{
+		"Focused diff", "Before (full source)", "After (full source)",
+		"-old line", "&#43;new line", "line 1", "old line", "new line", "line 3",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("focused diff audit HTML missing %q:\n%s", fragment, html)
+		}
+	}
+	for _, capturedDiff := range []string{"captured whole-file diff", "captured lifecycle diff", "captured history diff"} {
+		if strings.Contains(html, capturedDiff) {
+			t.Fatalf("rendered audit used stored unfocused diff %q", capturedDiff)
+		}
+	}
+	if strings.Contains(html, "<details open") {
+		t.Fatalf("rendered source entries are not collapsed by default:\n%s", html)
+	}
+	if strings.Index(html, "Focused diff") > strings.Index(html, "Before (full source)") ||
+		strings.Index(html, "Before (full source)") > strings.Index(html, "After (full source)") {
+		t.Fatalf("rendered source evidence is not ordered focused diff, before, after")
+	}
+}
+
+func TestRenderRetainsCapturedDiffWhenSourceEvidenceIsIncomplete(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "partial", Complete: false},
+		FinalSource: FinalSource{
+			Status:            SourceStatusPartial,
+			Starting:          SourceSnapshot{Status: SourceStatusPartial},
+			Final:             SourceSnapshot{Status: SourceStatusPartial},
+			FilesChangedAtEnd: 1,
+			Diffs:             []SourceChange{{Path: "partial.py", Diff: "captured partial diff"}},
+		},
+		LifecycleChanges: []SourceChange{{Path: "unknown.py", Diff: "captured unavailable diff"}},
+	})
+	if err != nil {
+		t.Fatalf("render incomplete source audit: %v", err)
+	}
+	for _, fragment := range []string{
+		"This audit is partial", "Final source snapshot is partial", "starting: partial · final: partial",
+		"captured partial diff", "captured unavailable diff",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("incomplete source audit HTML missing %q:\n%s", fragment, html)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ module stcompare
 go 1.25.0
 
 require (
+	github.com/aymanbagabas/go-udiff v0.3.1
 	github.com/charmbracelet/huh v0.8.0
 	github.com/getkin/kin-openapi v0.145.0
 	github.com/spf13/cobra v1.10.1
