@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/aymanbagabas/go-udiff"
 )
 
 const (
@@ -670,49 +672,30 @@ func unifiedSourceDiff(path string, before, after *string) string {
 	if equalSourceContent(before, after) {
 		return ""
 	}
-	var output strings.Builder
-	if before == nil {
-		output.WriteString("--- /dev/null\n")
-	} else {
-		fmt.Fprintf(&output, "--- a/%s\n", path)
+	fromLabel := sourceDiffLabel("a", path, before)
+	toLabel := sourceDiffLabel("b", path, after)
+	isEmptyFileTransition := (before == nil && after != nil && *after == "") ||
+		(before != nil && *before == "" && after == nil)
+	if isEmptyFileTransition {
+		return emptyFileTransitionDiff(fromLabel, toLabel)
 	}
-	if after == nil {
-		output.WriteString("+++ /dev/null\n")
-	} else {
-		fmt.Fprintf(&output, "+++ b/%s\n", path)
-	}
-	beforeLines := sourceLines(before)
-	afterLines := sourceLines(after)
-	fmt.Fprintf(&output, "@@ -%d,%d +%d,%d @@\n", lineStart(beforeLines), len(beforeLines), lineStart(afterLines), len(afterLines))
-	for _, line := range beforeLines {
-		output.WriteByte('-')
-		output.WriteString(line)
-		ensureDiffLineBreak(&output, line)
-	}
-	for _, line := range afterLines {
-		output.WriteByte('+')
-		output.WriteString(line)
-		ensureDiffLineBreak(&output, line)
-	}
-	return output.String()
+	return udiff.Unified(fromLabel, toLabel, sourceDiffContent(before), sourceDiffContent(after))
 }
 
-func sourceLines(content *string) []string {
-	if content == nil || *content == "" {
-		return nil
+func sourceDiffLabel(prefix, path string, content *string) string {
+	if content == nil {
+		return "/dev/null"
 	}
-	return strings.SplitAfter(*content, "\n")
+	return fmt.Sprintf("%s/%s", prefix, path)
 }
 
-func lineStart(lines []string) int {
-	if len(lines) == 0 {
-		return 0
+func sourceDiffContent(content *string) string {
+	if content == nil {
+		return ""
 	}
-	return 1
+	return *content
 }
 
-func ensureDiffLineBreak(output *strings.Builder, line string) {
-	if !strings.HasSuffix(line, "\n") {
-		output.WriteByte('\n')
-	}
+func emptyFileTransitionDiff(fromLabel, toLabel string) string {
+	return fmt.Sprintf("--- %s\n+++ %s\n@@ -0,0 +0,0 @@\n", fromLabel, toLabel)
 }
