@@ -589,9 +589,9 @@ type eventView struct {
 	RecordingOverheadMS int64
 	Tokens              *benchrecord.TokenUsage
 	TokenStatus         benchrecord.TokenStatus
-	Sampling            string
-	Input               string
-	Returned            string
+	Sampling            *payloadView
+	Input               *payloadView
+	Returned            *payloadView
 	ReturnedMessages    []messageView
 	Error               string
 	Partial             bool
@@ -603,13 +603,18 @@ type eventView struct {
 	ToolName            string
 	Operation           string
 	Provenance          string
-	Arguments           string
-	Request             string
-	Result              string
+	Arguments           *payloadView
+	Request             *payloadView
+	Result              *payloadView
+}
+
+type payloadView struct {
+	Label string
+	JSON  string
 }
 
 type messageView struct {
-	JSON    string
+	Payload payloadView
 	Content string
 	HasText bool
 }
@@ -854,6 +859,12 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 	if err != nil {
 		return eventView{}, err
 	}
+	argumentsLabel := "Tool arguments (JSON)"
+	resultLabel := "Tool result (JSON)"
+	if event.Type == "adapter_operation" {
+		argumentsLabel = "Adapter Operation arguments (JSON)"
+		resultLabel = "Adapter Operation result (JSON)"
+	}
 	view := eventView{
 		Sequence:            event.Sequence,
 		Type:                event.Type,
@@ -868,9 +879,9 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		RecordingOverheadMS: event.RecordingOverheadMS,
 		Tokens:              event.Tokens,
 		TokenStatus:         tokenStatus(event.Tokens),
-		Sampling:            formatJSON(mustMarshal(event.Sampling)),
-		Input:               formatJSON(input),
-		Returned:            formatJSON(event.Returned),
+		Sampling:            newSamplingPayload(event.Sampling),
+		Input:               newRequiredJSONPayload("Exact model input (JSON)", input),
+		Returned:            newJSONPayload("Returned model response (JSON)", event.Returned),
 		Error:               event.Error,
 		Partial:             EventIsIncomplete(event),
 		ModelToolCall:       event.Type == "model_tool_call",
@@ -881,12 +892,16 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		ToolName:            event.ToolName,
 		Operation:           event.Operation,
 		Provenance:          event.Provenance,
-		Arguments:           formatJSON(event.Arguments),
-		Request:             formatJSON(event.Request),
-		Result:              formatJSON(event.Result),
+		Arguments:           newJSONPayload(argumentsLabel, event.Arguments),
+		Request:             newJSONPayload("Tool request (JSON)", event.Request),
+		Result:              newJSONPayload(resultLabel, event.Result),
 	}
-	for _, rawMessage := range event.ReturnedMessages {
-		message := messageView{JSON: formatJSON(rawMessage)}
+	for index, rawMessage := range event.ReturnedMessages {
+		messagePayload := newRequiredJSONPayload(
+			fmt.Sprintf("Returned model message %d (JSON)", index+1),
+			rawMessage,
+		)
+		message := messageView{Payload: *messagePayload}
 		var decoded map[string]any
 		if err := json.Unmarshal(rawMessage, &decoded); err == nil {
 			if content, ok := decoded["content"].(string); ok && strings.TrimSpace(content) != "" {
@@ -897,6 +912,34 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		view.ReturnedMessages = append(view.ReturnedMessages, message)
 	}
 	return view, nil
+}
+
+func newSamplingPayload(settings map[string]any) *payloadView {
+	if settings == nil {
+		return nil
+	}
+	return &payloadView{
+		Label: "Effective sampling settings (JSON)",
+		JSON:  formatJSON(mustMarshal(settings)),
+	}
+}
+
+func newJSONPayload(label string, raw json.RawMessage) *payloadView {
+	if !hasJSONPayload(raw) {
+		return nil
+	}
+	return &payloadView{Label: label, JSON: formatJSON(raw)}
+}
+
+func newRequiredJSONPayload(label string, raw json.RawMessage) *payloadView {
+	return &payloadView{Label: label, JSON: formatJSON(raw)}
+}
+
+func hasJSONPayload(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	hasContent := len(trimmed) > 0
+	isNull := bytes.Equal(trimmed, []byte("null"))
+	return hasContent && !isNull
 }
 
 func tokenStatus(tokens *benchrecord.TokenUsage) benchrecord.TokenStatus {
@@ -1140,6 +1183,8 @@ header { border-bottom: 1px solid #d0d7de; padding-bottom: 1rem; }
 .activity-entry { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
 .activity-entry.partial { border-color: #bf8700; }
 .activity-entry summary { cursor: pointer; font-weight: 700; }
+.payload { border: 1px solid #d0d7de; border-radius: .3rem; margin: .75rem 0; padding: .5rem .75rem; }
+.payload summary { cursor: pointer; font-weight: 700; }
 .file-history { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
 .file-history summary { cursor: pointer; font-weight: 700; }
 .source-change { border: 1px solid #d0d7de; border-radius: .4rem; margin: 1rem 0; padding: .75rem 1rem; }
@@ -1406,9 +1451,9 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
 {{if .DurationReported}}<div><span>Execution time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
 </div>
-<h4>Tool arguments</h4><pre>{{.Arguments}}</pre>
-<h4>Tool request</h4><pre>{{.Request}}</pre>
-<h4>Tool result</h4><pre>{{.Result}}</pre>
+{{template "payload" .Arguments}}
+{{template "payload" .Request}}
+{{template "payload" .Result}}
 {{with .Error}}<p>Tool error: {{.}}</p>{{end}}
 {{if .Partial}}<p class="empty">Incomplete Model Tool Call: execution did not produce a terminal result.</p>{{end}}
 </details>
@@ -1425,8 +1470,8 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .EndedAt}}<div><span>Ended</span><strong>{{.}}</strong></div>{{end}}
 {{if .DurationReported}}<div><span>Execution time</span><strong>{{.DurationMS}} ms</strong></div>{{end}}
 </div>
-<h4>Operation arguments</h4><pre>{{.Arguments}}</pre>
-<h4>Operation result</h4><pre>{{.Result}}</pre>
+{{template "payload" .Arguments}}
+{{template "payload" .Result}}
 {{with .Error}}<p>Operation error: {{.}}</p>{{end}}
 {{if .Partial}}<p class="empty">Incomplete Adapter Operation: execution did not produce a terminal result.</p>{{end}}
 </details>
@@ -1442,14 +1487,13 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{with .RecordingOverheadMS}}<div><span>Audit-recording overhead</span><strong>{{.}} ms</strong></div>{{end}}
 <div><span>Token usage</span><strong>{{.TokenStatus}}</strong></div>
 </div>
-<h4>Exact model input</h4>
-<pre>{{.Input}}</pre>
-{{if .Sampling}}<h4>Effective sampling settings</h4><pre>{{.Sampling}}</pre>{{end}}
-{{if .Returned}}<h4>Returned model response</h4><pre>{{.Returned}}</pre>{{end}}
+{{template "payload" .Input}}
+{{template "payload" .Sampling}}
+{{template "payload" .Returned}}
 {{if .ReturnedMessages}}
 <h4>Returned model messages</h4>
 {{range .ReturnedMessages}}
-<pre>{{.JSON}}</pre>
+{{template "payload" .Payload}}
 {{if .HasText}}<div class="rationale"><p class="label">Model's stated rationale</p><pre>{{.Content}}</pre></div>{{end}}
 {{end}}
 {{end}}
@@ -1466,4 +1510,10 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 {{end}}
 </body>
 </html>
+{{define "payload"}}
+{{with .}}<details class="payload">
+<summary>{{.Label}}</summary>
+<pre>{{.JSON}}</pre>
+</details>{{end}}
+{{end}}
 `))
