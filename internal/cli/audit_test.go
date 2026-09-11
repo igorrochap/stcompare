@@ -18,6 +18,11 @@ func TestAuditRenderCommandWritesReportWithoutComparisonArtifact(t *testing.T) {
 		SchemaVersion: audit.SchemaVersion,
 		Run:           audit.Run{ID: "run-1", Agent: "local-model", Model: "model"},
 		Capture:       audit.Capture{Enabled: true, Status: "complete", Complete: true},
+		Events: []audit.Event{{
+			Type:   "model_turn",
+			Status: "completed",
+			Input:  json.RawMessage(`{"messages":[{"role":"user","content":"saved evidence"}]}`),
+		}},
 	})
 	if err != nil {
 		t.Fatalf("marshal audit fixture: %v", err)
@@ -35,7 +40,10 @@ func TestAuditRenderCommandWritesReportWithoutComparisonArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read audit report: %v", err)
 	}
-	if !strings.Contains(string(report), "Model-turn audit") {
+	reportHTML := string(report)
+	if !strings.Contains(reportHTML, "Model-turn audit") ||
+		!strings.Contains(reportHTML, `<summary>Exact model input (JSON)</summary>`) ||
+		strings.Contains(reportHTML, `<details class="payload" open>`) {
 		t.Fatalf("audit report missing title: %s", report)
 	}
 }

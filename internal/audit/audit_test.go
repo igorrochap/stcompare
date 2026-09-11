@@ -69,6 +69,157 @@ func TestRenderShowsChronologicalTurnsAndModelRationale(t *testing.T) {
 	}
 }
 
+func TestRenderCollapsesJSONPayloadsWithIndependentDisclosureControls(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Run:           Run{ID: "run-payloads"},
+		Capture:       Capture{Enabled: true, Status: "partial", Complete: false},
+		Iterations:    []Iteration{{ID: "iteration-1", Number: 1}},
+		Events: []Event{
+			{
+				Sequence:    1,
+				Type:        "model_turn",
+				Iteration:   1,
+				IterationID: "iteration-1",
+				TurnID:      "turn-1",
+				Status:      "failed",
+				StartedAt:   "started",
+				EndedAt:     "ended",
+				DurationMS:  42,
+				Input:       json.RawMessage(`{"messages":[{"role":"user","content":"<payload>"}]}`),
+				Sampling:    map[string]any{"temperature": 0.2},
+				Returned:    json.RawMessage(`{"error":"model unavailable"}`),
+				ReturnedMessages: []json.RawMessage{
+					json.RawMessage(`{"role":"assistant","content":"first rationale"}`),
+					json.RawMessage(`{"role":"tool","content":"second message"}`),
+				},
+				Error: "model unavailable",
+			},
+			{
+				Sequence:    2,
+				Type:        "model_tool_call",
+				Iteration:   1,
+				IterationID: "iteration-1",
+				TurnID:      "turn-1",
+				ID:          "tool-1",
+				ToolName:    "read_file",
+				Status:      "completed",
+				Arguments:   json.RawMessage(`{"path":"api.py"}`),
+				Request:     json.RawMessage(`{"name":"read_file"}`),
+				Result:      json.RawMessage(`{"content":"<source>"}`),
+			},
+			{
+				Sequence:    3,
+				Type:        "adapter_operation",
+				Iteration:   1,
+				IterationID: "iteration-1",
+				TurnID:      "turn-1",
+				ID:          "operation-1",
+				Operation:   "validate_patch",
+				Status:      "completed",
+				Arguments:   json.RawMessage(`{"patch":"diff"}`),
+				Result:      json.RawMessage(`{"valid":true}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render audit payloads: %v", err)
+	}
+
+	for _, label := range []string{
+		"Exact model input (JSON)",
+		"Effective sampling settings (JSON)",
+		"Returned model response (JSON)",
+		"Returned model message 1 (JSON)",
+		"Returned model message 2 (JSON)",
+		"Tool arguments (JSON)",
+		"Tool request (JSON)",
+		"Tool result (JSON)",
+		"Adapter Operation arguments (JSON)",
+		"Adapter Operation result (JSON)",
+	} {
+		if !strings.Contains(html, "<summary>"+label+"</summary>") {
+			t.Fatalf("audit HTML missing JSON disclosure label %q:\n%s", label, html)
+		}
+	}
+	if got := strings.Count(html, `<details class="payload">`); got != 10 {
+		t.Fatalf("JSON disclosure count = %d, want one control per payload", got)
+	}
+	if strings.Contains(html, `<details class="payload" open>`) {
+		t.Fatalf("JSON disclosure is open by default:\n%s", html)
+	}
+	for _, fragment := range []string{
+		"turn-1", "failed", "started", "ended", "42 ms", "model unavailable",
+		"first rationale", "&lt;payload&gt;", "&lt;source&gt;",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("audit HTML missing visible or escaped evidence %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestRenderShowsPlaceholdersForMissingCorePayloadsAndOmitsOptionalPayloads(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		Iterations:    []Iteration{{ID: "iteration-1", Number: 1}},
+		Events: []Event{
+			{
+				Type:             "model_turn",
+				IterationID:      "iteration-1",
+				Status:           "completed",
+				Input:            json.RawMessage(`null`),
+				Returned:         json.RawMessage(`null`),
+				ReturnedMessages: []json.RawMessage{json.RawMessage(`null`)},
+			},
+			{
+				Type:        "model_tool_call",
+				IterationID: "iteration-1",
+				Status:      "completed",
+				ID:          "tool-1",
+				Arguments:   json.RawMessage(`null`),
+				Request:     json.RawMessage(`null`),
+				Result:      json.RawMessage(`null`),
+			},
+			{
+				Type:        "adapter_operation",
+				IterationID: "iteration-1",
+				Status:      "completed",
+				ID:          "operation-1",
+				Arguments:   json.RawMessage(`null`),
+				Result:      json.RawMessage(`null`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render audit without optional payloads: %v", err)
+	}
+	for _, label := range []string{
+		"Effective sampling settings (JSON)",
+		"Returned model response (JSON)",
+		"Tool arguments (JSON)",
+		"Tool request (JSON)",
+		"Tool result (JSON)",
+		"Adapter Operation arguments (JSON)",
+		"Adapter Operation result (JSON)",
+	} {
+		if strings.Contains(html, label) {
+			t.Fatalf("audit HTML showed missing JSON disclosure %q:\n%s", label, html)
+		}
+	}
+	for _, label := range []string{
+		"Exact model input (JSON)",
+		"Returned model message 1 (JSON)",
+	} {
+		if !strings.Contains(html, "<summary>"+label+"</summary>") {
+			t.Fatalf("audit HTML omitted missing core payload %q:\n%s", label, html)
+		}
+	}
+	if got := strings.Count(html, "not captured"); got != 2 {
+		t.Fatalf("missing core payload placeholders = %d, want two:\n%s", got, html)
+	}
+}
+
 func TestSummarizeActivityCountsCallsAndAdapterOperationsByIteration(t *testing.T) {
 	document := Artifact{
 		SchemaVersion: SchemaVersion,
@@ -984,7 +1135,13 @@ func TestBuildWritesStandaloneAuditReport(t *testing.T) {
 		SchemaVersion: SchemaVersion,
 		Run:           Run{ID: "run-1"},
 		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
-		Events:        []Event{},
+		Iterations:    []Iteration{{ID: "iteration-1", Number: 1}},
+		Events: []Event{{
+			Type:        "model_turn",
+			IterationID: "iteration-1",
+			Status:      "completed",
+			Input:       json.RawMessage(`{"messages":[{"role":"user","content":"saved evidence"}]}`),
+		}},
 	}
 	contents, err := json.Marshal(document)
 	if err != nil {
@@ -998,6 +1155,14 @@ func TestBuildWritesStandaloneAuditReport(t *testing.T) {
 	}
 	if _, err := os.Stat(outputPath); err != nil {
 		t.Fatalf("audit report: %v", err)
+	}
+	rendered, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read audit report: %v", err)
+	}
+	if !strings.Contains(string(rendered), `<summary>Exact model input (JSON)</summary>`) ||
+		strings.Contains(string(rendered), `<details class="payload" open>`) {
+		t.Fatalf("saved audit report did not render its payload collapsed:\n%s", rendered)
 	}
 }
 
