@@ -2301,6 +2301,376 @@ func TestNewReportClassifiesPositiveDataAcceptanceOutcomes(t *testing.T) {
 	}
 }
 
+func TestNewReportClassifiesIgnoredAuthReplayOutcomes(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+	}{
+		{
+			name:            "candidate accepts unauthenticated request",
+			candidateStatus: 200,
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonAcceptedUnauthenticatedRequest,
+		},
+		{
+			name:            "candidate rejects unauthenticated request with unauthorized",
+			candidateStatus: 401,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonAuthenticationRejected,
+		},
+		{
+			name:            "candidate rejects unauthenticated request with forbidden",
+			candidateStatus: 403,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonAuthenticationRejected,
+		},
+		{
+			name:            "candidate returns server error",
+			candidateStatus: 503,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+		{
+			name:            "candidate changes to redirect",
+			candidateStatus: 302,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newSingleProblemReport("ignored_auth", test.candidateStatus)
+
+			got := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Evaluable int
+			}{
+				Category:  document.Problems[0].CheckCategory,
+				Outcome:   document.Problems[0].Outcome,
+				Reason:    document.Problems[0].OutcomeReason,
+				Evaluable: document.Summary.BaselineProblems.Evaluable,
+			}
+			want := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Evaluable int
+			}{
+				Category:  checkCategoryIgnoredAuth,
+				Outcome:   test.wantOutcome,
+				Reason:    test.wantReason,
+				Evaluable: 1,
+			}
+			if got != want {
+				t.Fatalf("newReport ignored-auth outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportClassifiesUseAfterFreeReplayOutcomes(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+	}{
+		{
+			name:            "candidate still exposes deleted resource",
+			candidateStatus: 200,
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonDeletedResourceStillAvailable,
+		},
+		{
+			name:            "candidate returns configured not found status",
+			candidateStatus: 404,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonMissingResourceResponse,
+		},
+		{
+			name:            "candidate returns configured gone status",
+			candidateStatus: 410,
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonMissingResourceResponse,
+		},
+		{
+			name:            "candidate returns server error",
+			candidateStatus: 503,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+		{
+			name:            "candidate returns another client error",
+			candidateStatus: 400,
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newLifecycleProblemReport(
+				"use_after_free",
+				200,
+				test.candidateStatus,
+				"https://baseline.example.test/widgets/a8f31",
+				PreconditionPolicy{
+					MissingResourceStatuses: []int{404, 410},
+					Heuristics: []PreconditionHeuristic{
+						NewPreconditionHeuristic(
+							"generated-widget",
+							"GET",
+							`^/widgets/[0-9a-f]+$`,
+						),
+					},
+				},
+			)
+
+			got := struct {
+				Category                     checkCategory
+				Outcome                      problemOutcome
+				Reason                       problemOutcomeReason
+				MatchedPreconditionHeuristic string
+				Evaluable                    int
+			}{
+				Category:                     document.Problems[0].CheckCategory,
+				Outcome:                      document.Problems[0].Outcome,
+				Reason:                       document.Problems[0].OutcomeReason,
+				MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+				Evaluable:                    document.Summary.BaselineProblems.Evaluable,
+			}
+			want := struct {
+				Category                     checkCategory
+				Outcome                      problemOutcome
+				Reason                       problemOutcomeReason
+				MatchedPreconditionHeuristic string
+				Evaluable                    int
+			}{
+				Category:  checkCategoryUseAfterFree,
+				Outcome:   test.wantOutcome,
+				Reason:    test.wantReason,
+				Evaluable: 1,
+			}
+			if got != want {
+				t.Fatalf("newReport use-after-free outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportKeepsUseAfterFreePreconditionLossInconclusive(t *testing.T) {
+	document := newLifecycleProblemReport(
+		"use_after_free",
+		200,
+		404,
+		"https://baseline.example.test/widgets/b9e42",
+		PreconditionPolicy{
+			MissingResourceStatuses: []int{404, 410},
+			Heuristics: []PreconditionHeuristic{
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f-]+$`,
+				),
+			},
+		},
+	)
+
+	got := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:                      document.Problems[0].Outcome,
+		OutcomeReason:                document.Problems[0].OutcomeReason,
+		MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+	}
+	want := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:                      problemOutcomeInconclusive,
+		OutcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+		MatchedPreconditionHeuristic: "generated-widget",
+	}
+	if got != want {
+		t.Fatalf("newReport use-after-free precondition loss = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportKeepsEnsureResourceAvailabilityPreconditionLossInconclusive(
+	t *testing.T,
+) {
+	document := newLifecycleProblemReport(
+		"ensure_resource_availability",
+		200,
+		404,
+		"https://baseline.example.test/widgets/a8f31",
+		PreconditionPolicy{
+			MissingResourceStatuses: []int{404, 410},
+			Heuristics: []PreconditionHeuristic{
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
+			},
+		},
+	)
+
+	got := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:                      document.Problems[0].Outcome,
+		OutcomeReason:                document.Problems[0].OutcomeReason,
+		MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+	}
+	want := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:                      problemOutcomeInconclusive,
+		OutcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+		MatchedPreconditionHeuristic: "generated-widget",
+	}
+	if got != want {
+		t.Fatalf("newReport ensure-resource-availability precondition loss = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewReportClassifiesEnsureResourceAvailabilityReplayOutcomes(t *testing.T) {
+	tests := []struct {
+		name            string
+		candidateStatus int
+		requestURL      string
+		wantOutcome     problemOutcome
+		wantReason      problemOutcomeReason
+	}{
+		{
+			name:            "candidate keeps created resource unavailable",
+			candidateStatus: 404,
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			wantOutcome:     problemOutcomeStillFailing,
+			wantReason:      problemOutcomeReasonCreatedResourceUnavailable,
+		},
+		{
+			name:            "candidate retrieves created resource",
+			candidateStatus: 200,
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			wantOutcome:     problemOutcomeFixed,
+			wantReason:      problemOutcomeReasonCreatedResourceAvailable,
+		},
+		{
+			name:            "candidate request loses created resource identifier",
+			candidateStatus: 200,
+			requestURL:      "https://baseline.example.test/widgets/candidate-id",
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonExerciseEvidenceMissing,
+		},
+		{
+			name:            "candidate returns server error",
+			candidateStatus: 503,
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+		{
+			name:            "candidate returns state conflict",
+			candidateStatus: 409,
+			requestURL:      "https://baseline.example.test/widgets/a8f31",
+			wantOutcome:     problemOutcomeInconclusive,
+			wantReason:      problemOutcomeReasonChangedOutcome,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := newLifecycleProblemReport(
+				"ensure_resource_availability",
+				404,
+				test.candidateStatus,
+				test.requestURL,
+				PreconditionPolicy{},
+			)
+
+			got := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Evaluable int
+			}{
+				Category:  document.Problems[0].CheckCategory,
+				Outcome:   document.Problems[0].Outcome,
+				Reason:    document.Problems[0].OutcomeReason,
+				Evaluable: document.Summary.BaselineProblems.Evaluable,
+			}
+			want := struct {
+				Category  checkCategory
+				Outcome   problemOutcome
+				Reason    problemOutcomeReason
+				Evaluable int
+			}{
+				Category:  checkCategoryEnsureResourceAvailability,
+				Outcome:   test.wantOutcome,
+				Reason:    test.wantReason,
+				Evaluable: 1,
+			}
+			if got != want {
+				t.Fatalf("newReport resource-availability outcome = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestNewReportClassifiesIgnoredAuthRejectionBeforePreconditionLoss(t *testing.T) {
+	document := newLifecycleProblemReport(
+		"ignored_auth",
+		200,
+		403,
+		"https://baseline.example.test/widgets/a8f31",
+		PreconditionPolicy{
+			MissingResourceStatuses: []int{403},
+			Heuristics: []PreconditionHeuristic{
+				NewPreconditionHeuristic(
+					"generated-widget",
+					"GET",
+					`^/widgets/[0-9a-f]+$`,
+				),
+			},
+		},
+	)
+
+	got := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:                      document.Problems[0].Outcome,
+		OutcomeReason:                document.Problems[0].OutcomeReason,
+		MatchedPreconditionHeuristic: document.Problems[0].MatchedPreconditionHeuristic,
+	}
+	want := struct {
+		Outcome                      problemOutcome
+		OutcomeReason                problemOutcomeReason
+		MatchedPreconditionHeuristic string
+	}{
+		Outcome:       problemOutcomeFixed,
+		OutcomeReason: problemOutcomeReasonAuthenticationRejected,
+	}
+	if got != want {
+		t.Fatalf("newReport ignored-auth precondition precedence = %#v, want %#v", got, want)
+	}
+}
+
 func TestNewReportClassifiesResponseSchemaReplayEvidence(t *testing.T) {
 	interaction := 1
 	document := newReport(reportInput{
@@ -2576,6 +2946,51 @@ func newSingleProblemReport(checkName string, candidateStatus int) report {
 							Status:  candidateStatus,
 							Content: harContent{Text: `{"name":"Ada"}`},
 						},
+					},
+				},
+			},
+		},
+	})
+}
+
+func newLifecycleProblemReport(
+	checkName string,
+	baselineStatus int,
+	candidateStatus int,
+	requestURL string,
+	policy PreconditionPolicy,
+) report {
+	interaction := 1
+	return newReport(reportInput{
+		PreconditionPolicy: policy,
+		BaselineProblemEvidence: baselineProblemEvidence{
+			Available: true,
+			Problems: []baselineProblem{
+				{
+					CheckName:         checkName,
+					EvidenceSource:    evidenceSourceVCR,
+					CaseID:            "case-42",
+					CorrelationStatus: correlationStatusCorrelated,
+					Interaction:       &interaction,
+					Reproduction: problemReproduction{
+						Method: "GET",
+						URL:    "https://baseline.example.test/widgets/a8f31",
+					},
+				},
+			},
+		},
+		Interactions: []reportInteraction{
+			{
+				Baseline: harEntry{
+					Request: harRequest{
+						Method: "GET",
+						URL:    requestURL,
+					},
+					Response: &harResponse{Status: baselineStatus},
+				},
+				Replay: replayResult{
+					Entry: harEntry{
+						Response: &harResponse{Status: candidateStatus},
 					},
 				},
 			},

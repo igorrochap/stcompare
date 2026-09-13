@@ -235,8 +235,9 @@ wiring. Two existing seams, no new ones:
   slice only provides the counts and stable item identity that make them
   possible.
 - Token and time instrumentation — owned by the runner/adapters.
-- Expanding which check categories are evaluable — all five are already
-  evaluated; no change here.
+- Expanding which check categories are evaluable is handled by the comparison
+  contract; this spec does not prescribe the supported Schemathesis category
+  set.
 - Cost ($) derivation — a downstream analysis concern.
 - Building CI/CD and the depguard boundary ratchet — a separate follow-up.
 - Any change to `campaign run`, replay mechanics, normalization, or the
@@ -255,6 +256,5 @@ wiring. Two existing seams, no new ones:
   code reflects the true state regardless of output format.
 - Glossary: **Converged**, **Still Failing**, **Regression**, **Inconclusive**
   are defined in `CONTEXT.md`; use those terms verbatim in code and reports.
-- The README's baseline-problem section was updated this session to reflect that
-  all five check categories are evaluated; keep report/​doc wording consistent
-  with that when touching output.
+- The README's baseline-problem section reflects the supported check categories;
+  keep report/doc wording consistent with that when touching output.

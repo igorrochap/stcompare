@@ -563,8 +563,9 @@ include:
   has evidence for an outcome. Correlated problems whose check category is not
   yet supported are `unevaluable`, not inconclusive. Check-specific evaluation
   covers the Schemathesis server-error, negative-data-rejection,
-  positive-data-acceptance, response-schema-conformance, and
-  status-code-conformance checks; only uncategorized checks remain
+  positive-data-acceptance, response-schema-conformance, status-code-conformance,
+  ignored-auth, use-after-free, and ensure-resource-availability checks; only
+  uncategorized checks remain
   `unevaluable`. Generated-resource
   precondition-loss evidence can make a correlated problem of any supported
   check category evaluable and inconclusive. A correlated `not_a_server_error`

@@ -40,27 +40,36 @@ func classifyProblem(
 		}
 	}
 
-	heuristic, matched := matchingPreconditionHeuristic(policy, interaction)
-	if matched {
-		return problemClassification{
-			outcome:                      problemOutcomeInconclusive,
-			outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
-			exerciseEvidence:             exerciseEvidenceWithPreconditionLoss(problem, interaction, policy),
-			matchedPreconditionHeuristic: heuristic.Name,
-		}
-	}
-
 	classifyCategory, ok := problemClassifiersByCategory[problem.CheckCategory]
 	if !ok {
 		return problemClassification{}
 	}
 
-	return classifyCategory(problemClassificationInput{
+	input := problemClassificationInput{
 		problem:          problem,
 		interaction:      interaction,
 		policy:           policy,
 		schemaValidation: schemaValidation,
-	})
+	}
+	if shouldPrioritizeCategoryClassification(
+		problem.CheckCategory,
+		interaction.CandidateResponse.Status,
+	) {
+		classification := classifyCategory(input)
+		if classification.outcome != problemOutcomeInconclusive {
+			return classification
+		}
+		if classification, ok := classifyGeneratedResourcePreconditionLoss(input); ok {
+			return classification
+		}
+		return classification
+	}
+
+	if classification, ok := classifyGeneratedResourcePreconditionLoss(input); ok {
+		return classification
+	}
+
+	return classifyCategory(input)
 }
 
 type problemClassificationInput struct {
@@ -73,11 +82,14 @@ type problemClassificationInput struct {
 type problemClassifier func(problemClassificationInput) problemClassification
 
 var problemClassifiersByCategory = map[checkCategory]problemClassifier{
-	checkCategoryServerError:               classifyServerErrorProblem,
-	checkCategoryNegativeDataRejection:     classifyNegativeDataRejectionProblem,
-	checkCategoryPositiveDataAcceptance:    classifyPositiveDataAcceptanceProblem,
-	checkCategoryResponseSchemaConformance: classifyResponseSchemaProblem,
-	checkCategoryStatusCodeConformance:     classifyStatusCodeConformanceProblem,
+	checkCategoryServerError:                classifyServerErrorProblem,
+	checkCategoryNegativeDataRejection:      classifyNegativeDataRejectionProblem,
+	checkCategoryPositiveDataAcceptance:     classifyPositiveDataAcceptanceProblem,
+	checkCategoryResponseSchemaConformance:  classifyResponseSchemaProblem,
+	checkCategoryStatusCodeConformance:      classifyStatusCodeConformanceProblem,
+	checkCategoryIgnoredAuth:                classifyIgnoredAuthProblem,
+	checkCategoryUseAfterFree:               classifyUseAfterFreeProblem,
+	checkCategoryEnsureResourceAvailability: classifyEnsureResourceAvailabilityProblem,
 }
 
 func classifyServerErrorProblem(input problemClassificationInput) problemClassification {
@@ -308,6 +320,124 @@ func classifyStatusCodeByBehavior(
 	}
 }
 
+func classifyIgnoredAuthProblem(input problemClassificationInput) problemClassification {
+	if isSuccessStatus(input.interaction.CandidateResponse.Status) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeStillFailing,
+			problemOutcomeReasonAcceptedUnauthenticatedRequest,
+		)
+	}
+
+	if isAuthenticationRejectionStatus(input.interaction.CandidateResponse.Status) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeFixed,
+			problemOutcomeReasonAuthenticationRejected,
+		)
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonChangedOutcome,
+	}
+}
+
+func classifyUseAfterFreeProblem(input problemClassificationInput) problemClassification {
+	if isResourceAccessibleStatus(input.interaction.CandidateResponse.Status) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeStillFailing,
+			problemOutcomeReasonDeletedResourceStillAvailable,
+		)
+	}
+
+	if isConfiguredMissingResourceStatus(
+		input.policy,
+		input.interaction.CandidateResponse.Status,
+	) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeFixed,
+			problemOutcomeReasonMissingResourceResponse,
+		)
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonChangedOutcome,
+	}
+}
+
+func classifyEnsureResourceAvailabilityProblem(
+	input problemClassificationInput,
+) problemClassification {
+	if isUnavailableCreatedResourceStatus(
+		input.policy,
+		input.interaction.CandidateResponse.Status,
+	) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeStillFailing,
+			problemOutcomeReasonCreatedResourceUnavailable,
+		)
+	}
+
+	if isSuccessStatus(input.interaction.CandidateResponse.Status) {
+		return classifyWithRequestExerciseEvidence(
+			input,
+			problemOutcomeFixed,
+			problemOutcomeReasonCreatedResourceAvailable,
+		)
+	}
+
+	return problemClassification{
+		outcome:       problemOutcomeInconclusive,
+		outcomeReason: problemOutcomeReasonChangedOutcome,
+	}
+}
+
+func classifyWithRequestExerciseEvidence(
+	input problemClassificationInput,
+	outcome problemOutcome,
+	reason problemOutcomeReason,
+) problemClassification {
+	evidence := exerciseEvidenceWithNoPreconditionLoss(
+		input.problem,
+		input.interaction,
+		input.policy,
+	)
+	if !hasRequestExerciseEvidence(evidence) {
+		return problemClassification{
+			outcome:          problemOutcomeInconclusive,
+			outcomeReason:    problemOutcomeReasonExerciseEvidenceMissing,
+			exerciseEvidence: evidence,
+		}
+	}
+
+	return problemClassification{
+		outcome:          outcome,
+		outcomeReason:    reason,
+		exerciseEvidence: evidence,
+	}
+}
+
+func classifyGeneratedResourcePreconditionLoss(
+	input problemClassificationInput,
+) (problemClassification, bool) {
+	heuristic, matched := matchingPreconditionHeuristic(input.policy, input.interaction)
+	if !matched {
+		return problemClassification{}, false
+	}
+
+	return problemClassification{
+		outcome:                      problemOutcomeInconclusive,
+		outcomeReason:                problemOutcomeReasonGeneratedResourcePreconditionLoss,
+		exerciseEvidence:             exerciseEvidenceWithPreconditionLoss(input.problem, input.interaction, input.policy),
+		matchedPreconditionHeuristic: heuristic.Name,
+	}, true
+}
+
 func exerciseEvidenceWithPreconditionLoss(
 	problem baselineProblem,
 	interaction reportInteractionEvidence,
@@ -475,6 +605,27 @@ func matchingPreconditionHeuristic(
 	}
 
 	return PreconditionHeuristic{}, false
+}
+
+func shouldPrioritizeCategoryClassification(category checkCategory, status int) bool {
+	return category == checkCategoryUseAfterFree ||
+		category == checkCategoryIgnoredAuth && isAuthenticationRejectionStatus(status)
+}
+
+func isAuthenticationRejectionStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+func isConfiguredMissingResourceStatus(policy PreconditionPolicy, status int) bool {
+	return slices.Contains(policy.MissingResourceStatuses, status)
+}
+
+func isUnavailableCreatedResourceStatus(policy PreconditionPolicy, status int) bool {
+	return status == http.StatusNotFound || isConfiguredMissingResourceStatus(policy, status)
+}
+
+func isResourceAccessibleStatus(status int) bool {
+	return status >= http.StatusOK && status < http.StatusBadRequest
 }
 
 func isServerErrorCheck(name string) bool {
