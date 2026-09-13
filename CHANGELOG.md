@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.7.0 (2026-09-13)
+
+### Features
+
+- **comparison**: Add support for new Schemathesis check categories
+  ([#100](https://github.com/igorrochap/stcompare/pull/100),
+  [`25b830d`](https://github.com/igorrochap/stcompare/commit/25b830d3a62bdd5f56c65b049a435bbe3d11be77))
+
+
 ## v1.6.0 (2026-09-13)
 
 ### Bug Fixes
