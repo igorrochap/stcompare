@@ -41,9 +41,10 @@ problems remain unverified" rather than implying a clean bill of health.
   flat and stable-sorted (regressions first, then by operation), each with a
   stable identity so a caller can distinguish "same item still stuck" from "new
   item introduced by a fix".
-- All five check categories (`server_error`, `negative_data_rejection`,
-  `positive_data_acceptance`, `response_schema_conformance`,
-  `status_code_conformance`) are evaluated, so Converged spans every category —
-  not server errors alone.
+- All eight supported check categories (`server_error`,
+  `negative_data_rejection`, `positive_data_acceptance`,
+  `response_schema_conformance`, `status_code_conformance`, `ignored_auth`,
+  `use_after_free`, `ensure_resource_availability`) are evaluated, so Converged
+  spans every category — not server errors alone.
 - The exit code of `compare --format agent` is derived from `converged`
   (`0` converged, `2` not), keeping one source of truth.

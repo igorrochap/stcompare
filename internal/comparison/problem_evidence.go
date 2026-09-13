@@ -44,12 +44,15 @@ type baselineProblem struct {
 type checkCategory string
 
 const (
-	checkCategoryServerError               checkCategory = "server_error"
-	checkCategoryNegativeDataRejection     checkCategory = "negative_data_rejection"
-	checkCategoryResponseSchemaConformance checkCategory = "response_schema_conformance"
-	checkCategoryPositiveDataAcceptance    checkCategory = "positive_data_acceptance"
-	checkCategoryStatusCodeConformance     checkCategory = "status_code_conformance"
-	checkCategoryUncategorized             checkCategory = "uncategorized"
+	checkCategoryServerError                checkCategory = "server_error"
+	checkCategoryNegativeDataRejection      checkCategory = "negative_data_rejection"
+	checkCategoryResponseSchemaConformance  checkCategory = "response_schema_conformance"
+	checkCategoryPositiveDataAcceptance     checkCategory = "positive_data_acceptance"
+	checkCategoryStatusCodeConformance      checkCategory = "status_code_conformance"
+	checkCategoryIgnoredAuth                checkCategory = "ignored_auth"
+	checkCategoryUseAfterFree               checkCategory = "use_after_free"
+	checkCategoryEnsureResourceAvailability checkCategory = "ensure_resource_availability"
+	checkCategoryUncategorized              checkCategory = "uncategorized"
 )
 
 type problemOutcome string
@@ -90,6 +93,12 @@ const (
 	problemOutcomeReasonStatusCodeDocumented              problemOutcomeReason = "status_code_documented"
 	problemOutcomeReasonStatusCodeChanged                 problemOutcomeReason = "status_code_changed"
 	problemOutcomeReasonStatusCodeUndocumented            problemOutcomeReason = "status_code_undocumented"
+	problemOutcomeReasonAcceptedUnauthenticatedRequest    problemOutcomeReason = "accepted_unauthenticated_request"
+	problemOutcomeReasonAuthenticationRejected            problemOutcomeReason = "authentication_rejected"
+	problemOutcomeReasonDeletedResourceStillAvailable     problemOutcomeReason = "deleted_resource_still_available"
+	problemOutcomeReasonMissingResourceResponse           problemOutcomeReason = "missing_resource_response"
+	problemOutcomeReasonCreatedResourceUnavailable        problemOutcomeReason = "created_resource_unavailable"
+	problemOutcomeReasonCreatedResourceAvailable          problemOutcomeReason = "created_resource_available"
 	problemOutcomeReasonUncorrelatedEvidence              problemOutcomeReason = "uncorrelated_evidence"
 	problemOutcomeReasonAmbiguousCorrelation              problemOutcomeReason = "ambiguous_correlation"
 	problemOutcomeReasonReplayInteractionMissing          problemOutcomeReason = "replay_interaction_missing"
@@ -240,11 +249,14 @@ func categorizeCheckName(name string) checkCategory {
 }
 
 var checkCategoriesByName = map[string]checkCategory{
-	"not_a_server_error":          checkCategoryServerError,
-	"server error":                checkCategoryServerError,
-	"negative_data_rejection":     checkCategoryNegativeDataRejection,
-	"response_schema_conformance": checkCategoryResponseSchemaConformance,
-	"response violates schema":    checkCategoryResponseSchemaConformance,
-	"positive_data_acceptance":    checkCategoryPositiveDataAcceptance,
-	"status_code_conformance":     checkCategoryStatusCodeConformance,
+	"not_a_server_error":           checkCategoryServerError,
+	"server error":                 checkCategoryServerError,
+	"negative_data_rejection":      checkCategoryNegativeDataRejection,
+	"response_schema_conformance":  checkCategoryResponseSchemaConformance,
+	"response violates schema":     checkCategoryResponseSchemaConformance,
+	"positive_data_acceptance":     checkCategoryPositiveDataAcceptance,
+	"status_code_conformance":      checkCategoryStatusCodeConformance,
+	"ignored_auth":                 checkCategoryIgnoredAuth,
+	"use_after_free":               checkCategoryUseAfterFree,
+	"ensure_resource_availability": checkCategoryEnsureResourceAvailability,
 }
