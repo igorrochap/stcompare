@@ -2,6 +2,62 @@
 
 <!-- version list -->
 
+## v1.6.0 (2026-09-13)
+
+### Bug Fixes
+
+- **ci**: Adjust quality checks for import-only changes
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+### Features
+
+- **audit**: Add tool call and adapter operation activity tracking
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Capture and report final source evidence
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Collapse JSON payloads in HTML reports
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Implement comprehensive model turn audit system
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Implement focused source diffing
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Implement local-model turn audit system
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Implement model turn efficiency and overhead tracking
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **audit**: Track file modifications and edit attempts
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+### Refactoring
+
+- **audit**: Modularize source code ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **bench**: Extract helper functions for command and run logic
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+- **ui**: Extract HTML templates to separate files
+  ([#99](https://github.com/igorrochap/stcompare/pull/99),
+  [`743c05f`](https://github.com/igorrochap/stcompare/commit/743c05f000db78440f049a5e8096db5ac67a6ff5))
+
+
 ## v1.5.0 (2026-09-08)
 
 
