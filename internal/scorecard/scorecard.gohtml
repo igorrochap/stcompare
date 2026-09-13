@@ -1,0 +1,72 @@
+<section class="benchmark-run">
+<h2>Benchmark Run</h2>
+<p class="section-lede">Cost of producing the candidate fix.</p>
+<div class="identity">
+<div><span>Agent</span><strong>{{.Agent}}</strong></div>
+<div><span>Model</span><strong>{{.Model}}</strong></div>
+</div>
+<div class="counts">
+<div class="count"><span>Total time</span><strong>{{.TotalTime}}</strong></div>
+<div class="count"><span>Agent-fix time</span><strong>{{.AgentFixTime}}</strong></div>
+<div class="count"><span>Iterations</span><strong>{{.Iterations}}</strong></div>
+</div>
+<div class="category-counts">
+<h3>Token usage</h3>
+{{with .Tokens}}
+<div class="counts">
+<div class="count"><span>Input tokens</span><strong>{{.Input}}</strong></div>
+<div class="count"><span>Output tokens</span><strong>{{.Output}}</strong></div>
+<div class="count"><span>Total tokens</span><strong>{{.Total}}</strong></div>
+</div>
+{{else}}
+<p class="empty">not reported</p>
+{{end}}
+</div>
+{{if .EfficiencyAvailable}}
+<div class="category-counts">
+<h3>Efficiency summary <small>({{.Efficiency.Status}} evidence)</small></h3>
+<div class="counts">
+<div class="count"><span>Model turns</span><strong>{{.Efficiency.Turns}}</strong></div>
+<div class="count"><span>Inference time</span><strong>{{.Efficiency.InferenceMS}} ms</strong><small>{{.Efficiency.MeasuredInferenceTurns}} measured · {{.Efficiency.UnknownInferenceTurns}} unknown</small></div>
+<div class="count"><span>Audit-recording overhead</span><strong>{{.Efficiency.RecordingOverheadMS}} ms</strong><small>excluded from inference time</small></div>
+<div class="count"><span>Token evidence</span><strong>{{.Efficiency.TokenStatus}}</strong><small>{{.Efficiency.KnownTokenTurns}} known · {{.Efficiency.UnknownTokenTurns}} unknown</small></div>
+</div>
+{{with .Efficiency.Tokens}}<p>Known token subtotal: {{.Input}} input · {{.Output}} output · {{.Total}} total{{if eq $.Efficiency.TokenStatus "partial"}} (partial){{end}}.</p>{{else}}<p class="empty">Known token subtotal: unknown</p>{{end}}
+<p class="empty">Inference time is the server-request boundary captured by the audit. Existing total and agent-fix wall-clock fields include capture overhead.</p>
+</div>
+{{end}}
+<div class="category-counts">
+<h3>Model Tool Call activity{{with .Activity}} <small>({{.Status}} evidence)</small>{{end}}</h3>
+{{if .ActivityAvailable}}
+<div class="counts">
+<div class="count"><span>Model Tool Calls</span><strong>{{.Activity.ModelToolCalls.Count}}</strong></div>
+<div class="count"><span>Completed</span><strong>{{.Activity.ModelToolCalls.Completed}}</strong></div>
+<div class="count"><span>Failed</span><strong>{{.Activity.ModelToolCalls.Failed}}</strong></div>
+<div class="count"><span>Incomplete</span><strong>{{.Activity.ModelToolCalls.Incomplete}}</strong></div>
+<div class="count"><span>Execution time</span><strong>{{.Activity.ModelToolCalls.DurationMS}} ms</strong></div>
+</div>
+<div class="counts">
+<div class="count"><span>Edit Attempts</span><strong>{{.Activity.EditAttempts}}</strong></div>
+<div class="count"><span>File Modifications</span><strong>{{.Activity.FileModifications}}</strong></div>
+</div>
+<p>Adapter Operations: {{.Activity.AdapterOperations.Count}} ({{.Activity.AdapterOperations.DurationMS}} ms execution time)</p>
+{{else}}
+<p class="empty">not reported</p>
+{{end}}
+</div>
+{{with .FinalSource}}
+<div class="category-counts">
+<h3>Final source evidence</h3>
+<div class="counts">
+<div class="count"><span>Snapshot status</span><strong>{{.Status}}</strong></div>
+<div class="count"><span>Files Changed at the End</span><strong>{{.FilesChangedAtEnd}}</strong></div>
+</div>
+{{if eq .Status "unavailable"}}<p class="empty">Final source: unavailable; a complete net diff was not established.</p>{{else if eq .Status "partial"}}<p class="empty">Final source is partial; the count and diff are incomplete evidence.</p>{{end}}
+</div>
+{{end}}
+{{if .AuditAvailable}}
+<p><a href="{{.Audit.Report}}">View chronological model-turn audit</a> ({{.Audit.Status}})</p>
+{{else}}
+<p class="empty">Audit evidence: not reported</p>
+{{end}}
+</section>

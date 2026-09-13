@@ -3,6 +3,7 @@ package bench
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -12,12 +13,14 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"text/template"
 	"text/template/parse"
 	"time"
 
 	"stcompare/agentreport"
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 )
 
 //go:embed prompt.md
@@ -41,11 +44,12 @@ const (
 
 // AdapterMetadata identifies the execution configuration supplied to an adapter.
 type AdapterMetadata struct {
-	Agent       string   `json:"agent"`
-	Model       string   `json:"model"`
-	Effort      string   `json:"effort"`
-	Temperature *float64 `json:"temperature,omitempty"`
-	Hardware    string   `json:"hardware"`
+	Agent       string        `json:"agent"`
+	Model       string        `json:"model"`
+	Effort      string        `json:"effort"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	Hardware    string        `json:"hardware"`
+	Audit       *AuditContext `json:"audit,omitempty"`
 }
 
 // Config describes one benchmark run.
@@ -53,6 +57,10 @@ type Config struct {
 	AdapterMetadata
 	Candidate string
 	Baseline  string
+	// SourceDir is the candidate source tree captured for final source evidence.
+	// An empty value keeps library callers that do not request source evidence
+	// compatible with the existing runner contract.
+	SourceDir string
 
 	// Prompt identifies the versioned task prompt. A zero value uses the
 	// canonical prompt identity.
@@ -83,6 +91,14 @@ type Config struct {
 	// the agent fix is in flight. A zero value disables the heartbeat, keeping
 	// the loop silent between phase boundaries.
 	HeartbeatInterval time.Duration
+
+	// AuditPath enables the local-model audit protocol. A bundled adapter that
+	// understands the context writes this file incrementally.
+	AuditPath string
+	// AuditReportPath is the report path recorded alongside AuditPath.
+	AuditReportPath string
+	// RunID optionally supplies a stable identity for deterministic fixtures.
+	RunID string
 }
 
 // Dependencies contains the replaceable collaborators used by Run.
@@ -213,24 +229,18 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	if dependencies.Now == nil {
 		dependencies.Now = time.Now
 	}
-
-	if config.MaxIterations == 0 {
-		config.MaxIterations = DefaultMaxIterations
+	startedAt := dependencies.Now()
+	runID, err := resolveRunID(config.RunID, startedAt)
+	if err != nil {
+		return benchrecord.Record{}, fmt.Errorf("create benchmark run identity: %w", err)
 	}
-	if config.StallWindow == 0 {
-		config.StallWindow = DefaultStallWindow
-	}
-	if config.Prompt.ID == "" {
-		config.Prompt.ID = DefaultPromptID
-	}
-	if config.Prompt.Version == "" {
-		config.Prompt.Version = DefaultPromptVersion
-	}
+	config.RunID = runID
+	applyRunDefaults(&config)
 	config.Prompt.Hash = selectedPromptHash
 
-	startedAt := dependencies.Now()
 	record = benchrecord.Record{
 		SchemaVersion:        benchrecord.SchemaVersion,
+		RunID:                runID,
 		Agent:                config.Agent,
 		Model:                config.Model,
 		Effort:               config.Effort,
@@ -244,25 +254,17 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		RenderedPromptHashes: []string{},
 		AgentResponses:       []string{},
 		ProcessReuse:         config.ReuseProcess,
-		Final:                benchrecord.FinalSummary{},
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:      benchrecord.EfficiencyStatusNotReported,
+			TokenStatus: benchrecord.TokenStatusNotReported,
+		},
+		IterationEfficiency: []benchrecord.EfficiencySummary{},
+		Final:               benchrecord.FinalSummary{},
 	}
+	configureRunAudit(&config, &record, runID)
+	runnerEvidence := newRunnerAuditEvidence(config)
 	defer func() {
-		if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
-			record.ProcessReuse = reporter.ProcessReuseActive()
-		}
-		if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
-			if err := closer.Close(); err != nil {
-				closeErr := fmt.Errorf("close adapter: %w", err)
-				if runErr == nil {
-					if record.TerminalState != benchrecord.TerminalStateConverged {
-						record = finish(record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
-					}
-					runErr = closeErr
-				} else {
-					runErr = errors.Join(runErr, closeErr)
-				}
-			}
-		}
+		closeRunResources(config, dependencies, &record, &runErr, runnerEvidence)
 	}()
 
 	if config.BaselineExists != nil && !config.BaselineExists() {
@@ -277,16 +279,192 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 		dependencies,
 		&record.LifecyclePhase,
 		&record.Temperature,
+		runnerEvidence,
 	); err != nil {
 		report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressError, Err: err})
 		return finish(record, dependencies.Now(), state), err
 	}
 	report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressDone})
+	record.ProcessReuse = adapterProcessReuse(dependencies.Adapter, record.ProcessReuse)
+	runnerEvidence.captureStartingSource()
+
+	return runIterations(config, dependencies, selectedPrompt, record, startedAt, runnerEvidence)
+}
+
+func applyRunDefaults(config *Config) {
+	if config.MaxIterations == 0 {
+		config.MaxIterations = DefaultMaxIterations
+	}
+	if config.StallWindow == 0 {
+		config.StallWindow = DefaultStallWindow
+	}
+	if config.Prompt.ID == "" {
+		config.Prompt.ID = DefaultPromptID
+	}
+	if config.Prompt.Version == "" {
+		config.Prompt.Version = DefaultPromptVersion
+	}
+}
+
+func configureRunAudit(config *Config, record *benchrecord.Record, runID string) {
+	if config.AuditPath == "" {
+		return
+	}
+	config.Audit = &AuditContext{
+		Enabled:     true,
+		Path:        config.AuditPath,
+		RunID:       runID,
+		Candidate:   config.Candidate,
+		Baseline:    config.Baseline,
+		IterationID: "preflight",
+	}
+	record.Audit = benchrecord.AuditReference{
+		Status:   benchrecord.AuditStatusNotReported,
+		RunID:    runID,
+		Artifact: filepath.Base(config.AuditPath),
+		Report:   auditReportReference(config.AuditReportPath),
+	}
+}
+
+func closeRunResources(
+	config Config,
+	dependencies Dependencies,
+	record *benchrecord.Record,
+	runErr *error,
+	runnerEvidence *runnerAuditEvidence,
+) {
 	if reporter, ok := dependencies.Adapter.(ProcessReuseReporter); ok {
 		record.ProcessReuse = reporter.ProcessReuseActive()
 	}
+	if closer, ok := dependencies.Adapter.(AdapterCloser); ok {
+		if err := closer.Close(); err != nil {
+			closeErr := fmt.Errorf("close adapter: %w", err)
+			if *runErr == nil {
+				if record.TerminalState != benchrecord.TerminalStateConverged {
+					*record = finish(*record, dependencies.Now(), benchrecord.TerminalStateAdapterError)
+				}
+				*runErr = closeErr
+			} else {
+				*runErr = errors.Join(*runErr, closeErr)
+			}
+		}
+	}
+	if err := runnerEvidence.append(); err != nil {
+		applyAuditFailure(record, runErr, dependencies.Now, err)
+	}
+	finalizeAudit(config, dependencies.Now, record, runErr)
+}
 
-	return runIterations(config, dependencies, selectedPrompt, record, startedAt)
+func adapterProcessReuse(adapter Adapter, current bool) bool {
+	if reporter, ok := adapter.(ProcessReuseReporter); ok {
+		return reporter.ProcessReuseActive()
+	}
+	return current
+}
+
+func finalizeAudit(config Config, now func() time.Time, record *benchrecord.Record, runErr *error) {
+	if config.AuditPath == "" {
+		return
+	}
+	exists, err := auditArtifactExists(config.AuditPath)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, fmt.Errorf("inspect audit artifact: %w", err))
+		return
+	}
+	if !exists {
+		markExistingAuditFailure(record, *runErr)
+		return
+	}
+
+	auditFailure := auditFailureDescription(*runErr)
+	partial, err := auditCaptureIsPartial(config.AuditPath, *runErr)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, err)
+		return
+	}
+	if err := audit.Finalize(config.AuditPath, string(record.TerminalState), now(), partial, auditFailure); err != nil {
+		applyAuditFailure(record, runErr, now, err)
+		return
+	}
+	document, err := audit.Read(config.AuditPath)
+	if err != nil {
+		applyAuditFailure(record, runErr, now, fmt.Errorf("read finalized audit activity: %w", err))
+		return
+	}
+	activity := document.Activity
+	record.Audit.Activity = &activity
+	record.Efficiency = document.Efficiency
+	record.IterationEfficiency = make([]benchrecord.EfficiencySummary, 0, len(document.Iterations))
+	for _, iteration := range document.Iterations {
+		record.IterationEfficiency = append(record.IterationEfficiency, iteration.Efficiency)
+	}
+	if partial {
+		record.Audit.Status = benchrecord.AuditStatusPartial
+	} else {
+		record.Audit.Status = benchrecord.AuditStatusComplete
+	}
+}
+
+func auditCaptureIsPartial(path string, runErr error) (bool, error) {
+	document, err := audit.Read(path)
+	if err != nil {
+		return false, fmt.Errorf("read audit artifact for partial status: %w", err)
+	}
+	var auditFailure *AuditFailureError
+	if errors.As(runErr, &auditFailure) {
+		return true, nil
+	}
+	if document.Capture.Status == "partial" {
+		return true, nil
+	}
+	if document.FinalSource.Status == audit.SourceStatusPartial || document.FinalSource.Status == audit.SourceStatusUnavailable {
+		return true, nil
+	}
+	for _, event := range document.Events {
+		if audit.EventIsIncomplete(event) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func auditArtifactExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func auditFailureDescription(runErr error) string {
+	var failure *AuditFailureError
+	if errors.As(runErr, &failure) {
+		return failure.Error()
+	}
+	return ""
+}
+
+func applyAuditFailure(record *benchrecord.Record, runErr *error, now func() time.Time, err error) {
+	failure := &AuditFailureError{Err: err}
+	markAuditFailure(record, failure)
+	if *runErr == nil {
+		*record = finish(*record, now(), benchrecord.TerminalStateAuditError)
+		*runErr = failure
+		return
+	}
+	*runErr = errors.Join(*runErr, failure)
+}
+
+func markExistingAuditFailure(record *benchrecord.Record, runErr error) {
+	var failure *AuditFailureError
+	if errors.As(runErr, &failure) {
+		markAuditFailure(record, failure)
+	}
+}
+
+func markAuditFailure(record *benchrecord.Record, failure *AuditFailureError) {
+	record.Audit.Status = benchrecord.AuditStatusPartial
+	record.Audit.Error = failure.Error()
 }
 
 func runIterations(
@@ -295,6 +473,7 @@ func runIterations(
 	promptTemplate *template.Template,
 	record benchrecord.Record,
 	startedAt time.Time,
+	runnerEvidence *runnerAuditEvidence,
 ) (benchrecord.Record, error) {
 	record.Tokens = &benchrecord.TokenUsage{}
 	runner := iterationRunner{
@@ -303,9 +482,13 @@ func runIterations(
 		promptTemplate: promptTemplate,
 		record:         &record,
 		timer:          &phaseTimer{now: dependencies.Now, cursor: startedAt},
+		auditEvidence:  runnerEvidence,
 	}
 	for iteration := 1; iteration <= config.MaxIterations; iteration++ {
 		runner.record.Iterations = iteration
+		if runner.config.AuditPath != "" {
+			runner.config.Audit = runner.auditContext(iteration)
+		}
 		done, err := runner.runIteration(iteration == config.MaxIterations)
 		if done {
 			return *runner.record, err
@@ -323,6 +506,7 @@ type iterationRunner struct {
 	timer                  *phaseTimer
 	lastView               agentreport.View
 	progress               progressTracker
+	auditEvidence          *runnerAuditEvidence
 	unknownTokenIterations int
 	hasKnownTokens         bool
 }
@@ -330,6 +514,13 @@ type iterationRunner struct {
 func (runner *iterationRunner) report(event ProgressEvent) {
 	event.Iteration = runner.record.Iterations
 	report(runner.dependencies.Reporter, event)
+}
+
+func (runner *iterationRunner) auditLifecycle(
+	phase benchrecord.LifecyclePhase,
+	action func() error,
+) error {
+	return runner.auditEvidence.auditLifecycle(phase, action)
 }
 
 // withAgentFixHeartbeat runs fix while emitting ProgressWaiting events on the
@@ -383,34 +574,72 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 			func(phase benchrecord.LifecyclePhase, state string, phaseErr error) {
 				runner.report(ProgressEvent{Phase: string(phase), State: state, Err: phaseErr})
 			},
+			runner.auditLifecycle,
 		)
 	}); err != nil {
 		runner.record.Final = finalSummary(runner.lastView)
 		return true, runner.bail(benchrecord.TerminalStateLifecycleError, err)
 	}
 
-	var view agentreport.View
-	var exitCode int
-	runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressStart})
-	if err := runner.timer.run(&runner.record.TimeMS.Compare, func() error {
-		var err error
-		view, exitCode, err = runner.dependencies.Comparator.Compare(runner.config)
-		return err
-	}); err != nil {
+	view, exitCode, err := runner.compare()
+	if err != nil {
 		runner.record.Final = finalSummary(view)
-		runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressError, Err: err})
 		return true, runner.bail(
 			benchrecord.TerminalStateToolError,
 			fmt.Errorf("compare: %w", err),
 		)
 	}
-	runner.report(ProgressEvent{
-		Phase:        ProgressPhaseCompare,
-		State:        ProgressDone,
-		Actionable:   len(view.Actionable),
-		Converged:    view.Converged,
-		StillFailing: view.Counts.StillFailing,
+	if done, err := runner.handleComparison(view, exitCode, lastIteration); done {
+		return true, err
+	}
+
+	// Keep the result outside the timed closure so rendered output survives adapter errors.
+	var fix agentFixResult
+	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressStart})
+	err = runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
+		return runner.withAgentFixHeartbeat(func() error {
+			var err error
+			fix, err = runAgentFix(
+				runner.dependencies.Adapter,
+				runner.promptTemplate,
+				runner.config.Prompt,
+				view,
+				runner.config.AdapterMetadata,
+				runner.record.Tokens,
+				&runner.hasKnownTokens,
+				&runner.unknownTokenIterations,
+			)
+			return err
+		})
 	})
+	runner.record.UnknownTokenIterations = runner.unknownTokenIterations
+	if fix.Rendered {
+		runner.auditEvidence.beginEditSequence(
+			runner.record.RunID,
+			runner.record.Iterations,
+			fix.Instruction,
+			runner.auditEvidence.lastComparisonID(),
+		)
+		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
+		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
+		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
+	}
+	if fix.Temperature != nil {
+		runner.record.Temperature = *fix.Temperature
+	}
+	if err != nil {
+		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
+		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
+	}
+	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressDone})
+	return false, nil
+}
+
+func (runner *iterationRunner) handleComparison(
+	view agentreport.View,
+	exitCode int,
+	lastIteration bool,
+) (bool, error) {
 	runner.lastView = view
 	runner.record.Final = finalSummary(view)
 	stalled := runner.progress.observe(view, runner.config.StallWindow)
@@ -440,44 +669,47 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 			fmt.Errorf("compare: unexpected exit code %d", exitCode),
 		)
 	}
-
-	// Keep the result outside the timed closure so rendered output survives adapter errors.
-	var fix agentFixResult
-	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressStart})
-	err := runner.timer.run(&runner.record.TimeMS.AgentFix, func() error {
-		return runner.withAgentFixHeartbeat(func() error {
-			var err error
-			fix, err = runAgentFix(
-				runner.dependencies.Adapter,
-				runner.promptTemplate,
-				runner.config.Prompt,
-				view,
-				runner.config.AdapterMetadata,
-				runner.record.Tokens,
-				&runner.hasKnownTokens,
-				&runner.unknownTokenIterations,
-			)
-			return err
-		})
-	})
-	runner.record.UnknownTokenIterations = runner.unknownTokenIterations
-	if fix.Rendered {
-		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
-		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
-		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
-	}
-	if fix.Temperature != nil {
-		runner.record.Temperature = *fix.Temperature
-	}
-	if err != nil {
-		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
-		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
-	}
-	runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressDone})
 	return false, nil
 }
 
+func (runner *iterationRunner) compare() (agentreport.View, int, error) {
+	var view agentreport.View
+	var exitCode int
+	runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressStart})
+	compareStarted := runner.dependencies.Now()
+	err := runner.timer.run(&runner.record.TimeMS.Compare, func() error {
+		var err error
+		view, exitCode, err = runner.dependencies.Comparator.Compare(runner.config)
+		return err
+	})
+	endedAt := runner.dependencies.Now()
+	runner.auditEvidence.recordComparison(
+		runner.record.RunID,
+		runner.record.Iterations,
+		view,
+		exitCode,
+		compareStarted,
+		endedAt,
+		err,
+	)
+	if err != nil {
+		runner.report(ProgressEvent{Phase: ProgressPhaseCompare, State: ProgressError, Err: err})
+		return view, exitCode, err
+	}
+	runner.report(ProgressEvent{
+		Phase:        ProgressPhaseCompare,
+		State:        ProgressDone,
+		Actionable:   len(view.Actionable),
+		Converged:    view.Converged,
+		StillFailing: view.Counts.StillFailing,
+	})
+	return view, exitCode, nil
+}
+
 func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) error {
+	if state == benchrecord.TerminalStateAdapterError {
+		state = adapterTerminalState(err)
+	}
 	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
 	runner.report(ProgressEvent{Phase: ProgressPhaseTerminal, State: ProgressError, Terminal: state, Err: err})
@@ -517,6 +749,7 @@ func runCandidateLifecycle(
 	candidate Candidate,
 	failedPhase *benchrecord.LifecyclePhase,
 	observe lifecyclePhaseObserver,
+	runPhase func(benchrecord.LifecyclePhase, func() error) error,
 ) error {
 	phases := []struct {
 		name benchrecord.LifecyclePhase
@@ -532,7 +765,11 @@ func runCandidateLifecycle(
 		if observe != nil {
 			observe(phase.name, ProgressStart, nil)
 		}
-		if err := phase.call(); err != nil {
+		phaseCall := phase.call
+		if runPhase != nil {
+			phaseCall = func() error { return runPhase(phase.name, phase.call) }
+		}
+		if err := phaseCall(); err != nil {
 			*failedPhase = phase.name
 			wrapped := fmt.Errorf("candidate %s: %w", phase.name, err)
 			if observe != nil {
@@ -552,9 +789,10 @@ func runPreflight(
 	dependencies Dependencies,
 	failedPhase *benchrecord.LifecyclePhase,
 	recordedTemperature *float64,
+	runnerEvidence *runnerAuditEvidence,
 ) (benchrecord.TerminalState, error) {
 	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
-		return benchrecord.TerminalStateAdapterError, fmt.Errorf("preflight adapter: %w", err)
+		return adapterTerminalState(err), fmt.Errorf("preflight adapter: %w", err)
 	}
 	if reporter, ok := dependencies.Adapter.(EffectiveTemperatureReporter); ok {
 		temperature := reporter.EffectiveTemperature()
@@ -568,14 +806,22 @@ func runPreflight(
 			*recordedTemperature = *temperature
 		}
 	}
-	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil); err != nil {
+	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil, runnerEvidence.auditLifecycle); err != nil {
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
 	}
-	if err := dependencies.Candidate.Stop(); err != nil {
+	if err := runnerEvidence.auditLifecycle(benchrecord.LifecyclePhaseStop, dependencies.Candidate.Stop); err != nil {
 		*failedPhase = benchrecord.LifecyclePhaseStop
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight stop: %w", err)
 	}
 	return "", nil
+}
+
+func adapterTerminalState(err error) benchrecord.TerminalState {
+	var auditFailure *AuditFailureError
+	if errors.As(err, &auditFailure) {
+		return benchrecord.TerminalStateAuditError
+	}
+	return benchrecord.TerminalStateAdapterError
 }
 
 func validateTemperature(value float64) error {
@@ -590,6 +836,39 @@ func effectiveTemperature(temperature *float64) float64 {
 		return 0
 	}
 	return *temperature
+}
+
+func resolveRunID(configured string, startedAt time.Time) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	identity := make([]byte, 12)
+	if _, err := rand.Read(identity); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("run-%s-%x", startedAt.UTC().Format("20060102T150405.000000000Z"), identity), nil
+}
+
+func (runner *iterationRunner) auditContext(iteration int) *AuditContext {
+	if runner.config.AuditPath == "" {
+		return nil
+	}
+	return &AuditContext{
+		Enabled:     true,
+		Path:        runner.config.AuditPath,
+		RunID:       runner.config.RunID,
+		Candidate:   runner.config.Candidate,
+		Baseline:    runner.config.Baseline,
+		Iteration:   iteration,
+		IterationID: fmt.Sprintf("iteration-%d", iteration),
+	}
+}
+
+func auditReportReference(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Base(path)
 }
 
 type promptTemplateData struct {

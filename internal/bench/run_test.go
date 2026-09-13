@@ -3,6 +3,7 @@ package bench
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"stcompare/agentreport"
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 )
 
 func TestRunConvergesOnFirstIteration(t *testing.T) {
@@ -60,6 +62,312 @@ func TestRunConvergesOnFirstIteration(t *testing.T) {
 	}
 	if len(comparator.configs) != 1 {
 		t.Fatalf("comparator calls = %d, want 1", len(comparator.configs))
+	}
+}
+
+func TestRunPassesStableAuditContextToEachAdapterBoundary(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: agentreport.View{Actionable: []agentreport.Actionable{{ID: "problem-1"}}}, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		RunID:           "run-fixed",
+		Candidate:       "candidate",
+		Baseline:        "baseline",
+		AuditPath:       auditPath,
+		AuditReportPath: filepath.Join(directory, "benchmark-audit.html"),
+		BaselineExists:  func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(adapter.preflightMetadata) != 1 || adapter.preflightMetadata[0].Audit == nil {
+		t.Fatalf("preflight audit context = %#v, want one context", adapter.preflightMetadata)
+	}
+	if len(adapter.metadata) != 1 || adapter.metadata[0].Audit == nil {
+		t.Fatalf("fix audit context = %#v, want one context", adapter.metadata)
+	}
+	preflight := adapter.preflightMetadata[0].Audit
+	fix := adapter.metadata[0].Audit
+	if preflight.RunID != "run-fixed" || fix.RunID != "run-fixed" ||
+		preflight.IterationID != "preflight" || fix.IterationID != "iteration-1" ||
+		!preflight.Enabled || fix.Path != auditPath {
+		t.Fatalf("audit contexts = %#v and %#v, want stable run and iteration identities", preflight, fix)
+	}
+	if record.RunID != "run-fixed" || record.Audit.Status != benchrecord.AuditStatusNotReported {
+		t.Fatalf("record audit identity/status = %#v, want run-fixed and not_reported for unsupported fake", record.Audit)
+	}
+}
+
+func TestRunAuditCapturesLifecycleChangesAndComparisonSequences(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	if err := os.Mkdir(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	candidate := &sourceLifecycleCandidate{
+		fakeCandidate: &fakeCandidate{},
+		path:          filepath.Join(sourceDir, "generated.py"),
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: agentreport.View{
+			Counts:     agentreport.Counts{StillFailing: 1},
+			Actionable: []agentreport.Actionable{{ID: "problem-1"}},
+		}, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true, Counts: agentreport.Counts{Fixed: 1}}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &artifactAdapter{fakeAdapter: &fakeAdapter{}}
+
+	_, err := Run(Config{
+		RunID:          "run-source-evidence",
+		Candidate:      "candidate",
+		Baseline:       "baseline",
+		SourceDir:      sourceDir,
+		AuditPath:      auditPath,
+		MaxIterations:  2,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if document.FinalSource.Status != audit.SourceStatusComplete || document.FinalSource.FilesChangedAtEnd != 1 {
+		t.Fatalf("final source = %#v, want one complete net change", document.FinalSource)
+	}
+	if got := document.FinalSource.Diffs[0].Origin; got != audit.ChangeOriginLifecycle {
+		t.Fatalf("final diff origin = %q, want lifecycle", got)
+	}
+	if len(document.LifecycleChanges) == 0 || len(document.ComparisonOutcomes) != 2 || len(document.EditSequences) != 1 {
+		t.Fatalf("audit evidence counts = lifecycle %d, comparisons %d, edit sequences %d", len(document.LifecycleChanges), len(document.ComparisonOutcomes), len(document.EditSequences))
+	}
+	if document.Activity.FileModifications != 0 || len(document.FileModifications) != 0 {
+		t.Fatalf("lifecycle changes inflated model edit counts: activity=%#v modifications=%#v", document.Activity, document.FileModifications)
+	}
+	sequence := document.EditSequences[0]
+	if sequence.ComparisonBeforeID != "comparison-1" || sequence.SubsequentComparisonID != "comparison-2" ||
+		sequence.EvaluationStatus != "evaluated" || sequence.ProblemInput != adapter.instructions[0] {
+		t.Fatalf("edit sequence = %#v, want chronological problem and outcome evidence", sequence)
+	}
+}
+
+func TestRunAuditMarksEditWithoutSubsequentComparisonAsNotEvaluated(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Counts: agentreport.Counts{StillFailing: 1}, Actionable: []agentreport.Actionable{{ID: "problem-1"}}},
+		exitCode: agentreport.ExitCodeNotConverged,
+	}}}
+	adapter := &artifactAdapter{
+		fakeAdapter: &fakeAdapter{errs: []error{errors.New("edit stopped")}},
+	}
+
+	_, err := Run(Config{
+		RunID:          "run-not-evaluated",
+		AuditPath:      auditPath,
+		MaxIterations:  2,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil {
+		t.Fatal("Run() succeeded, want adapter error")
+	}
+
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if len(document.EditSequences) != 1 || document.EditSequences[0].EvaluationStatus != "not_evaluated" ||
+		document.EditSequences[0].SubsequentComparisonID != "" {
+		t.Fatalf("edit sequence = %#v, want no subsequent comparison", document.EditSequences)
+	}
+}
+
+func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	reportDir := filepath.Join(sourceDir, "reports", "candidate")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("create source/report directories: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "api.py"), []byte("source\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "comparison.json"), []byte("generated\n"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	tracker := newSourceTracker(Config{
+		SourceDir:       sourceDir,
+		AuditPath:       filepath.Join(reportDir, "benchmark-audit.json"),
+		AuditReportPath: filepath.Join(reportDir, "benchmark-audit.html"),
+	})
+	snapshot := tracker.captureCurrent()
+	if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
+		t.Fatalf("source snapshot = %#v, want source without generated reports", snapshot)
+	}
+}
+
+func TestRunMarksAuditCaptureFailureAsExplicitTerminalError(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Actionable: []agentreport.Actionable{{ID: "problem-1"}}},
+		exitCode: agentreport.ExitCodeNotConverged,
+	}}}
+	adapter := &fakeAdapter{errs: []error{&AuditFailureError{Err: errors.New("disk full")}}}
+
+	record, err := Run(Config{BaselineExists: func() bool { return true }}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err == nil || !strings.Contains(err.Error(), "audit capture failed") {
+		t.Fatalf("Run() error = %v, want explicit audit failure", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAuditError {
+		t.Fatalf("terminal state = %q, want audit_error", record.TerminalState)
+	}
+	if len(comparator.configs) != 1 || len(adapter.instructions) != 1 {
+		t.Fatalf("work after audit failure: comparisons=%d fixes=%d", len(comparator.configs), len(adapter.instructions))
+	}
+}
+
+func TestRunMarksAuditFailureWhenArtifactCouldNotBeCreated(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	adapter := &fakeAdapter{preflightErr: &AuditFailureError{Err: errors.New("permission denied")}}
+
+	record, err := Run(Config{
+		AuditPath:      auditPath,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: &fakeComparator{}, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Run() error = %v, want audit creation failure", err)
+	}
+	if record.Audit.Status != benchrecord.AuditStatusPartial || record.Audit.Error == "" {
+		t.Fatalf("audit reference = %#v, want partial failure", record.Audit)
+	}
+}
+
+func TestRunFinalizesAvailableAuditAfterSuccessfulRun(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	adapter := &artifactAdapter{fakeAdapter: &fakeAdapter{}}
+	comparator := &fakeComparator{results: []comparisonResult{{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged}}}
+
+	record, err := Run(Config{
+		RunID:           "run-complete",
+		Candidate:       "candidate",
+		Baseline:        "baseline",
+		AuditPath:       auditPath,
+		AuditReportPath: filepath.Join(directory, "benchmark-audit.html"),
+		BaselineExists:  func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.Audit.Status != benchrecord.AuditStatusComplete {
+		t.Fatalf("audit status = %q, want complete", record.Audit.Status)
+	}
+	if record.Audit.Activity == nil || record.Audit.Activity.Status != benchrecord.ActivityStatusNotReported ||
+		record.Audit.Activity.ModelToolCalls.Count != 0 {
+		t.Fatalf("audit activity = %#v, want not-reported activity evidence", record.Audit.Activity)
+	}
+	if record.Efficiency.Turns != 1 || record.Efficiency.TokenStatus != benchrecord.TokenStatusUnknown ||
+		record.Efficiency.MeasuredInferenceTurns != 1 {
+		t.Fatalf("record efficiency = %#v, want one measured unknown-token turn", record.Efficiency)
+	}
+	if len(record.IterationEfficiency) != 1 || record.IterationEfficiency[0].Turns != 1 {
+		t.Fatalf("iteration efficiency = %#v, want one aggregate with one turn", record.IterationEfficiency)
+	}
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read finalized audit: %v", err)
+	}
+	if document.Capture.Status != "complete" || document.Run.TerminalState != string(benchrecord.TerminalStateConverged) {
+		t.Fatalf("finalized audit = %#v, want complete converged evidence", document)
+	}
+}
+
+func TestRunKeepsAuditCompleteWhenRunFailsAfterCapturedTurns(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	adapter := &artifactAdapter{fakeAdapter: &fakeAdapter{}}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: agentreport.View{Actionable: []agentreport.Actionable{{ID: "problem-1"}}}, exitCode: agentreport.ExitCodeNotConverged},
+		{err: errors.New("comparison failed")},
+	}}
+
+	record, err := Run(Config{
+		RunID:          "run-error-after-capture",
+		AuditPath:      auditPath,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil || !strings.Contains(err.Error(), "comparison failed") {
+		t.Fatalf("Run() error = %v, want comparison failure", err)
+	}
+	if record.Audit.Status != benchrecord.AuditStatusComplete {
+		t.Fatalf("audit status = %q, want complete captured evidence", record.Audit.Status)
+	}
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		t.Fatalf("read finalized audit: %v", err)
+	}
+	if document.Capture.Status != "complete" || !document.Capture.Complete {
+		t.Fatalf("capture = %#v, want complete capture", document.Capture)
+	}
+}
+
+func TestAuditCaptureTreatsTerminalToolFailuresAsCompleteEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
+	contents := []byte(`{
+  "schema_version": "1",
+  "capture": {"enabled": true, "status": "in_progress", "complete": false},
+  "events": [
+    {"type": "model_turn", "status": "completed"},
+    {"type": "model_tool_call", "status": "failed"},
+    {"type": "adapter_operation", "status": "failed"}
+  ]
+}`)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	partial, err := auditCaptureIsPartial(path, nil)
+	if err != nil {
+		t.Fatalf("inspect audit capture: %v", err)
+	}
+	if partial {
+		t.Fatal("terminal tool failures were treated as incomplete capture")
+	}
+}
+
+func TestRunStopsWithAuditErrorWhenFinalizationCannotUpdateArtifact(t *testing.T) {
+	directory := t.TempDir()
+	auditPath := filepath.Join(directory, "benchmark-audit.json")
+	adapter := &invalidArtifactAdapter{fakeAdapter: &fakeAdapter{}}
+	comparator := &fakeComparator{results: []comparisonResult{{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged}}}
+
+	record, err := Run(Config{
+		RunID:          "run-invalid-audit",
+		AuditPath:      auditPath,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: adapter})
+	if err == nil || !strings.Contains(err.Error(), "audit capture failed") {
+		t.Fatalf("Run() error = %v, want finalization audit failure", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateAuditError || record.Audit.Status != benchrecord.AuditStatusPartial {
+		t.Fatalf("record = %#v, want audit error and partial evidence", record)
 	}
 }
 
@@ -987,6 +1295,22 @@ type fakeCandidate struct {
 	failErr   error
 }
 
+type sourceLifecycleCandidate struct {
+	*fakeCandidate
+	path       string
+	buildCount int
+}
+
+func (candidate *sourceLifecycleCandidate) Build() error {
+	candidate.calls = append(candidate.calls, "build")
+	candidate.buildCount++
+	contents := fmt.Sprintf("build-%d\n", candidate.buildCount)
+	if err := os.WriteFile(candidate.path, []byte(contents), 0o644); err != nil {
+		return err
+	}
+	return candidate.fail("build")
+}
+
 func (f *fakeCandidate) Stop() error {
 	f.calls = append(f.calls, "stop")
 	return f.fail("stop")
@@ -1035,6 +1359,33 @@ type trackingAdapter struct {
 	closeCalls   int
 	processReuse bool
 	closeErr     error
+}
+
+type artifactAdapter struct {
+	*fakeAdapter
+}
+
+type invalidArtifactAdapter struct {
+	*fakeAdapter
+}
+
+func (adapter *artifactAdapter) Preflight(metadata AdapterMetadata) error {
+	if metadata.Audit != nil {
+		contents := []byte(`{"schema_version":"1","run":{"id":"run-complete"},"capture":{"enabled":true,"status":"in_progress","complete":false},"iterations":[{"id":"iteration-1","number":1,"turn_ids":["iteration-1-turn-1"]}],"events":[{"sequence":1,"type":"model_turn","iteration_id":"iteration-1","status":"completed","input":{}}]}`)
+		if err := os.WriteFile(metadata.Audit.Path, contents, 0o644); err != nil {
+			return err
+		}
+	}
+	return adapter.fakeAdapter.Preflight(metadata)
+}
+
+func (adapter *invalidArtifactAdapter) Preflight(metadata AdapterMetadata) error {
+	if metadata.Audit != nil {
+		if err := os.WriteFile(metadata.Audit.Path, []byte(`{"schema_version":"1"}`), 0o644); err != nil {
+			return err
+		}
+	}
+	return adapter.fakeAdapter.Preflight(metadata)
 }
 
 func (adapter *trackingAdapter) Close() error {

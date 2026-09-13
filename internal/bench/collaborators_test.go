@@ -2,6 +2,7 @@ package bench
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -98,6 +99,59 @@ func TestCommandScorecardBuilderPassesConfigAndArtifactPaths(t *testing.T) {
 	}
 	if got := stdout.String(); got != "wrote reports/candidate/scorecard.html\n" {
 		t.Fatalf("scorecard stdout = %q, want success output", got)
+	}
+}
+
+func TestCommandAuditBuilderPassesArtifactAndReportPaths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := writeExecutable(t, dir, "audit.sh", "#!/bin/sh\n"+
+		"printf '%s\\n' \"$@\" > \"$STBENCH_ARGS\"\n"+
+		"printf 'wrote audit report\\n'\n")
+	var stdout strings.Builder
+	builder := &commandAuditBuilder{
+		Binary:     script,
+		ConfigPath: filepath.Join(dir, "stcompare.yaml"),
+		WorkingDir: dir,
+		Env:        []string{"STBENCH_ARGS=" + argsPath},
+		Stdout:     &stdout,
+	}
+	input := auditBuildInput{AuditPath: "reports/candidate/benchmark-audit.json", OutputPath: "reports/candidate/benchmark-audit.html"}
+	if err := builder.Build(input); err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read audit args: %v", err)
+	}
+	wantArgs := []string{
+		"--config", filepath.Join(dir, "stcompare.yaml"),
+		"audit", "render", "--audit", input.AuditPath, "--out", input.OutputPath,
+	}
+	if gotArgs := strings.Fields(string(args)); !sameStrings(gotArgs, wantArgs) {
+		t.Fatalf("audit args = %#v, want %#v", gotArgs, wantArgs)
+	}
+	if stdout.String() != "wrote audit report\n" {
+		t.Fatalf("audit stdout = %q, want success output", stdout.String())
+	}
+}
+
+func TestCommandAdapterReportsAuditFailureFromAdapterProtocol(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
+		"printf '%s' '{\"status\":\"error\",\"audit_error\":\"disk full\"}'\n")
+	adapter := &CommandAdapter{Command: script, WorkingDir: dir}
+	_, err := adapter.Fix("instruction", agentreport.View{}, AdapterMetadata{})
+	var auditFailure *AuditFailureError
+	if !errors.As(err, &auditFailure) {
+		t.Fatalf("Fix() error = %v, want AuditFailureError", err)
+	}
+	if !strings.Contains(err.Error(), "audit capture failed") {
+		t.Fatalf("Fix() error = %v, want explicit audit failure", err)
 	}
 }
 

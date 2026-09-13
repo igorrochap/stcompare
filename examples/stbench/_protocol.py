@@ -83,6 +83,11 @@ def request_metadata(request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str):
             raise ValueError(f"adapter input {name} is required")
         metadata[name] = value
+    if "effort" in request:
+        effort = request["effort"]
+        if not isinstance(effort, str):
+            raise ValueError("adapter input effort must be a string")
+        metadata["effort"] = effort
     if "temperature" in request:
         metadata["temperature"] = request["temperature"]
     return metadata
@@ -116,6 +121,7 @@ def emit_result(
     message: str = "",
     reuse_process: bool = False,
     temperature: float | None = None,
+    audit_error: str = "",
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
 
@@ -128,11 +134,13 @@ def emit_result(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if audit_error:
+        payload["audit_error"] = audit_error
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def emit_error(message: str, *, response: str = "") -> None:
-    emit_result(status="error", response=response, message=message)
+def emit_error(message: str, *, response: str = "", audit_error: str = "") -> None:
+    emit_result(status="error", response=response, message=message, audit_error=audit_error)
 
 
 def handle_preflight(request: dict[str, Any]) -> bool:
@@ -175,14 +183,36 @@ def usage_to_tokens(usage: Any) -> dict[str, int] | None:
 
 
 def aggregate_usages(usages: list[dict[str, int] | None]) -> dict[str, int] | None:
-    """Sum usage records, preserving unknown usage as null."""
+    """Sum known usage records, preserving an unknown turn as a partial sum."""
 
-    if not usages or any(usage is None for usage in usages):
+    known = [usage for usage in usages if usage is not None]
+    if not known:
         return None
     return {
-        "input": sum(usage["input"] for usage in usages if usage is not None),
-        "output": sum(usage["output"] for usage in usages if usage is not None),
-        "total": sum(usage["total"] for usage in usages if usage is not None),
+        "input": sum(usage["input"] for usage in known),
+        "output": sum(usage["output"] for usage in known),
+        "total": sum(usage["total"] for usage in known),
+    }
+
+
+def usage_summary(usages: list[dict[str, int] | None]) -> dict[str, Any]:
+    """Describe known and unknown server usage without estimating missing turns."""
+
+    known_turns = sum(usage is not None for usage in usages)
+    unknown_turns = len(usages) - known_turns
+    if not usages:
+        status = "not_reported"
+    elif unknown_turns == 0:
+        status = "complete"
+    elif known_turns:
+        status = "partial"
+    else:
+        status = "unknown"
+    return {
+        "tokens": aggregate_usages(usages),
+        "token_status": status,
+        "known_token_turns": known_turns,
+        "unknown_token_turns": unknown_turns,
     }
 
 

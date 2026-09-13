@@ -115,6 +115,8 @@ across agents so the benchmark measures the model, not its harness.
 22. As a researcher, I want a stalled or capped run to still record the remaining
     actionable items and which were "stuck" versus newly introduced, so that I
     can see what the agent failed to fix.
+23. As a researcher, I want each local-model turn saved with its exact input and
+    returned messages, so that a benchmark result has durable model evidence.
 
 ## Implementation Decisions
 
@@ -263,6 +265,7 @@ integration test.
 ```
 {
   "schema_version": "...",
+  "run_id": "...",
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
   "temperature": N,                                     // effective adapter sampling temperature
   "hardware": "...",                                    // harness identity
@@ -276,10 +279,45 @@ integration test.
   "started_at": "...", "ended_at": "...",
   "iterations": N,
   "terminal_state": "converged" | "stalled" | "max_iterations"
-                    | "tool_error" | "adapter_error" | "lifecycle_error",
+                    | "tool_error" | "adapter_error" | "lifecycle_error" | "audit_error",
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
   "unknown_token_iterations": N,
+  "efficiency": {
+    "status": "complete" | "partial" | "not_reported",
+    "turns": N, "completed_turns": N, "failed_turns": N,
+    "incomplete_turns": N,
+    "tokens": { "input": N, "output": N, "total": N } | null,
+    "token_status": "complete" | "partial" | "unknown" | "not_reported",
+    "known_token_turns": N, "unknown_token_turns": N,
+    "inference_ms": N, "measured_inference_turns": N,
+    "unknown_inference_turns": N,
+    "recording_overhead_ms": N
+  },
+  "iteration_efficiency": [
+    { "status": "complete" | "partial" | "not_reported",
+      "turns": N, "completed_turns": N, "failed_turns": N,
+      "incomplete_turns": N,
+      "tokens": { "input": N, "output": N, "total": N } | null,
+      "token_status": "complete" | "partial" | "unknown" | "not_reported",
+      "known_token_turns": N, "unknown_token_turns": N,
+      "inference_ms": N, "measured_inference_turns": N,
+      "unknown_inference_turns": N, "recording_overhead_ms": N }
+  ],
+  "audit": {
+    "status": "complete" | "partial" | "not_reported",
+    "run_id": "...", "artifact": "benchmark-audit.json",
+    "report": "benchmark-audit.html",
+    "activity": {
+      "status": "complete" | "partial" | "not_reported",
+      "model_tool_calls": { "count": N, "completed": N,
+                             "failed": N, "incomplete": N,
+                             "duration_ms": N },
+      "adapter_operations": { "count": N, "completed": N,
+                               "failed": N, "incomplete": N,
+                               "duration_ms": N }
+    }
+  },
   "final": {
     "converged": bool,
     "still_failing": N, "regressed": N,
@@ -290,6 +328,92 @@ integration test.
 }
 ```
 
+Local-model runs also write `benchmark-audit.json` beside the benchmark
+record. It is a versioned, incrementally updated artifact with the run
+identity, ordered benchmark iterations, and ordered `model_turn` events. Each
+turn stores a stable `turn_id`, the exact model request payload (including
+tool definitions, effective sampling settings, compacted history, and any
+adapter-added instructions), the returned response and messages, and its
+completion state. The request is captured before inference begins and each
+event is durably written before the next model request starts. Authentication
+headers and credentials are never stored.
+
+Each `model_turn` stores `tokens` only when the inference server response
+contains valid usage values. A missing usage field remains `null`, even when a
+returned model message claims a token count. `duration_ms` on a model turn is
+the measured inference boundary: it starts after the request audit write and
+ends when the server response or request error is received, before completion
+capture is written. Failed requests therefore retain a duration when the
+clock reached the error boundary but do not receive fabricated usage. The
+artifact exposes `efficiency` totals on the run and every iteration. Token
+totals are known subtotals; `token_status: "partial"` identifies a subtotal
+with one or more unknown turns, and `token_status: "unknown"` identifies an
+all-unknown set of turns.
+
+Capture writes are timed separately as `recording_overhead_ms`. This is audit
+recording work around model requests, not inference time, and is never added
+to a model-turn `duration_ms`. Existing `time_ms.total`, `time_ms.agent_fix`,
+and other wall-clock phase fields retain their existing meanings and include
+both inference and capture work inside their phase boundaries; they should not
+be added to or replaced by `efficiency.inference_ms`.
+
+The event stream also contains one `model_tool_call` event for every individual
+tool request and one separate `adapter_operation` event for the adapter's
+execution of that request. Both events carry the run, benchmark iteration, and
+model-turn identities, tool identity, arguments, start and end timestamps,
+duration, result or error, and completion state. A text-recovered request is
+marked with its recovery provenance and is counted once; the source model text
+is not another call. Failed and unknown requests are counted, while a started
+event without a terminal result remains incomplete. The artifact stores
+`activity` totals at run and iteration scope, including Model Tool Call count,
+completed, failed, incomplete, and execution-time totals; partial status keeps
+missing evidence distinguishable from a complete zero.
+
+Edit tools also preserve an `Edit Attempt` for every requested edit, including
+failed and no-op requests. Each content-changing operation adds one
+`file_modifications` entry per changed file with its exact before and after
+content, unified diff, file path, and links to the model tool call, adapter
+operation, model turn, and iteration. A creation records `before: null`.
+`activity.edit_attempts` and `activity.file_modifications` are the separate
+machine-readable totals; the HTML audit groups the entries by file and keeps
+each file's modifications in chronological order inside expandable diffs.
+
+The runner also records `final_source`, `lifecycle_changes`,
+`comparison_outcomes`, and `edit_sequences`. `final_source.starting` is a
+filesystem snapshot taken after initial lifecycle preparation and before model
+work; it is not derived from Git HEAD. `final_source.final` is the last
+available source snapshot, and `final_source.diffs` is the net content diff
+between those snapshots. Created and deleted files are included, and
+`files_changed_at_end` counts distinct files whose final content differs from
+the starting content. A restored file therefore has no net entry even though
+its `file_modifications` history remains.
+
+`lifecycle_changes` records source changes observed around lifecycle commands
+such as build and remains separate from model `file_modifications`. Net diffs
+whose origin cannot be established use `origin: "unattributed"`.
+`comparison_outcomes` preserves each comparison view and exit result in
+chronological order. Each `edit_sequences` entry contains the problem input
+delivered to the model and the subsequent comparison ID, or
+`evaluation_status: "not_evaluated"` when no subsequent comparison occurred.
+These links describe chronology only; they do not assert that an individual
+edit caused a Problem Outcome. Replay-backed `Fixed` outcomes remain distinct
+from a human Fix Quality Assessment, which the tool does not store. A source
+snapshot with unreliable capture is marked `partial` or `unavailable` rather
+than presented as a complete final diff.
+
+The artifact is finalized with `capture.status` `complete` or `partial` and
+the benchmark terminal state. A started turn or interrupted run therefore
+remains visible as partial evidence. A required capture failure terminates
+the run as `audit_error` and is returned through the adapter/runner error
+channel before comparison work continues. Legacy records and adapters that do
+not emit the artifact are represented as `audit.status: not_reported`.
+
+The standalone command `stcompare audit render --audit <artifact> --out
+<report.html>` renders the artifact chronologically and does not require a
+comparison scorecard. When a scorecard exists, it links to the audit report;
+an HTML rendering failure is reported as a warning while the captured JSON
+evidence and benchmark result remain intact.
+
 The three per-fix arrays use the same index: instruction, rendered-instruction
 hash, and raw agent response.
 
@@ -297,7 +421,17 @@ hash, and raw agent response.
   `unknown_token_iterations` counts fix iterations whose usage was unknown.
   `tokens` is `null` only when no iteration reported known usage, which
   distinguishes an all-unknown run from a run with a retained partial sum.
+- `efficiency.tokens` is the known server-reported model-turn subtotal and its
+  `token_status` distinguishes complete, partial, and all-unknown turn sets.
 - `remaining_actionable` is empty on a converged run.
+
+The overhead evidence uses a representative deterministic local-model fixture:
+the same canned model responses are delivered with repeated context and file
+content, once through the reference path and once with audit capture enabled.
+The experiment compares request counts and payloads before comparing timing;
+it adds no model requests and does not rewrite the task. This makes the
+reported capture overhead attributable to recording rather than to a changed
+workload.
 
 **Configuration/CLI:** Candidate identity is declared on Candidate Campaign
 entries. The `stbench:` block contains only fixed harness infrastructure, with

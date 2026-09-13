@@ -2,10 +2,13 @@ package scorecard
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 	"stcompare/internal/comparison"
 )
 
@@ -77,6 +80,177 @@ func TestRenderStatesWhenTokenUsageWasNotReported(t *testing.T) {
 		if strings.Contains(html, fragment) {
 			t.Fatalf("scorecard HTML includes %q for unreported token usage:\n%s", fragment, html)
 		}
+	}
+}
+
+func TestRenderShowsEfficiencySummaryWithPartialKnownTokens(t *testing.T) {
+	record := benchrecord.Record{
+		Tokens: &benchrecord.TokenUsage{Input: 9, Output: 3, Total: 12},
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:                 benchrecord.EfficiencyStatusComplete,
+			Turns:                  3,
+			InferenceMS:            49,
+			MeasuredInferenceTurns: 3,
+			RecordingOverheadMS:    12,
+			Tokens:                 &benchrecord.TokenUsage{Input: 9, Output: 3, Total: 12},
+			TokenStatus:            benchrecord.TokenStatusPartial,
+			KnownTokenTurns:        2,
+			UnknownTokenTurns:      1,
+		},
+	}
+	html, err := Render(comparisonFixture(t), record)
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Efficiency summary",
+		"Model turns</span><strong>3</strong>",
+		"Inference time</span><strong>49 ms</strong>",
+		"Audit-recording overhead</span><strong>12 ms</strong>",
+		"Token evidence</span><strong>partial</strong>",
+		"Known token subtotal: 9 input · 3 output · 12 total (partial).",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing efficiency fragment %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestRenderLinksToAvailableAuditAndDoesNotInventLegacyActivity(t *testing.T) {
+	document := comparisonFixture(t)
+	audited, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
+		Status: benchrecord.AuditStatusComplete,
+		Report: "benchmark-audit.html",
+	}})
+	if err != nil {
+		t.Fatalf("render audited scorecard: %v", err)
+	}
+	if !strings.Contains(audited, `href="benchmark-audit.html"`) ||
+		!strings.Contains(audited, "View chronological model-turn audit") {
+		t.Fatalf("audited scorecard missing audit link:\n%s", audited)
+	}
+
+	legacy, err := Render(document, benchrecord.Record{})
+	if err != nil {
+		t.Fatalf("render legacy scorecard: %v", err)
+	}
+	if !strings.Contains(legacy, "Audit evidence: not reported") {
+		t.Fatalf("legacy scorecard missing not-reported audit state:\n%s", legacy)
+	}
+	if strings.Contains(legacy, "model-turn audit\" (complete)") {
+		t.Fatal("legacy scorecard invented audit activity")
+	}
+}
+
+func TestRenderShowsModelToolCallSummaryWhenAuditActivityIsAvailable(t *testing.T) {
+	document := comparisonFixture(t)
+	activity := &benchrecord.ActivitySummary{
+		Status: benchrecord.ActivityStatusComplete,
+		ModelToolCalls: benchrecord.ActivityCounts{
+			Count: 3, Completed: 2, Failed: 1, DurationMS: 125,
+		},
+		AdapterOperations: benchrecord.ActivityCounts{Count: 3, DurationMS: 120},
+		EditAttempts:      4,
+		FileModifications: 3,
+	}
+	html, err := Render(document, benchrecord.Record{Audit: benchrecord.AuditReference{
+		Status:   benchrecord.AuditStatusComplete,
+		Report:   "benchmark-audit.html",
+		Activity: activity,
+	}})
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Model Tool Call activity",
+		"Model Tool Calls</span><strong>3</strong>",
+		"Completed</span><strong>2</strong>",
+		"Failed</span><strong>1</strong>",
+		"Execution time</span><strong>125 ms</strong>",
+		"Edit Attempts</span><strong>4</strong>",
+		"File Modifications</span><strong>3</strong>",
+		"Adapter Operations: 3 (120 ms execution time)",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing activity summary %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestRenderShowsFinalSourceCountWhenAuditEvidenceIsAvailable(t *testing.T) {
+	before := "before\n"
+	after := "after\n"
+	html, err := RenderWithAudit(
+		comparisonFixture(t),
+		benchrecord.Record{},
+		&audit.Artifact{
+			FinalSource: audit.FinalSource{
+				Status:            audit.SourceStatusComplete,
+				FilesChangedAtEnd: 2,
+				Diffs:             []audit.SourceChange{{Path: "api.py", Before: &before, After: &after}},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Final source evidence",
+		"Files Changed at the End</span><strong>2</strong>",
+		"Snapshot status</span><strong>complete</strong>",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing final source evidence %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestBuildLoadsActivityFromReferencedAuditWhenRecordIsLegacy(t *testing.T) {
+	directory := t.TempDir()
+	comparisonPath := filepath.Join(directory, "comparison.json")
+	recordPath := filepath.Join(directory, "benchmark-record.json")
+	activityPath := filepath.Join(directory, "benchmark-audit.json")
+	outputPath := filepath.Join(directory, "scorecard.html")
+
+	comparisonContents, err := json.Marshal(comparisonFixture(t))
+	if err != nil {
+		t.Fatalf("marshal comparison fixture: %v", err)
+	}
+	if err := os.WriteFile(comparisonPath, comparisonContents, 0o644); err != nil {
+		t.Fatalf("write comparison fixture: %v", err)
+	}
+	if err := os.WriteFile(recordPath, []byte(`{"audit":{"status":"complete","artifact":"benchmark-audit.json"}}`), 0o644); err != nil {
+		t.Fatalf("write record fixture: %v", err)
+	}
+	if err := os.WriteFile(activityPath, []byte(`{
+  "schema_version":"1",
+  "capture":{"enabled":true,"status":"complete","complete":true},
+  "iterations":[],
+  "final_source":{"status":"complete","files_changed_at_end":3,"starting":{"status":"complete"},"final":{"status":"complete"}},
+  "events":[
+    {"type":"model_turn","status":"completed","duration_ms":21,"ended_at":"done","tokens":{"input":8,"output":3,"total":11}},
+    {"type":"model_tool_call","status":"completed","duration_ms":17}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write audit fixture: %v", err)
+	}
+
+	if err := Build(Input{ComparisonPath: comparisonPath, RecordPath: recordPath, OutputPath: outputPath}); err != nil {
+		t.Fatalf("build scorecard: %v", err)
+	}
+	html, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read scorecard: %v", err)
+	}
+	if !strings.Contains(string(html), "Model Tool Calls</span><strong>1</strong>") {
+		t.Fatalf("scorecard omitted referenced audit activity:\n%s", html)
+	}
+	if !strings.Contains(string(html), "Files Changed at the End</span><strong>3</strong>") {
+		t.Fatalf("scorecard omitted referenced final source evidence:\n%s", html)
+	}
+	if !strings.Contains(string(html), "Inference time</span><strong>21 ms</strong>") ||
+		!strings.Contains(string(html), "Token evidence</span><strong>complete</strong>") {
+		t.Fatalf("scorecard omitted referenced efficiency evidence:\n%s", html)
 	}
 }
 

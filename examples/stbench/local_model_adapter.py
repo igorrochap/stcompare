@@ -9,11 +9,16 @@ patch: read/write tools mutate the candidate directory directly.
 from __future__ import annotations
 
 import argparse
+import copy
+import datetime as dt
+import difflib
+import hashlib
 import json
 import math
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -29,6 +34,7 @@ from _protocol import (
     is_preflight_request,
     metadata_headers,
     read_requests,
+    usage_summary,
     request_metadata,
     usage_to_tokens,
 )
@@ -42,6 +48,7 @@ MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
 EDIT_HISTORY_PLACEHOLDER = "[edit content elided from history]"
+EDIT_TOOL_NAMES = frozenset({"str_replace", "write_file"})
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
 Available tools: list_files, read_file, str_replace, and write_file.
@@ -131,6 +138,613 @@ class ToolError(ValueError):
         self.code = code
 
 
+class AuditCaptureError(RuntimeError):
+    """A required audit event could not be durably saved."""
+
+
+class AuditWriter:
+    """Persist model-turn and activity events without changing the model request."""
+
+    def __init__(self, path: Path, document: dict[str, Any]) -> None:
+        self.path = path
+        self.document = document
+        capture = document.get("capture", {})
+        self._recording_overhead_base_ms = int(capture.get("recording_overhead_ms", 0) or 0)
+        self._recording_overhead_seconds = 0.0
+
+    @classmethod
+    def create(cls, request: dict[str, Any], metadata: dict[str, Any]) -> "AuditWriter | None":
+        context = audit_context(request)
+        if context is None:
+            return None
+        run_id = required_audit_value(context, "run_id")
+        path = Path(required_audit_value(context, "path"))
+        document = {
+            "schema_version": "1",
+            "run": {
+                "id": run_id,
+                "candidate": str(context.get("candidate", "")),
+                "baseline": str(context.get("baseline", "")),
+                "agent": metadata["agent"],
+                "model": metadata["model"],
+                "effort": str(metadata.get("effort", "")),
+                "hardware": metadata["hardware"],
+                "started_at": utc_now(),
+            },
+            "capture": {
+                "enabled": True,
+                "status": "in_progress",
+                "complete": False,
+                "recording_overhead_ms": 0,
+            },
+            "iterations": [],
+            "shared_content": {},
+            "file_modifications": [],
+            "events": [],
+        }
+        writer = cls(path, document)
+        writer._write()
+        return writer
+
+    @classmethod
+    def open(cls, request: dict[str, Any]) -> "AuditWriter | None":
+        context = audit_context(request)
+        if context is None:
+            return None
+        path = Path(required_audit_value(context, "path"))
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise AuditCaptureError(f"cannot read audit artifact {path}: {error}") from error
+        if not isinstance(document, dict) or document.get("schema_version") != "1":
+            raise AuditCaptureError(f"audit artifact {path} has an unsupported schema")
+        return cls(path, document)
+
+    def record_turn_started(self, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        iteration = int(context.get("iteration", 0))
+        iteration_id = required_audit_value(context, "iteration_id")
+        turn_number = (
+            sum(
+                event.get("type") == "model_turn" and event.get("iteration_id") == iteration_id
+                for event in self.document["events"]
+            )
+            + 1
+        )
+        turn_id = f"{iteration_id}-turn-{turn_number}"
+        captured_input, input_references = capture_shared_content(
+            payload,
+            self.document.setdefault("shared_content", {}),
+        )
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "model_turn",
+            "run_id": required_audit_value(context, "run_id"),
+            "iteration_id": iteration_id,
+            "iteration": iteration,
+            "turn_id": turn_id,
+            "status": "started",
+            "started_at": utc_now(),
+            "sampling": sampling_settings(payload),
+            "input": captured_input,
+        }
+        if input_references:
+            event["input_content_references"] = input_references
+        self.document["events"].append(event)
+        self._ensure_iteration(iteration_id, iteration, turn_id)
+        self._write()
+        # Inference begins after this write. Its duration is already included
+        # in capture-level overhead and must not be attributed to the turn.
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_turn_completed(self, event: dict[str, Any], response: dict[str, Any]) -> None:
+        recording_started = time.monotonic()
+        inference_ended = recording_started
+        event["status"] = "completed"
+        event["ended_at"] = utc_now()
+        event["duration_ms"] = elapsed_milliseconds(event, inference_ended)
+        event["returned"] = copy.deepcopy(response)
+        event["returned_messages"] = returned_messages(response)
+        event["tokens"] = usage_to_tokens(response.get("usage"))
+        event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
+        event.pop("_started_monotonic", None)
+        self._write()
+
+    def record_turn_failed(self, event: dict[str, Any], error: BaseException) -> None:
+        recording_started = time.monotonic()
+        inference_ended = recording_started
+        event["status"] = "failed"
+        event["ended_at"] = utc_now()
+        event["duration_ms"] = elapsed_milliseconds(event, inference_ended)
+        event["error"] = str(error)
+        event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
+        event.pop("_started_monotonic", None)
+        self._write()
+
+    def record_tool_call_started(
+        self,
+        call: Any,
+        turn_event: dict[str, Any],
+        provenance: str,
+    ) -> dict[str, Any]:
+        tool_name, arguments = tool_call_details(call)
+        tool_call_id = "unknown"
+        if isinstance(call, dict):
+            tool_call_id = call.get("id", "unknown")
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "model_tool_call",
+            "id": f"model-tool-call-{len(self.document['events']) + 1}",
+            "run_id": turn_event["run_id"],
+            "iteration_id": turn_event["iteration_id"],
+            "iteration": turn_event["iteration"],
+            "turn_id": turn_event["turn_id"],
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "edit_attempt": tool_name in EDIT_TOOL_NAMES,
+            "provenance": provenance,
+            "arguments": copy.deepcopy(arguments),
+            "request": copy.deepcopy(call),
+            "status": "started",
+            "started_at": utc_now(),
+        }
+        self.document["events"].append(event)
+        self._write()
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_tool_call_completed(self, event: dict[str, Any], result: dict[str, Any]) -> None:
+        finish_activity_event(event, result)
+        self._write()
+
+    def record_tool_call_failed(self, event: dict[str, Any], error: Exception) -> None:
+        finish_activity_event(event, error=error)
+        self._write()
+
+    def record_adapter_operation_started(self, tool_event: dict[str, Any]) -> dict[str, Any]:
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "adapter_operation",
+            "id": f"adapter-operation-{len(self.document['events']) + 1}",
+            "run_id": tool_event["run_id"],
+            "iteration_id": tool_event["iteration_id"],
+            "iteration": tool_event["iteration"],
+            "turn_id": tool_event["turn_id"],
+            "model_tool_call_id": tool_event["id"],
+            "tool_call_id": tool_event["tool_call_id"],
+            "tool_name": tool_event["tool_name"],
+            "edit_attempt": tool_event.get("edit_attempt", False),
+            "operation": "execute_model_tool_call",
+            "arguments": copy.deepcopy(tool_event["arguments"]),
+            "status": "started",
+            "started_at": utc_now(),
+        }
+        self.document["events"].append(event)
+        self._write()
+        event["_started_monotonic"] = time.monotonic()
+        return event
+
+    def record_adapter_operation_completed(
+        self,
+        event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        finish_activity_event(event, result)
+        self._record_file_modifications(event, result)
+        self._write()
+
+    def record_adapter_operation_failed(self, event: dict[str, Any], error: Exception) -> None:
+        finish_activity_event(event, error=error)
+        self._write()
+
+    def _record_file_modifications(
+        self,
+        operation_event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        if result.get("ok") is not True:
+            return
+        changes = result.get("file_modifications", [])
+        if not isinstance(changes, list) or not changes:
+            return
+        modifications = self.document.setdefault("file_modifications", [])
+        modification_ids: list[str] = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            modification = {
+                "sequence": len(modifications) + 1,
+                "id": f"file-modification-{len(modifications) + 1}",
+                "path": change.get("path", ""),
+                "operation": operation_event.get("operation", ""),
+                "tool_name": operation_event.get("tool_name", ""),
+                "run_id": operation_event.get("run_id", ""),
+                "model_tool_call_id": operation_event.get("model_tool_call_id", ""),
+                "adapter_operation_id": operation_event.get("id", ""),
+                "turn_id": operation_event.get("turn_id", ""),
+                "iteration_id": operation_event.get("iteration_id", ""),
+                "iteration": operation_event.get("iteration", 0),
+                "before": copy.deepcopy(change.get("before")),
+                "after": copy.deepcopy(change.get("after")),
+                "diff": change.get("diff", ""),
+                "created": change.get("before") is None,
+            }
+            modifications.append(modification)
+            modification_ids.append(modification["id"])
+        if modification_ids:
+            operation_event["file_modification_ids"] = modification_ids
+
+    def _ensure_iteration(self, iteration_id: str, number: int, turn_id: str) -> None:
+        for iteration in self.document["iterations"]:
+            if iteration.get("id") == iteration_id:
+                iteration["turn_ids"].append(turn_id)
+                return
+        self.document["iterations"].append({"id": iteration_id, "number": number, "turn_ids": [turn_id]})
+
+    def _write(self) -> None:
+        recording_started = time.monotonic()
+        self.document.setdefault("capture", {})[
+            "recording_overhead_ms"
+        ] = self.recording_overhead_ms()
+        refresh_activity(self.document)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+            with temporary.open("w", encoding="utf-8", newline="") as output:
+                json.dump(self.document, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+            self._recording_overhead_seconds += time.monotonic() - recording_started
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except (UnboundLocalError, OSError):
+                pass
+            raise AuditCaptureError(f"cannot write audit artifact {self.path}: {error}") from error
+
+    def recording_overhead_ms(self) -> int:
+        """Return measured audit work, excluding model inference time."""
+
+        return self._recording_overhead_base_ms + round(self._recording_overhead_seconds * 1000)
+
+    def finalize_measurements(self) -> None:
+        """Persist the current efficiency and capture-overhead measurements."""
+
+        self.document.setdefault("capture", {})["recording_overhead_ms"] = self.recording_overhead_ms()
+        refresh_activity(self.document)
+        self._write()
+
+
+def audit_context(request: dict[str, Any]) -> dict[str, Any] | None:
+    context = request.get("audit")
+    if not isinstance(context, dict) or context.get("enabled") is not True:
+        return None
+    return context
+
+
+def required_audit_value(context: dict[str, Any], name: str) -> str:
+    value = context.get(name)
+    if not isinstance(value, str) or not value:
+        raise AuditCaptureError(f"audit context {name} is required")
+    return value
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sampling_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = {"temperature": payload.get("temperature")}
+    if "top_p" in payload:
+        settings["top_p"] = payload["top_p"]
+    return settings
+
+
+def returned_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return messages
+    for choice in choices:
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            continue
+        messages.append(copy.deepcopy(choice["message"]))
+    return messages
+
+
+def elapsed_milliseconds(event: dict[str, Any], ended: float | None = None) -> int:
+    started = event.get("_started_monotonic")
+    if not isinstance(started, float):
+        return 0
+    if ended is None:
+        ended = time.monotonic()
+    return round((ended - started) * 1000)
+
+
+def tool_call_details(call: Any) -> tuple[str, Any]:
+    if not isinstance(call, dict):
+        return "unknown", None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return "unknown", None
+    name = function.get("name")
+    tool_name = "unknown"
+    if isinstance(name, str) and name:
+        tool_name = name
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            return tool_name, json.loads(arguments)
+        except json.JSONDecodeError:
+            return tool_name, arguments
+    return tool_name, arguments
+
+
+def finish_activity_event(
+    event: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    *,
+    error: Exception | None = None,
+) -> None:
+    successful = error is None and result is not None and result.get("ok") is True
+    event["status"] = "completed"
+    if not successful:
+        event["status"] = "failed"
+    event["ended_at"] = utc_now()
+    event["duration_ms"] = elapsed_milliseconds(event)
+    if result is not None:
+        event["result"] = copy.deepcopy(result)
+        if event["status"] == "failed":
+            event["error"] = str(result.get("error", "tool execution failed"))
+    if error is not None:
+        event["error"] = str(error)
+    event.pop("_started_monotonic", None)
+
+
+def activity_summary(
+    events: list[dict[str, Any]],
+    status: str,
+    file_modifications: list[dict[str, Any]] | None = None,
+    iteration_id: str = "",
+) -> dict[str, Any]:
+    summary = {
+        "status": status,
+        "model_tool_calls": activity_counts(),
+        "adapter_operations": activity_counts(),
+        "edit_attempts": 0,
+        "file_modifications": 0,
+    }
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "model_tool_call":
+            counts = summary["model_tool_calls"]
+            if event.get("edit_attempt") is True or event.get("tool_name") in EDIT_TOOL_NAMES:
+                summary["edit_attempts"] += 1
+        elif event_type == "adapter_operation":
+            counts = summary["adapter_operations"]
+            if event.get("edit_attempt") is True and not event.get("model_tool_call_id"):
+                summary["edit_attempts"] += 1
+        else:
+            continue
+        counts["count"] += 1
+        event_status = event.get("status")
+        if event_status == "completed":
+            counts["completed"] += 1
+            counts["duration_ms"] += int(event.get("duration_ms", 0) or 0)
+        elif event_status == "failed":
+            counts["failed"] += 1
+        else:
+            counts["incomplete"] += 1
+    recorded_modifications = file_modifications if isinstance(file_modifications, list) else []
+    for modification in recorded_modifications:
+        if not isinstance(modification, dict):
+            continue
+        if iteration_id and modification.get("iteration_id") != iteration_id:
+            continue
+        summary["file_modifications"] += 1
+    return summary
+
+
+def efficiency_summary(
+    events: list[dict[str, Any]],
+    capture: dict[str, Any],
+    iteration_id: str = "",
+) -> dict[str, Any]:
+    """Summarize model-turn usage, timing, and capture overhead for a scope."""
+
+    turns = [
+        event
+        for event in events
+        if event.get("type") == "model_turn"
+        and (not iteration_id or event.get("iteration_id") == iteration_id)
+    ]
+    summary = {
+        "status": efficiency_status(turns, capture),
+        "turns": len(turns),
+        "completed_turns": sum(event.get("status") == "completed" for event in turns),
+        "failed_turns": sum(event.get("status") == "failed" for event in turns),
+        "incomplete_turns": sum(
+            event.get("status") not in {"completed", "failed"} for event in turns
+        ),
+        "tokens": None,
+        "token_status": "not_reported",
+        "known_token_turns": 0,
+        "unknown_token_turns": 0,
+        "inference_ms": 0,
+        "measured_inference_turns": 0,
+        "unknown_inference_turns": 0,
+        "recording_overhead_ms": int(capture.get("recording_overhead_ms", 0) or 0)
+        if not iteration_id
+        else sum(int(event.get("recording_overhead_ms", 0) or 0) for event in events),
+    }
+    usages = [event.get("tokens") for event in turns]
+    usage = usage_summary(usages)
+    summary.update(
+        {
+            "tokens": usage["tokens"],
+            "token_status": usage["token_status"],
+            "known_token_turns": usage["known_token_turns"],
+            "unknown_token_turns": usage["unknown_token_turns"],
+        }
+    )
+    for event in turns:
+        has_duration = event.get("ended_at") or event.get("status") in {"completed", "failed"}
+        if has_duration:
+            summary["inference_ms"] += int(event.get("duration_ms", 0) or 0)
+            summary["measured_inference_turns"] += 1
+        else:
+            summary["unknown_inference_turns"] += 1
+    return summary
+
+
+def efficiency_status(turns: list[dict[str, Any]], capture: dict[str, Any]) -> str:
+    if not turns:
+        return "not_reported"
+    if capture.get("status") != "complete" or capture.get("complete") is not True:
+        return "partial"
+    if any(event.get("status") not in {"completed", "failed"} for event in turns):
+        return "partial"
+    return "complete"
+
+
+def activity_counts() -> dict[str, int]:
+    return {"count": 0, "completed": 0, "failed": 0, "incomplete": 0, "duration_ms": 0}
+
+
+def is_activity_event(event: dict[str, Any]) -> bool:
+    return event.get("type") in {"model_tool_call", "adapter_operation"}
+
+
+def event_is_incomplete(event: dict[str, Any]) -> bool:
+    event_type = event.get("type")
+    if event_type == "model_turn":
+        return event.get("status") != "completed"
+    if not is_activity_event(event):
+        return False
+    return event.get("status") not in {"completed", "failed"}
+
+
+def refresh_activity(document: dict[str, Any]) -> None:
+    events = document.get("events", [])
+    modifications = document.get("file_modifications", [])
+    has_activity = any(is_activity_event(event) for event in events)
+    has_modifications = isinstance(modifications, list) and bool(modifications)
+    has_model_turns = any(event.get("type") == "model_turn" for event in events)
+    if not has_activity and not has_modifications:
+        document.pop("activity", None)
+        if not has_model_turns:
+            document.pop("efficiency", None)
+        for iteration in document.get("iterations", []):
+            iteration.pop("activity", None)
+            if not has_model_turns:
+                iteration.pop("efficiency", None)
+        if has_model_turns:
+            capture = document.get("capture", {})
+            document["efficiency"] = efficiency_summary(events, capture)
+            for iteration in document.get("iterations", []):
+                iteration_id = iteration.get("id")
+                iteration_events = [
+                    event for event in events if event.get("iteration_id") == iteration_id
+                ]
+                iteration["efficiency"] = efficiency_summary(iteration_events, capture, iteration_id)
+        return
+    capture = document.get("capture", {})
+    status = "partial"
+    capture_is_complete = capture.get("status") == "complete" and capture.get("complete") is True
+    if capture_is_complete and not any(event_is_incomplete(event) for event in events):
+        status = "complete"
+    document["activity"] = activity_summary(events, status, modifications)
+    document["efficiency"] = efficiency_summary(events, capture)
+    for iteration in document.get("iterations", []):
+        iteration_id = iteration.get("id")
+        iteration_events = [event for event in events if event.get("iteration_id") == iteration_id]
+        iteration["activity"] = activity_summary(iteration_events, status, modifications, iteration_id)
+        iteration["efficiency"] = efficiency_summary(iteration_events, capture, iteration_id)
+
+
+def capture_shared_content(
+    payload: dict[str, Any],
+    shared_content: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    captured = copy.deepcopy(payload)
+    references: list[dict[str, str]] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}/{escape_json_pointer(key)}"
+                if key == "content":
+                    reference_id = shared_content_id(child)
+                    if reference_id not in shared_content:
+                        shared_content[reference_id] = copy.deepcopy(child)
+                    value[key] = None
+                    references.append({"path": child_path, "id": reference_id})
+                    continue
+                visit(child, child_path)
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}/{index}")
+
+    visit(captured, "")
+    return captured, references
+
+
+def reconstruct_input(document: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    reconstructed = copy.deepcopy(event["input"])
+    shared_content = document.get("shared_content", {})
+    if not isinstance(shared_content, dict):
+        raise AuditCaptureError("audit shared_content must be an object")
+    for reference in event.get("input_content_references", []):
+        if not isinstance(reference, dict):
+            raise AuditCaptureError("audit input content reference must be an object")
+        reference_id = reference.get("id")
+        path = reference.get("path")
+        if not isinstance(reference_id, str) or reference_id not in shared_content:
+            raise AuditCaptureError(f"audit content reference {reference_id!r} is missing")
+        if not isinstance(path, str):
+            raise AuditCaptureError("audit input content reference path is required")
+        set_json_pointer(reconstructed, path, copy.deepcopy(shared_content[reference_id]))
+    return reconstructed
+
+
+def shared_content_id(value: Any) -> str:
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"content-{digest}"
+
+
+def escape_json_pointer(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def set_json_pointer(document: Any, pointer: str, value: Any) -> None:
+    if not pointer.startswith("/"):
+        raise AuditCaptureError(f"audit JSON pointer {pointer!r} is invalid")
+    current = document
+    parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+            continue
+        raise AuditCaptureError(f"audit JSON pointer {pointer!r} does not exist")
+    if not parts:
+        raise AuditCaptureError("audit JSON pointer cannot replace the root")
+    last = parts[-1]
+    if isinstance(current, dict) and last in current:
+        current[last] = value
+        return
+    if isinstance(current, list) and last.isdigit() and int(last) < len(current):
+        current[int(last)] = value
+        return
+    raise AuditCaptureError(f"audit JSON pointer {pointer!r} does not exist")
+
+
 TOOL_CALL_TAG = re.compile(
     r"<tool_call>(?P<plain_body>.*?)</tool_call>"
     r"|<\|tool_call\|>(?P<special_body>.*?)<\|/tool_call\|>"
@@ -182,18 +796,22 @@ def validate_temperature(value: Any, source: str) -> float:
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
+
         for request, instruction in read_requests():
             try:
                 if is_preflight_request(request):
                     if all(name in request for name in ("agent", "model", "hardware")):
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
+                        AuditWriter.create(request, metadata)
                         emit_result(status="ok", temperature=temperature)
                     else:
                         handle_preflight(request)
                     continue
+
                 metadata = request_metadata(request)
                 temperature = resolve_temperature(settings.temperature, metadata)
+                audit = AuditWriter.open(request)
                 response, usages = run_agent(
                     instruction,
                     Path.cwd(),
@@ -203,13 +821,19 @@ def main(argv: list[str] | None = None) -> int:
                     metadata=metadata,
                     timeout=settings.timeout,
                     max_turns=settings.max_turns,
+                    audit=audit,
+                    audit_context_value=audit_context(request),
                 )
+                if audit is not None:
+                    audit.finalize_measurements()
                 emit_result(
                     status="ok",
                     response=response,
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
                 )
+            except AuditCaptureError as error:
+                emit_error(str(error), audit_error=str(error))
             except (OSError, ValueError, RuntimeError) as error:
                 emit_error(str(error))
         return 0
@@ -302,6 +926,8 @@ def run_agent(
     max_turns: int,
     metadata: dict[str, Any] | None = None,
     temperature: float | None = None,
+    audit: AuditWriter | None = None,
+    audit_context_value: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, int] | None]]:
     if timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -339,7 +965,19 @@ def run_agent(
         }
         if temperature == DEFAULT_TEMPERATURE:
             payload["top_p"] = 1
-        result = post_json(url, payload, timeout, metadata=metadata)
+        turn_event = None
+        if audit is not None:
+            if audit_context_value is None:
+                raise AuditCaptureError("audit context is required for a model turn")
+            turn_event = audit.record_turn_started(payload, audit_context_value)
+        try:
+            result = post_json(url, payload, timeout, metadata=metadata)
+        except BaseException as error:
+            if audit is not None and turn_event is not None:
+                audit.record_turn_failed(turn_event, error)
+            raise
+        if audit is not None and turn_event is not None:
+            audit.record_turn_completed(turn_event, result)
         usages.append(usage_to_tokens(result.get("usage")))
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -357,6 +995,7 @@ def run_agent(
                 message = dict(message)
                 message["tool_calls"] = recovered_calls
                 tool_calls = recovered_calls
+                tool_call_provenance = "model_text_recovery"
             else:
                 messages.append(message)
                 if isinstance(content, str) and content.strip():
@@ -365,21 +1004,40 @@ def run_agent(
                 messages.append({"role": "user", "content": NUDGE_PROMPT})
                 current_turn_start = len(messages) - 2
                 continue
+        else:
+            tool_call_provenance = "model_response"
 
         assistant_message_start = len(messages)
         messages.append(message)
 
         any_success = False
         for call in tool_calls:
-            tool_result = execute_model_tool_call(call, root)
+            tool_event = None
+            operation_event = None
+            if audit is not None and turn_event is not None:
+                tool_event = audit.record_tool_call_started(call, turn_event, tool_call_provenance)
+                operation_event = audit.record_adapter_operation_started(tool_event)
+            try:
+                tool_result = execute_model_tool_call(call, root)
+            except Exception as error:
+                if audit is not None and operation_event is not None:
+                    audit.record_adapter_operation_failed(operation_event, error)
+                if audit is not None and tool_event is not None:
+                    audit.record_tool_call_failed(tool_event, error)
+                raise
+            if audit is not None and operation_event is not None:
+                audit.record_adapter_operation_completed(operation_event, tool_result)
+            if audit is not None and tool_event is not None:
+                audit.record_tool_call_completed(tool_event, tool_result)
             _debug_tool(call, tool_result)
             if isinstance(tool_result, dict) and tool_result.get("ok"):
                 any_success = True
+            model_tool_result = tool_result_for_model(tool_result)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call.get("id", "unknown") if isinstance(call, dict) else "unknown",
-                    "content": json.dumps(tool_result, ensure_ascii=False),
+                    "content": json.dumps(model_tool_result, ensure_ascii=False),
                 }
             )
         current_turn_start = assistant_message_start
@@ -425,24 +1083,49 @@ def execute_model_tool_call(call: Any, root: Path) -> dict[str, Any]:
 
 
 def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
-    """Recover registered JSON tool calls that a model emitted as text."""
+    """Recover JSON tool requests, including unknown names, emitted as text."""
 
     if not isinstance(content, str) or not content.strip():
         return []
 
-    candidates = [
+    tagged_candidates = [
         match.group("plain_body") or match.group("special_body") or match.group("alternate_body")
         for match in TOOL_CALL_TAG.finditer(content)
     ]
-    candidates.append(content)
     decoder = json.JSONDecoder()
     recovered: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add_candidate(candidate: Any) -> None:
+    def add_recovered_call(
+        name: str,
+        arguments: Any,
+        *,
+        serialized_arguments: str | None = None,
+        deduplicate: bool = True,
+    ) -> None:
+        identity = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+        if deduplicate and identity in seen:
+            return
+        if deduplicate:
+            seen.add(identity)
+        encoded_arguments = serialized_arguments
+        if encoded_arguments is None:
+            encoded_arguments = json.dumps(arguments, ensure_ascii=False)
+        recovered.append(
+            {
+                "id": f"recovered-{len(recovered) + 1}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": encoded_arguments,
+                },
+            }
+        )
+
+    def add_candidate(candidate: Any, *, deduplicate: bool = True) -> None:
         if isinstance(candidate, list):
             for item in candidate:
-                add_candidate(item)
+                add_candidate(item, deduplicate=deduplicate)
             return
         if not isinstance(candidate, dict):
             return
@@ -456,55 +1139,74 @@ def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
                 arguments = json.loads(arguments)
             except json.JSONDecodeError:
                 return
-        if not isinstance(name, str) or name not in TOOL_NAMES or not isinstance(arguments, dict):
+        if not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict):
             return
-        identity = json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
-        if identity in seen:
-            return
-        seen.add(identity)
-        recovered.append(
-            {
-                "id": f"recovered-{len(recovered) + 1}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                },
-            }
+        add_recovered_call(name, arguments, deduplicate=deduplicate)
+
+    def add_malformed_candidate(candidate: Any, *, deduplicate: bool = True) -> None:
+        if isinstance(candidate, dict):
+            name = candidate.get("name", candidate.get("tool", "unknown"))
+            arguments = candidate.get(
+                "arguments",
+                candidate.get("parameters", candidate.get("args")),
+            )
+        else:
+            name = "unknown"
+            arguments = candidate
+        if not isinstance(name, str) or not name.strip():
+            name = "unknown"
+        serialized_arguments = arguments if isinstance(arguments, str) else None
+        add_recovered_call(
+            name,
+            arguments,
+            serialized_arguments=serialized_arguments,
+            deduplicate=deduplicate,
         )
 
-    for candidate in candidates:
+    for candidate in tagged_candidates:
         try:
-            add_candidate(json.loads(candidate.strip()))
+            decoded = json.loads(candidate.strip())
+        except json.JSONDecodeError:
+            add_malformed_candidate(candidate)
+            continue
+        before = len(recovered)
+        add_candidate(decoded, deduplicate=False)
+        if len(recovered) == before:
+            add_malformed_candidate(decoded, deduplicate=False)
+
+    if not tagged_candidates:
+        try:
+            add_candidate(json.loads(content.strip()))
         except json.JSONDecodeError:
             pass
 
-    # A prose wrapper may surround the JSON object. Scan each possible object
-    # without interpreting arbitrary JSON: only a registered name plus an
-    # arguments object qualifies as a recovered tool call.
-    for start, character in enumerate(content):
-        if character != "{":
-            continue
-        try:
-            candidate, _ = decoder.raw_decode(content[start:])
-        except json.JSONDecodeError:
-            continue
-        add_candidate(candidate)
-
-    # Some instruction-tuned servers put a function name in the text and
-    # follow it with a JSON argument object, for example
-    # ``str_replace({"path": "api.py", ...})``. Recover that form too, but
-    # only for names in the registered tool set.
-    for name in sorted(TOOL_NAMES):
-        for match in re.finditer(rf"(?<![\w-]){re.escape(name)}\s*(?:\(|:)?\s*", content):
-            start = match.end()
-            if start >= len(content) or content[start] != "{":
+    if not tagged_candidates:
+        # A prose wrapper may surround the JSON object. Scan each possible
+        # object without interpreting arbitrary JSON: only a tool-shaped name
+        # plus an arguments object qualifies as a recovered tool call.
+        for start, character in enumerate(content):
+            if character != "{":
                 continue
             try:
-                arguments, _ = decoder.raw_decode(content[start:])
+                candidate, _ = decoder.raw_decode(content[start:])
             except json.JSONDecodeError:
                 continue
-            add_candidate({"name": name, "arguments": arguments})
+            add_candidate(candidate)
+
+        # Some instruction-tuned servers put a function name in the text and
+        # follow it with a JSON argument object, for example
+        # ``str_replace({"path": "api.py", ...})``. Recover that form too,
+        # but only for names in the registered tool set.
+        for name in sorted(TOOL_NAMES):
+            for match in re.finditer(rf"(?<![\w-]){re.escape(name)}\s*(?:\(|:)?\s*", content):
+                start = match.end()
+                if start >= len(content) or content[start] != "{":
+                    continue
+                try:
+                    arguments, _ = decoder.raw_decode(content[start:])
+                except json.JSONDecodeError:
+                    continue
+                add_candidate({"name": name, "arguments": arguments})
 
     return recovered
 
@@ -646,6 +1348,16 @@ def tool_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": message, "error_code": code}
 
 
+def tool_result_for_model(result: Any) -> Any:
+    """Keep audit-only file contents out of the model's subsequent context."""
+
+    if not isinstance(result, dict) or "file_modifications" not in result:
+        return result
+    model_result = copy.deepcopy(result)
+    model_result.pop("file_modifications", None)
+    return model_result
+
+
 def list_files(root: Path, relative: str) -> dict[str, Any]:
     root = root.resolve()
     directory = safe_path(root, relative)
@@ -690,7 +1402,13 @@ def write_file(root: Path, relative: str, content: str) -> dict[str, Any]:
             output.write(content)
     except FileExistsError as error:
         raise ToolError("write_file_existing", f"write_file can only create new files: {relative}") from error
-    return {"ok": True, "path": relative, "bytes": len(content.encode("utf-8"))}
+    return {
+        "ok": True,
+        "path": relative,
+        "bytes": len(content.encode("utf-8")),
+        "outcome": "modified",
+        "file_modifications": [build_file_modification(relative, None, content)],
+    }
 
 
 def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> dict[str, Any]:
@@ -723,9 +1441,45 @@ def str_replace(root: Path, relative: str, old_string: str, new_string: str) -> 
             "str_replace_multiple_matches",
             f"str_replace found {matches} matches in {relative}; the match must be unique",
         )
+    replacement = text.replace(old_string, new_string, 1)
+    if replacement == text:
+        return {
+            "ok": True,
+            "path": relative,
+            "replacements": 1,
+            "outcome": "no_change",
+            "file_modifications": [],
+        }
     with target.open("w", encoding="utf-8", newline="") as output:
-        output.write(text.replace(old_string, new_string, 1))
-    return {"ok": True, "path": relative, "replacements": 1}
+        output.write(replacement)
+    return {
+        "ok": True,
+        "path": relative,
+        "replacements": 1,
+        "outcome": "modified",
+        "file_modifications": [build_file_modification(relative, text, replacement)],
+    }
+
+
+def build_file_modification(relative: str, before: str | None, after: str | None) -> dict[str, Any]:
+    before_lines = [] if before is None else before.splitlines(keepends=True)
+    after_lines = [] if after is None else after.splitlines(keepends=True)
+    before_name = "/dev/null" if before is None else f"a/{relative}"
+    after_name = "/dev/null" if after is None else f"b/{relative}"
+    diff = "".join(
+        difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile=before_name,
+            tofile=after_name,
+        )
+    )
+    return {
+        "path": relative,
+        "before": before,
+        "after": after,
+        "diff": diff,
+    }
 
 
 def safe_path(root: Path, relative: str) -> Path:

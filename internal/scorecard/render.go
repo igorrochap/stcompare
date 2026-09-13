@@ -3,26 +3,52 @@ package scorecard
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"html/template"
 	"strings"
 	"time"
 
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 	"stcompare/internal/comparison"
 )
 
 type benchmarkView struct {
-	Agent        string
-	Model        string
-	Iterations   int
-	TotalTime    string
-	AgentFixTime string
-	Tokens       *benchrecord.TokenUsage
+	Agent               string
+	Model               string
+	Iterations          int
+	TotalTime           string
+	AgentFixTime        string
+	Tokens              *benchrecord.TokenUsage
+	Efficiency          benchrecord.EfficiencySummary
+	EfficiencyAvailable bool
+	Audit               benchrecord.AuditReference
+	AuditAvailable      bool
+	Activity            *benchrecord.ActivitySummary
+	ActivityAvailable   bool
+	FinalSource         *audit.FinalSource
 }
 
 // Render renders a benchmark scorecard containing the complete comparison report.
 func Render(document comparison.Report, record benchrecord.Record) (string, error) {
+	return render(document, record, nil)
+}
+
+// RenderWithAudit renders a scorecard with source and comparison evidence.
+func RenderWithAudit(
+	document comparison.Report,
+	record benchrecord.Record,
+	auditDocument *audit.Artifact,
+) (string, error) {
+	return render(document, record, auditDocument)
+}
+
+func render(
+	document comparison.Report,
+	record benchrecord.Record,
+	auditDocument *audit.Artifact,
+) (string, error) {
 	comparisonHTML, err := comparison.RenderHTML(document)
 	if err != nil {
 		return "", fmt.Errorf("render comparison: %w", err)
@@ -30,12 +56,25 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 
 	var section bytes.Buffer
 	view := benchmarkView{
-		Agent:        record.Agent,
-		Model:        record.Model,
-		Iterations:   record.Iterations,
-		TotalTime:    formatMilliseconds(record.TimeMS.Total),
-		AgentFixTime: formatMilliseconds(record.TimeMS.AgentFix),
-		Tokens:       record.Tokens,
+		Agent:               record.Agent,
+		Model:               record.Model,
+		Iterations:          record.Iterations,
+		TotalTime:           formatMilliseconds(record.TimeMS.Total),
+		AgentFixTime:        formatMilliseconds(record.TimeMS.AgentFix),
+		Tokens:              record.Tokens,
+		Efficiency:          record.Efficiency,
+		EfficiencyAvailable: efficiencyAvailable(record.Efficiency),
+		Audit:               record.Audit,
+		AuditAvailable:      auditAvailable(record.Audit),
+		Activity:            record.Audit.Activity,
+		ActivityAvailable:   activityAvailable(record.Audit),
+	}
+	if auditDocument != nil && efficiencyAvailable(auditDocument.Efficiency) {
+		view.Efficiency = auditDocument.Efficiency
+		view.EfficiencyAvailable = true
+	}
+	if auditDocument != nil && auditDocument.FinalSource.Status != "" {
+		view.FinalSource = &auditDocument.FinalSource
 	}
 	if err := benchmarkSectionTemplate.Execute(&section, view); err != nil {
 		return "", fmt.Errorf("render benchmark run: %w", err)
@@ -47,6 +86,28 @@ func Render(document comparison.Report, record benchrecord.Record) (string, erro
 	}
 
 	return strings.Replace(comparisonHTML, trafficSection, section.String()+trafficSection, 1), nil
+}
+
+func auditAvailable(reference benchrecord.AuditReference) bool {
+	if reference.Report == "" {
+		return false
+	}
+	return reference.Status == benchrecord.AuditStatusComplete || reference.Status == benchrecord.AuditStatusPartial
+}
+
+func activityAvailable(reference benchrecord.AuditReference) bool {
+	if reference.Activity == nil {
+		return false
+	}
+	if reference.Status != benchrecord.AuditStatusComplete && reference.Status != benchrecord.AuditStatusPartial {
+		return false
+	}
+	activity := reference.Activity
+	return activity.Status == benchrecord.ActivityStatusComplete || activity.Status == benchrecord.ActivityStatusPartial
+}
+
+func efficiencyAvailable(summary benchrecord.EfficiencySummary) bool {
+	return summary.Status == benchrecord.EfficiencyStatusComplete || summary.Status == benchrecord.EfficiencyStatusPartial
 }
 
 func formatMilliseconds(milliseconds int64) string {
@@ -77,29 +138,7 @@ func formatMilliseconds(milliseconds int64) string {
 	return prefix + strings.Join(parts, " ")
 }
 
-var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse(`<section class="benchmark-run">
-<h2>Benchmark Run</h2>
-<p class="section-lede">Cost of producing the candidate fix.</p>
-<div class="identity">
-<div><span>Agent</span><strong>{{.Agent}}</strong></div>
-<div><span>Model</span><strong>{{.Model}}</strong></div>
-</div>
-<div class="counts">
-<div class="count"><span>Total time</span><strong>{{.TotalTime}}</strong></div>
-<div class="count"><span>Agent-fix time</span><strong>{{.AgentFixTime}}</strong></div>
-<div class="count"><span>Iterations</span><strong>{{.Iterations}}</strong></div>
-</div>
-<div class="category-counts">
-<h3>Token usage</h3>
-{{with .Tokens}}
-<div class="counts">
-<div class="count"><span>Input tokens</span><strong>{{.Input}}</strong></div>
-<div class="count"><span>Output tokens</span><strong>{{.Output}}</strong></div>
-<div class="count"><span>Total tokens</span><strong>{{.Total}}</strong></div>
-</div>
-{{else}}
-<p class="empty">not reported</p>
-{{end}}
-</div>
-</section>
-`))
+//go:embed scorecard.gohtml
+var benchmarkSectionTemplateText string
+
+var benchmarkSectionTemplate = template.Must(template.New("benchmark-run").Parse(benchmarkSectionTemplateText))

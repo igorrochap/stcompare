@@ -168,6 +168,12 @@ style() {
     printf '%s\n' "$base_note"
     return 1
   fi
+  if [[ "$lint_output" == *"no go files to analyze"* ]]; then
+    # A refactor that changes only imports or package declarations has no
+    # lintable changed Go lines for golangci-lint to analyze.
+    printf '%s\n' "$base_note"
+    return 0
+  fi
   printf '%s\n' "$base_note"
   if (( lint_status != 0 )); then
     if [[ -n "$lint_output" ]]; then
@@ -426,11 +432,16 @@ coverage() {
   if ! coverage_data="$(
     awk '
       function is_code_line(content) {
+        # Go coverage profiles do not emit entries for imports or package-level
+        # declarations, so those lines cannot be measured as changed coverage.
         if (content ~ /^[[:space:]]*$/ ||
             content ~ /^[[:space:]]*\/\// ||
             content ~ /^[[:space:]]*\/\*/ ||
             content ~ /^[[:space:]]*\*\// ||
-            content ~ /^[[:space:]]*}[[:space:]]*$/) {
+            content ~ /^[[:space:]]*}[[:space:]]*$/ ||
+            content ~ /^[[:space:]]*(import|package)[[:space:](]/ ||
+            content ~ /^[[:space:]]*[._[:alnum:]]+[[:space:]]+"[^"]+"[[:space:]]*$/ ||
+            content ~ /^(const|var|type|func)[[:space:]]/) {
           return 0
         }
         return 1

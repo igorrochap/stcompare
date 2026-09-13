@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"stcompare/benchrecord"
+	"stcompare/internal/audit"
 	"stcompare/internal/comparison"
 )
 
@@ -35,8 +37,9 @@ func Build(input Input) error {
 	if err := json.Unmarshal(recordContents, &record); err != nil {
 		return fmt.Errorf("parse benchmark record file %q: %w", input.RecordPath, err)
 	}
+	auditDocument := loadAuditDocument(input.RecordPath, &record)
 
-	html, err := Render(document, record)
+	html, err := RenderWithAudit(document, record, auditDocument)
 	if err != nil {
 		return err
 	}
@@ -45,4 +48,23 @@ func Build(input Input) error {
 	}
 
 	return nil
+}
+
+func loadAuditDocument(recordPath string, record *benchrecord.Record) *audit.Artifact {
+	if record.Audit.Artifact == "" {
+		return nil
+	}
+	auditPath := filepath.Join(filepath.Dir(recordPath), record.Audit.Artifact)
+	document, err := audit.Read(auditPath)
+	if err != nil {
+		return nil
+	}
+	if record.Audit.Activity == nil {
+		activity := document.Activity
+		record.Audit.Activity = &activity
+	}
+	if !efficiencyAvailable(record.Efficiency) {
+		record.Efficiency = document.Efficiency
+	}
+	return &document
 }

@@ -48,6 +48,7 @@ func NewRootCommandWithDependencies(deps Dependencies) *cobra.Command {
 	root.AddCommand(newConfigCommand(&options))
 	root.AddCommand(newCampaignCommand(&options))
 	root.AddCommand(newScorecardCommand())
+	root.AddCommand(newAuditCommand())
 
 	return root
 }
