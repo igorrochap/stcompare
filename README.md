@@ -175,6 +175,7 @@ comparison:
     - 404
     - 410
   precondition_heuristics: []
+  custom_check_oracles: {}
   normalization:
     default_rules: true
     body_fields: []
@@ -400,6 +401,11 @@ effective configuration must have:
 - A non-empty `name` and `header_name` for every
   `comparison.normalization.headers` rule. Header names match
   case-insensitively.
+- Every `comparison.custom_check_oracles` entry must define exactly one
+  deterministic oracle. A status oracle uses `allowed_statuses` to list the
+  candidate statuses that demonstrate corrected behavior. A JSON oracle uses a
+  top-level response `field` and scalar `value` to identify corrected behavior.
+  Statuses must be valid HTTP statuses, and JSON values must be scalar.
 - At least one campaign.
 - A `baseline` or `candidate` kind for every campaign.
 
@@ -486,6 +492,32 @@ They mask JSON body fields named `id`, `uuid`, `created_at`, `updated_at`, and
 `timestamp`, and the response `Date` header, using stable placeholders such as
 `<normalized:generated-id>` and `<normalized:timestamp>`.
 
+### Custom check replay oracles
+
+Unknown Schemathesis checks remain unevaluable unless their corrected replay
+condition is configured. Configuration maps the exact check name to either a
+status oracle or a JSON field/value oracle:
+
+```yaml
+comparison:
+  custom_check_oracles:
+    access_control_check:
+      status:
+        allowed_statuses: [401, 403]
+    ownership_check:
+      json:
+        field: owner
+        value: candidate
+```
+
+The baseline response for the correlated reproduction request is the failing
+condition. A replay that returns the same status or same JSON field value is
+`still_failing`; a configured allowed status or JSON value is `fixed`. An
+unexpected status, missing field, incompatible JSON type, missing response, or
+candidate `5xx` is `inconclusive`. The oracle is applied only to the correlated
+baseline interaction, and its result flows into the normal comparison and
+agent-view convergence counts.
+
 Add body-field or header rules for API-specific dynamic values:
 
 ```yaml
@@ -565,8 +597,9 @@ include:
   covers the Schemathesis server-error, negative-data-rejection,
   positive-data-acceptance, response-schema-conformance, status-code-conformance,
   ignored-auth, use-after-free, and ensure-resource-availability checks; only
-  uncategorized checks remain
-  `unevaluable`. Generated-resource
+  uncategorized checks without a configured custom replay oracle remain
+  `unevaluable`. Configured custom replay oracles make their check evaluable.
+  Generated-resource
   precondition-loss evidence can make a correlated problem of any supported
   check category evaluable and inconclusive. A correlated `not_a_server_error`
   problem remains `still_failing` when replay also returns a 5xx response. A

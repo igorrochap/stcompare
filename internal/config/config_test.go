@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -549,6 +550,130 @@ func TestConfigValidateAcceptsStbenchHealthURLWithMatchingHostPort(t *testing.T)
 
 			if err := config.Validate(); err != nil {
 				t.Fatalf("Validate() error = %v, want nil for matching default port", err)
+			}
+		})
+	}
+}
+
+func TestConfigLoadParsesCustomCheckReplayOracles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stcompare.yaml")
+	contents := `schema: openapi.json
+base_url: http://localhost:8080
+reports_dir: reports
+schemathesis:
+  workers: 1
+comparison:
+  custom_check_oracles:
+    fixture_access_check:
+      status:
+        allowed_statuses: [401, 403]
+    fixture_owner_check:
+      json:
+        field: owner
+        value: candidate
+campaigns:
+  baseline:
+    kind: baseline
+  candidate:
+    kind: candidate
+    agent: test-agent
+    model: test-model
+    effort: high
+    adapter: test
+stbench:
+  adapters:
+    test: test-adapter
+`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	statusOracle := loaded.Comparison.CustomCheckOracles["fixture_access_check"]
+	if statusOracle.Status == nil || !reflect.DeepEqual(statusOracle.Status.AllowedStatuses, []int{401, 403}) {
+		t.Fatalf("status oracle = %#v, want allowed statuses", statusOracle)
+	}
+	jsonOracle := loaded.Comparison.CustomCheckOracles["fixture_owner_check"]
+	if jsonOracle.JSON == nil || jsonOracle.JSON.Field != "owner" || jsonOracle.JSON.Value != "candidate" {
+		t.Fatalf("JSON oracle = %#v, want field/value assertion", jsonOracle)
+	}
+}
+
+func TestConfigValidateRejectsInvalidCustomCheckReplayOracles(t *testing.T) {
+	tests := []struct {
+		name      string
+		oracle    CustomCheckOracle
+		wantError string
+	}{
+		{
+			name:      "missing form",
+			oracle:    CustomCheckOracle{},
+			wantError: `comparison.custom_check_oracles["fixture"] must define exactly one of status or json`,
+		},
+		{
+			name: "built-in check name",
+			oracle: CustomCheckOracle{
+				Status: &StatusReplayOracle{AllowedStatuses: []int{401}},
+			},
+			wantError: `comparison.custom_check_oracles["not_a_server_error"] must not define an oracle for a built-in check`,
+		},
+		{
+			name: "conflicting forms",
+			oracle: CustomCheckOracle{
+				Status: &StatusReplayOracle{AllowedStatuses: []int{401}},
+				JSON:   &JSONResponseReplayOracle{Field: "owner", Value: "candidate"},
+			},
+			wantError: `comparison.custom_check_oracles["fixture"] must define only one of status or json`,
+		},
+		{
+			name:      "missing statuses",
+			oracle:    CustomCheckOracle{Status: &StatusReplayOracle{}},
+			wantError: `comparison.custom_check_oracles["fixture"].status.allowed_statuses is required`,
+		},
+		{
+			name:      "invalid status",
+			oracle:    CustomCheckOracle{Status: &StatusReplayOracle{AllowedStatuses: []int{600}}},
+			wantError: `comparison.custom_check_oracles["fixture"].status.allowed_statuses[0] must be a valid HTTP status (100-599)`,
+		},
+		{
+			name:      "missing JSON field",
+			oracle:    CustomCheckOracle{JSON: &JSONResponseReplayOracle{Value: true}},
+			wantError: `comparison.custom_check_oracles["fixture"].json.field is required`,
+		},
+		{
+			name:      "missing JSON value",
+			oracle:    CustomCheckOracle{JSON: &JSONResponseReplayOracle{Field: "owner"}},
+			wantError: `comparison.custom_check_oracles["fixture"].json.value is required`,
+		},
+		{
+			name: "non-scalar JSON value",
+			oracle: CustomCheckOracle{
+				JSON: &JSONResponseReplayOracle{Field: "owner", Value: map[string]any{"name": "candidate"}},
+			},
+			wantError: `comparison.custom_check_oracles["fixture"].json.value must be a JSON scalar`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validCandidateIdentityConfig()
+			checkName := "fixture"
+			if test.name == "built-in check name" {
+				checkName = "not_a_server_error"
+			}
+			config.Comparison.CustomCheckOracles = map[string]CustomCheckOracle{
+				checkName: test.oracle,
+			}
+
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want oracle validation error")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
 			}
 		})
 	}

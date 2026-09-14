@@ -14,9 +14,10 @@ import (
 // PreconditionPolicy identifies replay responses that may reflect missing
 // candidate-side resources rather than fixed baseline problems.
 type PreconditionPolicy struct {
-	MissingResourceStatuses []int                       `json:"missing_resource_statuses"`
-	Heuristics              []PreconditionHeuristic     `json:"precondition_heuristics"`
-	Normalization           ResponseNormalizationConfig `json:"normalization"`
+	MissingResourceStatuses []int                        `json:"missing_resource_statuses"`
+	Heuristics              []PreconditionHeuristic      `json:"precondition_heuristics"`
+	Normalization           ResponseNormalizationConfig  `json:"normalization"`
+	CustomCheckOracles      map[string]CustomCheckOracle `json:"custom_check_oracles,omitempty"`
 }
 
 func (p PreconditionPolicy) clone() PreconditionPolicy {
@@ -34,6 +35,7 @@ func (p PreconditionPolicy) clone() PreconditionPolicy {
 				p.Normalization.Headers...,
 			),
 		},
+		CustomCheckOracles: cloneCustomCheckOracles(p.CustomCheckOracles),
 	}
 
 	return clone
@@ -100,6 +102,9 @@ type preparedComparison struct {
 
 // Compare replays the baseline interactions and writes the comparison artifacts.
 func Compare(input Input, dependencies Dependencies) (Result, error) {
+	if err := input.PreconditionPolicy.validateCustomCheckOracles(); err != nil {
+		return Result{}, fmt.Errorf("baseline replay setup: validate comparison policy: %w", err)
+	}
 	prepared, err := prepareComparison(input)
 	if err != nil {
 		return Result{}, fmt.Errorf("baseline replay setup: %w", err)
@@ -173,6 +178,33 @@ func prepareComparison(input Input) (preparedComparison, error) {
 		schemaValidation:           schemaValidation,
 		replayRequests:             httpRequests,
 	}, nil
+}
+
+func cloneCustomCheckOracles(
+	oracles map[string]CustomCheckOracle,
+) map[string]CustomCheckOracle {
+	if oracles == nil {
+		return nil
+	}
+
+	clone := make(map[string]CustomCheckOracle, len(oracles))
+	for name, oracle := range oracles {
+		copied := CustomCheckOracle{}
+		if oracle.Status != nil {
+			copied.Status = &StatusReplayOracle{
+				AllowedStatuses: append([]int(nil), oracle.Status.AllowedStatuses...),
+			}
+		}
+		if oracle.JSON != nil {
+			copied.JSON = &JSONResponseReplayOracle{
+				Field: oracle.JSON.Field,
+				Value: oracle.JSON.Value,
+			}
+		}
+		clone[name] = copied
+	}
+
+	return clone
 }
 
 func persistComparisonArtifacts(

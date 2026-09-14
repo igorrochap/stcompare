@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"strings"
+
+	"stcompare/internal/replayoracle"
 )
 
 type evidenceSource string
@@ -41,18 +43,18 @@ type baselineProblem struct {
 	Interaction                  *int                 `json:"interaction"`
 }
 
-type checkCategory string
+type checkCategory = replayoracle.CheckCategory
 
 const (
-	checkCategoryServerError                checkCategory = "server_error"
-	checkCategoryNegativeDataRejection      checkCategory = "negative_data_rejection"
-	checkCategoryResponseSchemaConformance  checkCategory = "response_schema_conformance"
-	checkCategoryPositiveDataAcceptance     checkCategory = "positive_data_acceptance"
-	checkCategoryStatusCodeConformance      checkCategory = "status_code_conformance"
-	checkCategoryIgnoredAuth                checkCategory = "ignored_auth"
-	checkCategoryUseAfterFree               checkCategory = "use_after_free"
-	checkCategoryEnsureResourceAvailability checkCategory = "ensure_resource_availability"
-	checkCategoryUncategorized              checkCategory = "uncategorized"
+	checkCategoryServerError                = replayoracle.CheckCategoryServerError
+	checkCategoryNegativeDataRejection      = replayoracle.CheckCategoryNegativeDataRejection
+	checkCategoryResponseSchemaConformance  = replayoracle.CheckCategoryResponseSchemaConformance
+	checkCategoryPositiveDataAcceptance     = replayoracle.CheckCategoryPositiveDataAcceptance
+	checkCategoryStatusCodeConformance      = replayoracle.CheckCategoryStatusCodeConformance
+	checkCategoryIgnoredAuth                = replayoracle.CheckCategoryIgnoredAuth
+	checkCategoryUseAfterFree               = replayoracle.CheckCategoryUseAfterFree
+	checkCategoryEnsureResourceAvailability = replayoracle.CheckCategoryEnsureResourceAvailability
+	checkCategoryUncategorized              = replayoracle.CheckCategoryUncategorized
 )
 
 type problemOutcome string
@@ -103,6 +105,13 @@ const (
 	problemOutcomeReasonAmbiguousCorrelation              problemOutcomeReason = "ambiguous_correlation"
 	problemOutcomeReasonReplayInteractionMissing          problemOutcomeReason = "replay_interaction_missing"
 	problemOutcomeReasonUnsupportedCheckCategory          problemOutcomeReason = "unsupported_check_category"
+	problemOutcomeReasonReplayOracleStatusAllowed         problemOutcomeReason = "replay_oracle_status_allowed"
+	problemOutcomeReasonReplayOracleStatusRepeated        problemOutcomeReason = "replay_oracle_status_repeated"
+	problemOutcomeReasonReplayOracleJSONValueAllowed      problemOutcomeReason = "replay_oracle_json_value_allowed"
+	problemOutcomeReasonReplayOracleJSONValueRepeated     problemOutcomeReason = "replay_oracle_json_value_repeated"
+	problemOutcomeReasonReplayOracleEvidenceMissing       problemOutcomeReason = "replay_oracle_evidence_missing"
+	problemOutcomeReasonReplayOracleTypeMismatch          problemOutcomeReason = "replay_oracle_type_mismatch"
+	problemOutcomeReasonReplayOracleConditionAmbiguous    problemOutcomeReason = "replay_oracle_condition_ambiguous"
 )
 
 type correlationStatus string
@@ -240,23 +249,6 @@ func classifyCheckStatus(status string) checkStatus {
 }
 
 func categorizeCheckName(name string) checkCategory {
-	category, ok := checkCategoriesByName[strings.ToLower(strings.TrimSpace(name))]
-	if !ok {
-		return checkCategoryUncategorized
-	}
-
+	category, _ := replayoracle.CategorizeCheckName(name)
 	return category
-}
-
-var checkCategoriesByName = map[string]checkCategory{
-	"not_a_server_error":           checkCategoryServerError,
-	"server error":                 checkCategoryServerError,
-	"negative_data_rejection":      checkCategoryNegativeDataRejection,
-	"response_schema_conformance":  checkCategoryResponseSchemaConformance,
-	"response violates schema":     checkCategoryResponseSchemaConformance,
-	"positive_data_acceptance":     checkCategoryPositiveDataAcceptance,
-	"status_code_conformance":      checkCategoryStatusCodeConformance,
-	"ignored_auth":                 checkCategoryIgnoredAuth,
-	"use_after_free":               checkCategoryUseAfterFree,
-	"ensure_resource_availability": checkCategoryEnsureResourceAvailability,
 }
