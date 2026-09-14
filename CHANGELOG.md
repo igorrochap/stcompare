@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.0.0 (2026-09-14)
+
+### Features
+
+- **docs**: Introduce problem groups for agent view
+  ([`c1bc645`](https://github.com/igorrochap/stcompare/commit/c1bc645657cf74bc056f4eb9e448bf9445ffc374))
+
+
 ## v1.8.0 (2026-09-14)
 
 ### Features
