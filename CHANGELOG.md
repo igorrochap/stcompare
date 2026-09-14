@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v1.8.0 (2026-09-14)
+
+### Features
+
+- **comparison**: Add custom check replay oracles
+  ([#101](https://github.com/igorrochap/stcompare/pull/101),
+  [`1e3fff7`](https://github.com/igorrochap/stcompare/commit/1e3fff7f378dc87e310e7eecce48777ddeace7c2))
+
+
 ## v1.7.0 (2026-09-13)
 
 ### Features
