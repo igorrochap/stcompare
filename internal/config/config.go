@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"stcompare/internal/replayoracle"
 )
 
 const DefaultFilename = "stcompare.yaml"
@@ -46,10 +47,23 @@ type SchemathesisConfig struct {
 }
 
 type ComparisonConfig struct {
-	MissingResourceStatuses []int                   `yaml:"missing_resource_statuses"`
-	PreconditionHeuristics  []PreconditionHeuristic `yaml:"precondition_heuristics"`
-	Normalization           NormalizationConfig     `yaml:"normalization"`
+	MissingResourceStatuses []int                        `yaml:"missing_resource_statuses"`
+	PreconditionHeuristics  []PreconditionHeuristic      `yaml:"precondition_heuristics"`
+	Normalization           NormalizationConfig          `yaml:"normalization"`
+	CustomCheckOracles      map[string]CustomCheckOracle `yaml:"custom_check_oracles,omitempty"`
 }
+
+// CustomCheckOracle defines the deterministic replay assertion for one
+// Schemathesis check that is not covered by a built-in classifier.
+type CustomCheckOracle = replayoracle.CustomCheckOracle
+
+// StatusReplayOracle identifies candidate statuses that demonstrate the
+// corrected behavior.
+type StatusReplayOracle = replayoracle.StatusReplayOracle
+
+// JSONResponseReplayOracle identifies a response field and its corrected
+// scalar value.
+type JSONResponseReplayOracle = replayoracle.JSONResponseReplayOracle
 
 type PreconditionHeuristic struct {
 	Name        string `yaml:"name"`
@@ -137,6 +151,16 @@ type StbenchLifecycleConfig struct {
 }
 
 func (c Config) Validate() error {
+	if err := validateConfigBasics(c); err != nil {
+		return err
+	}
+	if err := validateComparison(c.Comparison); err != nil {
+		return err
+	}
+	return validateCampaigns(c)
+}
+
+func validateConfigBasics(c Config) error {
 	if strings.TrimSpace(c.Schema) == "" {
 		return errors.New("schema is required")
 	}
@@ -155,7 +179,24 @@ func (c Config) Validate() error {
 	if c.Schemathesis.Workers < 1 {
 		return errors.New("schemathesis.workers must be at least 1")
 	}
-	for index, status := range c.Comparison.MissingResourceStatuses {
+	return nil
+}
+
+func validateComparison(c ComparisonConfig) error {
+	if err := validateMissingResourceStatuses(c.MissingResourceStatuses); err != nil {
+		return err
+	}
+	if err := validatePreconditionHeuristics(c.PreconditionHeuristics); err != nil {
+		return err
+	}
+	if err := validateNormalization(c.Normalization); err != nil {
+		return err
+	}
+	return validateCustomCheckOracles(c.CustomCheckOracles)
+}
+
+func validateMissingResourceStatuses(statuses []int) error {
+	for index, status := range statuses {
 		if !isAllowedMissingResourceStatus(status) {
 			return fmt.Errorf(
 				"comparison.missing_resource_statuses[%d] must be one of 401, 403, 404, or 410",
@@ -163,8 +204,12 @@ func (c Config) Validate() error {
 			)
 		}
 	}
-	heuristicNames := make(map[string]struct{}, len(c.Comparison.PreconditionHeuristics))
-	for index, heuristic := range c.Comparison.PreconditionHeuristics {
+	return nil
+}
+
+func validatePreconditionHeuristics(heuristics []PreconditionHeuristic) error {
+	heuristicNames := make(map[string]struct{}, len(heuristics))
+	for index, heuristic := range heuristics {
 		name := strings.TrimSpace(heuristic.Name)
 		if name == "" {
 			return fmt.Errorf(
@@ -198,7 +243,18 @@ func (c Config) Validate() error {
 			)
 		}
 	}
-	for index, rule := range c.Comparison.Normalization.BodyFields {
+	return nil
+}
+
+func validateNormalization(normalization NormalizationConfig) error {
+	if err := validateBodyFieldNormalization(normalization.BodyFields); err != nil {
+		return err
+	}
+	return validateHeaderNormalization(normalization.Headers)
+}
+
+func validateBodyFieldNormalization(rules []BodyFieldNormalizationRule) error {
+	for index, rule := range rules {
 		if strings.TrimSpace(rule.Name) == "" {
 			return fmt.Errorf(
 				"comparison.normalization.body_fields[%d].name is required",
@@ -212,7 +268,11 @@ func (c Config) Validate() error {
 			)
 		}
 	}
-	for index, rule := range c.Comparison.Normalization.Headers {
+	return nil
+}
+
+func validateHeaderNormalization(rules []HeaderNormalizationRule) error {
+	for index, rule := range rules {
 		if strings.TrimSpace(rule.Name) == "" {
 			return fmt.Errorf(
 				"comparison.normalization.headers[%d].name is required",
@@ -226,6 +286,10 @@ func (c Config) Validate() error {
 			)
 		}
 	}
+	return nil
+}
+
+func validateCampaigns(c Config) error {
 	if len(c.Campaigns) == 0 {
 		return errors.New("at least one campaign is required")
 	}
@@ -237,56 +301,12 @@ func (c Config) Validate() error {
 		switch campaign.Kind {
 		case "baseline":
 			baselineCount++
-			if strings.TrimSpace(campaign.Agent) != "" {
-				return fmt.Errorf("campaign %q: agent must not be set on a baseline campaign", name)
-			}
-			if strings.TrimSpace(campaign.Model) != "" {
-				return fmt.Errorf("campaign %q: model must not be set on a baseline campaign", name)
-			}
-			if strings.TrimSpace(campaign.Effort) != "" {
-				return fmt.Errorf("campaign %q: effort must not be set on a baseline campaign", name)
-			}
-			if campaign.Temperature != nil {
-				return fmt.Errorf("campaign %q: temperature must not be set on a baseline campaign", name)
-			}
-			if strings.TrimSpace(campaign.Adapter) != "" {
-				return fmt.Errorf("campaign %q: adapter must not be set on a baseline campaign", name)
+			if err := validateBaselineCampaign(name, campaign); err != nil {
+				return err
 			}
 		case "candidate":
-			if strings.TrimSpace(campaign.Agent) == "" {
-				return fmt.Errorf("campaign %q: agent is required for candidate campaigns", name)
-			}
-			if strings.TrimSpace(campaign.Model) == "" {
-				return fmt.Errorf("campaign %q: model is required for candidate campaigns", name)
-			}
-			if strings.TrimSpace(campaign.Effort) == "" {
-				return fmt.Errorf("campaign %q: effort is required for candidate campaigns", name)
-			}
-			if campaign.Temperature != nil &&
-				(math.IsNaN(*campaign.Temperature) || math.IsInf(*campaign.Temperature, 0) ||
-					*campaign.Temperature < 0 || *campaign.Temperature > maxCampaignTemperature) {
-				return fmt.Errorf(
-					"campaign %q: temperature must be between 0 and %.0f",
-					name,
-					maxCampaignTemperature,
-				)
-			}
-			if strings.TrimSpace(campaign.Adapter) == "" {
-				return fmt.Errorf("campaign %q: adapter is required for candidate campaigns", name)
-			}
-			if c.Stbench == nil {
-				return fmt.Errorf(
-					"campaign %q: adapter %q is not defined in stbench.adapters",
-					name,
-					campaign.Adapter,
-				)
-			}
-			if _, exists := c.Stbench.Adapters[campaign.Adapter]; !exists {
-				return fmt.Errorf(
-					"campaign %q: adapter %q is not defined in stbench.adapters",
-					name,
-					campaign.Adapter,
-				)
+			if err := validateCandidateCampaign(name, campaign, c.Stbench); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("campaign %q has invalid kind %q: must be baseline or candidate", name, campaign.Kind)
@@ -301,6 +321,90 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func validateBaselineCampaign(name string, campaign Campaign) error {
+	if strings.TrimSpace(campaign.Agent) != "" {
+		return fmt.Errorf("campaign %q: agent must not be set on a baseline campaign", name)
+	}
+	if strings.TrimSpace(campaign.Model) != "" {
+		return fmt.Errorf("campaign %q: model must not be set on a baseline campaign", name)
+	}
+	if strings.TrimSpace(campaign.Effort) != "" {
+		return fmt.Errorf("campaign %q: effort must not be set on a baseline campaign", name)
+	}
+	if campaign.Temperature != nil {
+		return fmt.Errorf("campaign %q: temperature must not be set on a baseline campaign", name)
+	}
+	if strings.TrimSpace(campaign.Adapter) != "" {
+		return fmt.Errorf("campaign %q: adapter must not be set on a baseline campaign", name)
+	}
+	return nil
+}
+
+func validateCandidateCampaign(
+	name string,
+	campaign Campaign,
+	stbench *StbenchConfig,
+) error {
+	if err := validateCandidateFields(name, campaign); err != nil {
+		return err
+	}
+	if err := validateCandidateTemperature(name, campaign.Temperature); err != nil {
+		return err
+	}
+	return validateCandidateAdapter(name, campaign.Adapter, stbench)
+}
+
+func validateCandidateFields(name string, campaign Campaign) error {
+	if strings.TrimSpace(campaign.Agent) == "" {
+		return fmt.Errorf("campaign %q: agent is required for candidate campaigns", name)
+	}
+	if strings.TrimSpace(campaign.Model) == "" {
+		return fmt.Errorf("campaign %q: model is required for candidate campaigns", name)
+	}
+	if strings.TrimSpace(campaign.Effort) == "" {
+		return fmt.Errorf("campaign %q: effort is required for candidate campaigns", name)
+	}
+	return nil
+}
+
+func validateCandidateTemperature(name string, temperature *float64) error {
+	if temperature == nil ||
+		(!math.IsNaN(*temperature) && !math.IsInf(*temperature, 0) &&
+			*temperature >= 0 && *temperature <= maxCampaignTemperature) {
+		return nil
+	}
+	return fmt.Errorf(
+		"campaign %q: temperature must be between 0 and %.0f",
+		name,
+		maxCampaignTemperature,
+	)
+}
+
+func validateCandidateAdapter(name, adapter string, stbench *StbenchConfig) error {
+	if strings.TrimSpace(adapter) == "" {
+		return fmt.Errorf("campaign %q: adapter is required for candidate campaigns", name)
+	}
+	if stbench == nil {
+		return fmt.Errorf(
+			"campaign %q: adapter %q is not defined in stbench.adapters",
+			name,
+			adapter,
+		)
+	}
+	if _, exists := stbench.Adapters[adapter]; !exists {
+		return fmt.Errorf(
+			"campaign %q: adapter %q is not defined in stbench.adapters",
+			name,
+			adapter,
+		)
+	}
+	return nil
+}
+
+func validateCustomCheckOracles(oracles map[string]CustomCheckOracle) error {
+	return replayoracle.ValidateCustomCheckOracles(oracles, "comparison.custom_check_oracles")
 }
 
 func parseHTTPURL(rawURL string) (*url.URL, error) {
@@ -386,6 +490,7 @@ func Default() Config {
 		Comparison: ComparisonConfig{
 			MissingResourceStatuses: []int{404, 410},
 			PreconditionHeuristics:  []PreconditionHeuristic{},
+			CustomCheckOracles:      map[string]CustomCheckOracle{},
 			Normalization: NormalizationConfig{
 				DefaultRules: true,
 				BodyFields:   []BodyFieldNormalizationRule{},

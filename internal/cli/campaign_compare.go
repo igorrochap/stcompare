@@ -191,6 +191,28 @@ func campaignPreconditionPolicy(source config.ComparisonConfig) comparison.Preco
 			heuristic.PathPattern,
 		)
 	}
+	if len(source.CustomCheckOracles) == 0 {
+		return policy
+	}
+	policy.CustomCheckOracles = make(
+		map[string]comparison.CustomCheckOracle,
+		len(source.CustomCheckOracles),
+	)
+	for checkName, oracle := range source.CustomCheckOracles {
+		converted := comparison.CustomCheckOracle{}
+		if oracle.Status != nil {
+			converted.Status = &comparison.StatusReplayOracle{
+				AllowedStatuses: append([]int(nil), oracle.Status.AllowedStatuses...),
+			}
+		}
+		if oracle.JSON != nil {
+			converted.JSON = &comparison.JSONResponseReplayOracle{
+				Field: strings.TrimSpace(oracle.JSON.Field),
+				Value: oracle.JSON.Value,
+			}
+		}
+		policy.CustomCheckOracles[strings.ToLower(strings.TrimSpace(checkName))] = converted
+	}
 
 	return policy
 }

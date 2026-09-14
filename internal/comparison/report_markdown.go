@@ -3,6 +3,7 @@ package comparison
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -101,6 +102,39 @@ func writeMarkdownComparisonPolicy(
 		}
 	}
 	writeMarkdownNormalizationPolicy(output, policy.Normalization)
+	writeMarkdownCustomCheckOracles(output, policy.CustomCheckOracles)
+}
+
+func writeMarkdownCustomCheckOracles(
+	output *strings.Builder,
+	oracles map[string]CustomCheckOracle,
+) {
+	if len(oracles) == 0 {
+		return
+	}
+
+	output.WriteString("- Custom check replay oracles:\n")
+	names := make([]string, 0, len(oracles))
+	for name := range oracles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		oracle := oracles[name]
+		if oracle.Status != nil {
+			fmt.Fprintf(output, "  - `%s`: allowed statuses %v\n", name, oracle.Status.AllowedStatuses)
+			continue
+		}
+		if oracle.JSON != nil {
+			fmt.Fprintf(
+				output,
+				"  - `%s`: JSON field `%s` must equal `%v`\n",
+				name,
+				oracle.JSON.Field,
+				oracle.JSON.Value,
+			)
+		}
+	}
 }
 
 func writeMarkdownSchemaValidationProvenance(

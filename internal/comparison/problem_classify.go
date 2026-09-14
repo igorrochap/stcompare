@@ -13,8 +13,28 @@ func classifyProblem(
 	policy PreconditionPolicy,
 	schemaValidation *OpenAPIContract,
 ) problemClassification {
+	if problem.CheckCategory == "" {
+		problem.CheckCategory = categorizeCheckName(problem.CheckName)
+	}
+	if problem.CheckCategory != checkCategoryUncategorized {
+		return classifyCategorizedProblem(problem, interaction, policy, schemaValidation)
+	}
+	oracle, configured := customCheckOracleFor(policy, problem.CheckName)
+	if configured {
+		return classifyCustomCheckProblem(oracle, interaction)
+	}
+
+	return classifyCategorizedProblem(problem, interaction, policy, schemaValidation)
+}
+
+func classifyCategorizedProblem(
+	problem baselineProblem,
+	interaction reportInteractionEvidence,
+	policy PreconditionPolicy,
+	schemaValidation *OpenAPIContract,
+) problemClassification {
 	// Problem outcome precedence:
-	// 1. uncategorized check => unevaluable by summary accounting
+	// 1. uncategorized check without an oracle => unevaluable by summary accounting
 	// 2. candidate 5xx + server-error check => still_failing
 	// 3. matching precondition heuristic => generated_resource_precondition_loss
 	// 4. category-specific evidence => fixed, still_failing, or inconclusive

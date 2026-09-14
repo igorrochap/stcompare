@@ -329,6 +329,26 @@ func classifyReport(
 	policy PreconditionPolicy,
 	schemaValidation *OpenAPIContract,
 ) classifiedReport {
+	classified := newClassifiedReport(problems, interactions)
+	countProblemCorrelationStatuses(&classified)
+	classifyReportInteractions(&classified)
+	classifyReportProblems(&classified, policy, schemaValidation)
+	classified.baselineProblems.UnevaluableByCheckCategory =
+		newUnevaluableCheckCategoryCounts(classified.problems)
+	classified.baselineProblems.FixRate = newBaselineProblemFixRate(
+		classified.baselineProblems,
+	)
+	classified.interactions = reportableInteractionFindings(
+		classified.problems,
+		classified.interactions,
+	)
+	return classified
+}
+
+func newClassifiedReport(
+	problems []baselineProblem,
+	interactions []reportInteractionEvidence,
+) classifiedReport {
 	classified := classifiedReport{}
 	if problems != nil {
 		classified.problems = make([]baselineProblem, len(problems))
@@ -340,7 +360,10 @@ func classifyReport(
 	}
 	classified.baselineProblems.Total = len(classified.problems)
 	classified.traffic.Total = len(interactions)
+	return classified
+}
 
+func countProblemCorrelationStatuses(classified *classifiedReport) {
 	for _, problem := range classified.problems {
 		switch problem.CorrelationStatus {
 		case correlationStatusUncorrelated:
@@ -349,96 +372,138 @@ func classifyReport(
 			classified.baselineProblems.Ambiguous++
 		}
 	}
+}
 
+func classifyReportInteractions(classified *classifiedReport) {
 	for index := range classified.interactions {
 		interaction := &classified.interactions[index]
-		if isCandidateServerErrorRegression(classified.problems, *interaction) {
-			interaction.Classification = interactionClassificationRegressed
-			classified.traffic.Regressed++
-			continue
-		}
-		if interaction.StatusTransition.Baseline == nil {
-			interaction.Classification = interactionClassificationChanged
-			classified.traffic.Changed++
-			continue
-		}
-		if *interaction.StatusTransition.Baseline != interaction.StatusTransition.Candidate {
-			interaction.Classification = interactionClassificationChanged
-			classified.traffic.Changed++
-			continue
-		}
-		if isServerErrorStatus(interaction.CandidateResponse.Status) {
-			interaction.Classification = interactionClassificationChanged
-			classified.traffic.Changed++
-			continue
-		}
-
-		interaction.Classification = interactionClassificationSuccessUnchanged
-		classified.traffic.SuccessUnchanged++
+		classification := classifyReportInteraction(classified.problems, *interaction)
+		interaction.Classification = classification
+		incrementTrafficSummary(&classified.traffic, classification)
 	}
+}
 
+func classifyReportInteraction(
+	problems []baselineProblem,
+	interaction reportInteractionEvidence,
+) interactionClassification {
+	if isCandidateServerErrorRegression(problems, interaction) {
+		return interactionClassificationRegressed
+	}
+	if interaction.StatusTransition.Baseline == nil ||
+		*interaction.StatusTransition.Baseline != interaction.StatusTransition.Candidate ||
+		isServerErrorStatus(interaction.CandidateResponse.Status) {
+		return interactionClassificationChanged
+	}
+	return interactionClassificationSuccessUnchanged
+}
+
+func incrementTrafficSummary(summary *trafficSummary, classification interactionClassification) {
+	switch classification {
+	case interactionClassificationRegressed:
+		summary.Regressed++
+	case interactionClassificationChanged:
+		summary.Changed++
+	case interactionClassificationSuccessUnchanged:
+		summary.SuccessUnchanged++
+	}
+}
+
+func classifyReportProblems(
+	classified *classifiedReport,
+	policy PreconditionPolicy,
+	schemaValidation *OpenAPIContract,
+) {
 	for index := range classified.problems {
 		problem := &classified.problems[index]
-		switch problem.CorrelationStatus {
-		case correlationStatusUncorrelated:
-			problem.Outcome = problemOutcomeNotEvaluated
-			problem.OutcomeReason = problemOutcomeReasonUncorrelatedEvidence
-			continue
-		case correlationStatusAmbiguous:
-			problem.Outcome = problemOutcomeNotEvaluated
-			problem.OutcomeReason = problemOutcomeReasonAmbiguousCorrelation
-			continue
-		case correlationStatusCorrelated:
-		}
-		if problem.Interaction == nil || *problem.Interaction < 1 ||
-			*problem.Interaction > len(classified.interactions) {
-			problem.Outcome = problemOutcomeNotEvaluated
-			problem.OutcomeReason = problemOutcomeReasonReplayInteractionMissing
-			classified.baselineProblems.Unevaluable++
+		if setUnevaluatedCorrelationOutcome(problem) {
 			continue
 		}
-
-		interaction := classified.interactions[*problem.Interaction-1]
-		classification := classifyProblem(
+		classification := classifyReportProblem(
 			*problem,
-			interaction,
+			classified.interactions,
 			policy,
 			schemaValidation,
 		)
-		problem.Outcome = classification.outcome
-		problem.OutcomeReason = classification.outcomeReason
-		problem.ExerciseEvidence = classification.exerciseEvidence
-		problem.SchemaValidationErrors = classification.schemaValidationErrors
-		problem.MatchedPreconditionHeuristic =
-			classification.matchedPreconditionHeuristic
-		if classification.outcome == "" {
-			problem.Outcome = problemOutcomeNotEvaluated
-			problem.OutcomeReason = problemOutcomeReasonUnsupportedCheckCategory
-			classified.baselineProblems.Unevaluable++
-			continue
+		setProblemClassification(problem, classification)
+		incrementProblemSummary(&classified.baselineProblems, problem)
+	}
+}
+
+func setUnevaluatedCorrelationOutcome(problem *baselineProblem) bool {
+	switch problem.CorrelationStatus {
+	case correlationStatusUncorrelated:
+		problem.Outcome = problemOutcomeNotEvaluated
+		problem.OutcomeReason = problemOutcomeReasonUncorrelatedEvidence
+		return true
+	case correlationStatusAmbiguous:
+		problem.Outcome = problemOutcomeNotEvaluated
+		problem.OutcomeReason = problemOutcomeReasonAmbiguousCorrelation
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyReportProblem(
+	problem baselineProblem,
+	interactions []reportInteractionEvidence,
+	policy PreconditionPolicy,
+	schemaValidation *OpenAPIContract,
+) problemClassification {
+	if problem.Interaction == nil || *problem.Interaction < 1 ||
+		*problem.Interaction > len(interactions) {
+		if _, configured := customCheckOracleFor(policy, problem.CheckName); configured {
+			return problemClassification{
+				outcome:       problemOutcomeInconclusive,
+				outcomeReason: problemOutcomeReasonReplayInteractionMissing,
+			}
 		}
-		classified.baselineProblems.Evaluable++
-		switch classification.outcome {
-		case problemOutcomeStillFailing:
-			classified.baselineProblems.StillFailing++
-		case problemOutcomeInconclusive:
-			classified.baselineProblems.Inconclusive++
-		case problemOutcomeFixed:
-			classified.baselineProblems.Fixed++
+		return problemClassification{
+			outcome:       problemOutcomeNotEvaluated,
+			outcomeReason: problemOutcomeReasonReplayInteractionMissing,
 		}
 	}
-	classified.baselineProblems.UnevaluableByCheckCategory =
-		newUnevaluableCheckCategoryCounts(classified.problems)
-	classified.baselineProblems.FixRate = newBaselineProblemFixRate(
-		classified.baselineProblems,
-	)
 
-	classified.interactions = reportableInteractionFindings(
-		classified.problems,
-		classified.interactions,
+	return classifyProblem(
+		problem,
+		interactions[*problem.Interaction-1],
+		policy,
+		schemaValidation,
 	)
+}
 
-	return classified
+func setProblemClassification(problem *baselineProblem, classification problemClassification) {
+	problem.Outcome = classification.outcome
+	problem.OutcomeReason = classification.outcomeReason
+	problem.ExerciseEvidence = classification.exerciseEvidence
+	problem.SchemaValidationErrors = classification.schemaValidationErrors
+	problem.MatchedPreconditionHeuristic = classification.matchedPreconditionHeuristic
+}
+
+func incrementProblemSummary(summary *baselineProblemSummary, problem *baselineProblem) {
+	if problem.Outcome == problemOutcomeNotEvaluated {
+		if problem.OutcomeReason == problemOutcomeReasonUnsupportedCheckCategory ||
+			problem.OutcomeReason == problemOutcomeReasonReplayInteractionMissing {
+			summary.Unevaluable++
+		}
+		return
+	}
+	if problem.Outcome == "" {
+		problem.Outcome = problemOutcomeNotEvaluated
+		problem.OutcomeReason = problemOutcomeReasonUnsupportedCheckCategory
+		summary.Unevaluable++
+		return
+	}
+	summary.Evaluable++
+	switch problem.Outcome {
+	case problemOutcomeStillFailing:
+		summary.StillFailing++
+	case problemOutcomeInconclusive:
+		summary.Inconclusive++
+	case problemOutcomeFixed:
+		summary.Fixed++
+	}
 }
 
 func newUnevaluableCheckCategoryCounts(problems []baselineProblem) []unevaluableCheckCategory {
