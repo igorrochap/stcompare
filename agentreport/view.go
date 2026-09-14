@@ -1,9 +1,9 @@
 package agentreport
 
 // SchemaVersion identifies the compact agent-view wire schema.
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
-// ActionKind identifies why an actionable item requires agent attention.
+// ActionKind identifies why a Problem Group requires agent attention.
 type ActionKind string
 
 const (
@@ -13,7 +13,7 @@ const (
 	ActionKindStillFailing ActionKind = "still_failing"
 )
 
-// CheckCategory identifies the category associated with an actionable item.
+// CheckCategory identifies the category associated with a Problem Group.
 type CheckCategory string
 
 const (
@@ -48,7 +48,7 @@ type Unverified struct {
 	Unevaluable  int `json:"unevaluable"`
 }
 
-// Actionable is a compact pointer to one fixable problem or regression.
+// Actionable is a compact Problem Group containing bounded evidence.
 type Actionable struct {
 	ID            string        `json:"id"`
 	Kind          ActionKind    `json:"kind"`
@@ -56,10 +56,22 @@ type Actionable struct {
 	Operation     string        `json:"operation"`
 	Status        Status        `json:"status"`
 	Message       string        `json:"message"`
-	Ref           int           `json:"ref"`
+	Count         int           `json:"count"`
+	Refs          []int         `json:"refs"`
+	Sample        Sample        `json:"sample"`
 }
 
-// Status contains the baseline and candidate HTTP statuses for an item.
+// Sample is bounded evidence for the lowest-reference interaction in a
+// Problem Group.
+type Sample struct {
+	Ref          int      `json:"ref"`
+	Operation    string   `json:"operation"`
+	RequestBody  string   `json:"request_body"`
+	ResponseBody string   `json:"response_body"`
+	Details      []string `json:"details"`
+}
+
+// Status contains the baseline and candidate HTTP statuses for a Problem Group.
 type Status struct {
 	Baseline  *int `json:"baseline"`
 	Candidate *int `json:"candidate"`

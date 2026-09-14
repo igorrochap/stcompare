@@ -74,7 +74,7 @@ confirmed fixed.
 _Avoid_: 100% fixed, Fix rate 100%, Passed
 
 **Problem Group**:
-The set of Schemathesis problems or regressions that share one operation
+The set of Schemathesis problems or regressions that share one kind, operation
 template, check category, message, and status transition. It is the unit an
 agent is asked to act on; a Schemathesis Problem remains the per-case unit.
 _Avoid_: Cluster, bucket, issue, actionable item

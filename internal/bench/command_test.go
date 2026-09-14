@@ -125,7 +125,7 @@ cat > %q
 printf '%%s' '{"status":"ok"}'
 `, adapterInputPath))
 	stcompare := writeExecutable(t, directory, "stcompare", `#!/bin/sh
-printf '%s' '{"schema_version":"1","converged":true,"candidate":"sonnet5-high","baseline":"baseline","counts":{},"unverified":{},"actionable":[]}'
+printf '%s' '{"schema_version":"2","converged":true,"candidate":"sonnet5-high","baseline":"baseline","counts":{},"unverified":{},"actionable":[]}'
 `)
 	healthServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusNoContent)
