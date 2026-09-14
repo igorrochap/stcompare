@@ -73,6 +73,12 @@ unverified problems and is not a claim that every baseline problem was positivel
 confirmed fixed.
 _Avoid_: 100% fixed, Fix rate 100%, Passed
 
+**Problem Group**:
+The set of Schemathesis problems or regressions that share one operation
+template, check category, message, and status transition. It is the unit an
+agent is asked to act on; a Schemathesis Problem remains the per-case unit.
+_Avoid_: Cluster, bucket, issue, actionable item
+
 **Fix Quality Assessment**:
 A researcher's evidence-backed judgment of whether a candidate's changes
 address the underlying Schemathesis problem or merely work around its observed
