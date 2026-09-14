@@ -36,8 +36,9 @@ see ADR-0004, ADR-0006). For each run it:
      per-agent **adapter**, which edits the candidate source and reports its
      token usage; then loop.
    - `1` (tool error) → stop, surface.
-3. Terminates the loop on convergence, on a **stall** (the actionable count
-   stops dropping), or on a **max-iteration** cap.
+3. Terminates the loop on convergence, on a **stall** (the case total
+   `counts.still_failing + counts.regressed` stops strictly decreasing), or on
+   a **max-iteration** cap.
 4. Emits one **benchmark record** per `(agent, candidate, run)` at a path
    derived from the selected Candidate Campaign, capturing
    terminal state, iteration count, a per-phase time breakdown, known token
@@ -190,6 +191,12 @@ integration test.
   comparable only when analysis determines that their recorded prompt identities
   match. The record also stores a hash of each exact rendered instruction sent to
   the adapter.
+- The canonical `@3` wording explains that each actionable entry is one
+  Problem Group: `count` is the number of failing cases in the group, `sample`
+  is one concrete case with truncated request and response bodies, and `refs`
+  are interaction numbers in the candidate's rendered
+  `<reports_dir>/<candidate>/comparison.json` path. The wording stays neutral:
+  it does not prioritize groups, map routes to files, or suggest a domain fix.
 
 **Adapter protocol (language-agnostic, per-agent):**
 
@@ -251,10 +258,11 @@ integration test.
 **Termination and stall detection:**
 
 - **Converged** — `compare` exits `0`. Terminal state `converged`.
-- **Stall** — the total actionable count does not strictly decrease across a
-  configurable window of consecutive iterations (default window small, e.g. 2).
-  Item identity uses the stable `id` from `agentreport` so the record can mark
-  which items were stuck versus newly introduced. Terminal state `stalled`.
+- **Stall** — the case total `counts.still_failing + counts.regressed` does not
+  strictly decrease across a configurable window of consecutive transitions
+  (default window small, e.g. 2). Item identity uses the stable Problem Group
+  `id` from `agentreport` and each group's `count` determines whether it is
+  stuck versus newly introduced. Terminal state `stalled`.
 - **Max iterations** — a hard cap; terminal state `max_iterations`.
 - **Tool error** — `compare` exits `1`; terminal state `tool_error`.
 - **Adapter error** / **lifecycle error** — terminal states `adapter_error` /
@@ -264,7 +272,8 @@ integration test.
 
 ```
 {
-  "schema_version": "...",
+  "schema_version": "2",
+  "agent_view_schema_version": "2",
   "run_id": "...",
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
   "temperature": N,                                     // effective adapter sampling temperature
@@ -324,7 +333,9 @@ integration test.
     "unverified": { "inconclusive": N, "uncorrelated": N,
                     "ambiguous": N, "unevaluable": N }
   },
-  "remaining_actionable": [ { id, kind, operation, stuck: bool } ]
+  "remaining_actionable": [
+    { id, kind, operation, check_category, count, stuck: bool }
+  ]
 }
 ```
 
@@ -423,7 +434,13 @@ hash, and raw agent response.
   distinguishes an all-unknown run from a run with a retained partial sum.
 - `efficiency.tokens` is the known server-reported model-turn subtotal and its
   `token_status` distinguishes complete, partial, and all-unknown turn sets.
-- `remaining_actionable` is empty on a converged run.
+- `agent_view_schema_version` records the agent-view schema observed by the
+  runner. `stbench` accepts only view schema `"2"`; another version ends the
+  run as `tool_error` and names both the observed and expected versions.
+- `remaining_actionable` is empty on a converged run. Otherwise it contains
+  the remaining Problem Groups with `id`, `kind`, `operation`,
+  `check_category`, `count`, and `stuck`. A group is stuck when its stable `id`
+  was present in the preceding iteration and its `count` did not decrease.
 
 The overhead evidence uses a representative deterministic local-model fixture:
 the same canned model responses are delivered with repeated context and file
@@ -464,7 +481,7 @@ stbench:
     remote: python adapters/coding_agent_adapter.py
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -523,8 +540,9 @@ real subprocesses, services, or agents.
     terminal `converged`, `iterations == 1`, adapter never invoked.
   - Iterates then converges (exit `2`, `2`, `0`) → adapter invoked for each non
     converged iteration, terminal `converged`, correct iteration count.
-  - Stall (actionable count flat across the window) → terminal `stalled`,
-    `remaining_actionable` marks the stuck items via stable `id`.
+  - Stall (case total flat or increasing across the window) → terminal
+    `stalled`, and `remaining_actionable` marks Problem Groups whose stable `id`
+    persisted without a count decrease.
   - Max iterations hit before convergence → terminal `max_iterations`.
   - Tool error (exit `1`) → terminal `tool_error`, loop stops immediately.
   - Adapter error (`status: error` / non-zero exit) → terminal `adapter_error`.

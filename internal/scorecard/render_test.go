@@ -65,6 +65,23 @@ func TestRenderAddsBenchmarkRunToComparisonHTML(t *testing.T) {
 	}
 }
 
+func TestRenderAcceptsGroupedRemainingActionable(t *testing.T) {
+	record := benchrecord.Record{
+		AgentViewSchemaVersion: "2",
+		RemainingActionable: []benchrecord.ActionableItem{{
+			ID:            "group-1",
+			Kind:          "still_failing",
+			Operation:     "GET /widgets/{id}",
+			CheckCategory: "response_schema_conformance",
+			Count:         4,
+			Stuck:         true,
+		}},
+	}
+	if _, err := Render(comparisonFixture(t), record); err != nil {
+		t.Fatalf("render grouped remaining actionable record: %v", err)
+	}
+}
+
 func TestRenderStatesWhenTokenUsageWasNotReported(t *testing.T) {
 	html, err := Render(comparisonFixture(t), benchrecord.Record{})
 	if err != nil {

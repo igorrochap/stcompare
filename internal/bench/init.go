@@ -732,7 +732,7 @@ stbench:
   stcompare_binary: stcompare
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
   lifecycle:
     stop: %s
     reset: %s
