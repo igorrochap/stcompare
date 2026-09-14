@@ -54,6 +54,9 @@ func TestCampaignCompareReturnsNotConvergedExitCodeAndWritesArtifacts(t *testing
 	if view.Converged {
 		t.Fatal("campaign compare agent view converged = true, want false")
 	}
+	if view.SchemaVersion != "2" {
+		t.Fatalf("campaign compare agent schema version = %q, want 2", view.SchemaVersion)
+	}
 	if !strings.Contains(stderr.String(), "replayed 1 baseline interactions\n") {
 		t.Fatalf("campaign compare agent stderr = %q", stderr.String())
 	}
@@ -168,6 +171,9 @@ func TestCampaignCompareAgentFormatWritesJSONToStdoutOnConvergence(t *testing.T)
 	}
 	if !view.Converged {
 		t.Fatal("campaign compare agent view converged = false, want true")
+	}
+	if view.SchemaVersion != "2" {
+		t.Fatalf("campaign compare agent schema version = %q, want 2", view.SchemaVersion)
 	}
 	if !strings.HasPrefix(stderr.String(), "replayed 1 baseline interactions\n") {
 		t.Fatalf("campaign compare agent stderr = %q", stderr.String())

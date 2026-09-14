@@ -18,7 +18,7 @@ that loop is impractical for an agent to drive:
   context window fast, and almost none of it is relevant to deciding *what to
   fix next*.
 - There is no single field that answers "is this candidate done?" — the reader
-  must reason across `fix_rate`, the problem-outcome buckets, and the traffic
+  must reason across `fix_rate`, the problem-outcome categories, and the traffic
   `regressed` count to work it out, and the obvious shortcut (`fix_rate ==
   100%`) is misleading because it ignores regressions and unverified problems.
 
@@ -63,25 +63,26 @@ reporting the residual unverified counts. See ADR-0004 and ADR-0005.
 5. As a coding agent, I want a `--format agent` mode that prints a compact JSON
    summary to stdout, so that I get the convergence verdict and my next actions
    in the tool result I already receive, without an extra file read.
-6. As a coding agent, I want the compact view to stay roughly the same size
-   regardless of how large the candidate's response bodies are, so that my
-   context window is not blown out by one big payload.
+6. As a coding agent, I want the compact view to be bounded by the number of
+   Problem Groups times a fixed evidence cap, regardless of traffic volume or
+   response-body size, so that my context window is not blown out by repetition
+   or one big payload.
 7. As a coding agent, I want the compact view to list only the items I can act
    on — `still_failing` problems and `regressed` interactions — so that I am not
    handed problems I cannot fix by editing endpoint code.
-8. As a coding agent, I want each actionable item to name its check category,
-   its operation (`METHOD /path`), its observed-vs-expected status, and a
-   one-line message, so that I can usually identify the fix without opening the
-   full report.
-9. As a coding agent, I want each actionable item to carry a `ref` pointer into
-   `comparison.json`, so that I can pull the full request/response detail for the
-   one item I am working on when the summary is not enough.
-10. As a coding agent, I want the actionable list sorted deterministically —
-    regressions first, then clustered by operation — so that I see newly-broken
-    behavior first and can fix same-endpoint items together.
-11. As a coding agent, I want each actionable item to have a stable identity
-    across iterations, so that a driver can tell "same item still stuck" from "a
-    new item my last fix introduced."
+8. As a coding agent, I want each Problem Group to name its check category, its
+   operation template, its observed-vs-expected status, and a one-line message,
+   so that I can usually identify the fix without opening the full report.
+9. As a coding agent, I want each Problem Group to carry up to three low-number
+   `refs` and one bounded evidence `sample`, so that I can inspect representative
+   request/response detail when the summary is not enough.
+10. As a coding agent, I want the Problem Group list sorted deterministically —
+    regressions first, then by operation, category, baseline status, and candidate
+    status — so that I see newly-broken behavior first and can fix same-endpoint
+    items together.
+11. As a coding agent, I want each Problem Group to have a stable identity
+    derived from its full key across iterations, so that a driver can tell "same
+    problem still stuck" from "a new problem my last fix introduced."
 12. As a coding agent, I want the compact view to include progress counts
     (`fixed`, `still_failing`, `regressed`), so that I (or my driver) can detect
     a stall when the actionable count stops dropping.
@@ -163,33 +164,56 @@ this slice):**
   },
   "actionable": [
     {
-      "id": "<stable across iterations>",
+      "id": "<stable hash of the Problem Group key>",
       "kind": "regressed" | "still_failing",
       "check_category": "server_error",
-      "operation": "POST /widgets",
+      "operation": "POST /widgets/{id}",
       "status": { "baseline": 200, "candidate": 500 },
       "message": "<one line>",
-      "ref": <interaction number into comparison.json>
+      "count": 3,
+      "refs": [1, 4, 9],
+      "sample": {
+        "ref": 1,
+        "operation": "POST /widgets/0",
+        "request_body": "<at most 512 bytes plus marker>",
+        "response_body": "<at most 512 bytes plus marker>",
+        "details": ["<at most five check-specific lines>"]
+      }
     }
   ]
 }
 ```
 
-- `actionable` contains only `still_failing` problems and `regressed`
-  interactions. Sorted: `regressed` before `still_failing`, then by `operation`,
-  then by `ref`. Flat, not nested.
-- `id` is a stable identity derived from `(kind, ref, case_id)`; because the
-  baseline HAR is frozen, it is stable across iterations.
-- `ref` is the correlated interaction number in `comparison.json`. For an item
-  whose baseline response is unrecorded/uncorrelated the corresponding
-  status/ref fields follow the same null conventions the full report already
-  uses.
+- `actionable` contains one Problem Group for each distinct full key among
+  `still_failing` problems and `regressed` interactions. The key is `kind`, the
+  OpenAPI operation template (or concrete operation when no template resolves),
+  `check_category`, the one-line `message`, the baseline status, and the
+  candidate status. A baseline `null` status is part of the key.
+- `count` is the number of cases in the Problem Group. The sum of all `count`
+  values equals `counts.still_failing + counts.regressed`.
+- `refs` contains at most the three lowest interaction numbers in ascending
+  order. `sample` comes from the lowest `ref`; its operation is concrete, its
+  bodies are the candidate interaction's request and response bodies, and it
+  contains no headers.
+- Each body keeps at most 512 bytes of the existing report representation. A
+  truncated body ends with `…[truncated N bytes]`, where `N` is the number of
+  omitted bytes. `details` contains at most five check-specific lines; schema
+  conformance groups carry their `schema_validation_errors`, and groups without
+  details carry `[]`.
+- `actionable` is sorted with `regressed` before `still_failing`, then by
+  `operation`, `check_category`, baseline status, and candidate status. Ties are
+  resolved deterministically by message and `id`; the list is never ordered by
+  `count`.
+- `id` is a stable hash of the full six-part Problem Group key. It is stable per
+  problem, not per case, and changes when any key part changes.
+- `sample.ref` and every value in `refs` are correlated interaction numbers in
+  `comparison.json`.
 - Counts and the `converged` verdict are projected from the same `report`
   values that are canonical in `comparison.json`; the two never disagree.
 
 **Contracts / provenance:**
 
-- `comparison.json` gains `converged` and the deciding counts (the buckets it
+- `comparison.json` gains `converged` and the deciding counts (the categories it
   already carries under `summary` remain; `converged` is the new top-level
   verdict). Schema version → `11`.
 - Exit codes are a stable part of the CLI contract: `0` converged, `2` not
@@ -210,11 +234,12 @@ wiring. Two existing seams, no new ones:
   `newReport(reportInput{…})` construction style and the real Schemathesis
   fixtures already used by `TestNewReportCategorizesRealSchemathesisFixtureProblems`.
 - **The compact projection (`report → agent view`), tested at the same
-  `internal/comparison` seam** as a pure transform: actionable list contains
-  only `still_failing` + `regressed`; ordering is regressions-first then by
-  operation then `ref`; `unverified` counts match the report buckets; item `id`
-  is stable when the same fixture is re-projected; `ref` points at the correct
-  interaction; counts equal the canonical report counts.
+  `internal/comparison` seam** as a pure transform: the Problem Group list
+  contains only `still_failing` + `regressed`; ordering is regressions-first
+  then by operation, category, and status; `unverified` counts match the report
+  categories; group `id` is stable when the same fixture is re-projected; refs
+  and sample point at the correct interactions; counts equal the canonical
+  report counts; bodies and details respect their fixed caps.
 - **The `campaign compare` command (`internal/cli`, prior art in
   `campaign_compare_report_test.go` / `campaign_compare_test.go`).** Drive the
   command end-to-end against the existing fake candidate HTTP server. Cover:

@@ -354,6 +354,43 @@ standard output:
 stcompare campaign compare gpt5.6 --format agent
 ```
 
+The agent view uses schema version `2`. Its `actionable` list contains one
+Problem Group per distinct `kind`, OpenAPI operation template (or concrete
+operation when no template resolves), check category, message, and status pair:
+
+```json
+{
+  "schema_version": "2",
+  "actionable": [
+    {
+      "id": "<stable hash of the Problem Group key>",
+      "kind": "still_failing",
+      "check_category": "status_code_conformance",
+      "operation": "GET /widgets/{id}",
+      "status": {"baseline": 200, "candidate": 500},
+      "message": "Undocumented HTTP status code",
+      "count": 3,
+      "refs": [1, 4, 9],
+      "sample": {
+        "ref": 1,
+        "operation": "GET /widgets/0",
+        "request_body": "...",
+        "response_body": "...",
+        "details": []
+      }
+    }
+  ]
+}
+```
+
+Groups are ordered regressions first, then by operation, check category,
+baseline status, and candidate status; ordering never uses `count`. `refs` has
+at most three lowest interaction numbers, and the sample is from the lowest
+ref. Each body is capped at 512 bytes plus a `…[truncated N bytes]` marker when
+needed; `details` has at most five check-specific lines. The group `id` is a
+stable hash of the full six-part key, so it is stable per problem rather than
+per case.
+
 Comparison exit statuses are part of the public automation contract:
 
 | Status | Meaning |
@@ -588,9 +625,9 @@ include:
 - Problem outcome totals for extracted baseline Schemathesis problems:
   `fixed`, `still_failing`, and `inconclusive`, plus separate total,
   `evaluable`, `unevaluable`, `uncorrelated`, and `ambiguous` counts. Every
-  extracted problem falls into exactly one top-level bucket: evaluable,
+  extracted problem falls into exactly one top-level category: evaluable,
   unevaluable, uncorrelated, or ambiguous. The outcome totals always sum to the
-  evaluable count, and the top-level buckets always sum to total. A problem is
+  evaluable count, and the top-level categories always sum to total. A problem is
   `evaluable` when it is correlated to a replay interaction and the comparison
   has evidence for an outcome. Correlated problems whose check category is not
   yet supported are `unevaluable`, not inconclusive. Check-specific evaluation
@@ -827,7 +864,7 @@ outside that tree. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json
-{"agent":"codex","model":"gpt-5","effort":"high","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+{"agent":"codex","model":"gpt-5","effort":"high","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"schema_version":"2", "actionable":[]}}
 ```
 
 `agent`, `model`, `effort`, and optional `temperature` come from the selected Candidate Campaign;
