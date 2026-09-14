@@ -1439,6 +1439,7 @@ class AdapterExamplesTest(unittest.TestCase):
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
             candidate = Path(directory)
+            instruction = "Task prompt stbench-default@3:\n\nv2 view\n"
             fake_cli = Path(fake_bin) / "codex"
             fake_cli.write_text(
                 "#!/bin/sh\n"
@@ -1461,8 +1462,8 @@ class AdapterExamplesTest(unittest.TestCase):
                         "agent": "codex",
                         "model": "gpt-5",
                         "hardware": "m4-pro",
-                        "instruction": "exact task",
-                        "view": {"actionable": []},
+                        "instruction": instruction,
+                        "view": {"schema_version": "2", "actionable": []},
                     }
                 ),
                 text=True,
@@ -1476,13 +1477,14 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["response"], "edited candidate")
             self.assertEqual(result["tokens"], {"input": 5, "output": 7, "total": 12})
-            self.assertEqual((candidate / "received-instruction.txt").read_text(), "exact task")
+            self.assertEqual((candidate / "received-instruction.txt").read_text(), instruction)
             self.assertIn("--model\ngpt-5\n", (candidate / "received-args.txt").read_text())
             self.assertEqual((candidate / "received-hardware.txt").read_text(), "m4-pro\n")
 
     def test_local_model_adapter_uses_tools_to_edit_candidate(self) -> None:
         calls: list[dict] = []
         received_metadata: list[dict[str, str | None]] = []
+        instruction = "Task prompt stbench-default@3:\n\nv2 view\n"
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -1560,8 +1562,8 @@ class AdapterExamplesTest(unittest.TestCase):
                         "agent": "local-model",
                         "model": "local-code-model",
                         "hardware": "m4-pro",
-                        "instruction": "exact task",
-                        "view": {"actionable": []},
+                        "instruction": instruction,
+                        "view": {"schema_version": "2", "actionable": []},
                     }
                 ),
                 text=True,
@@ -1587,7 +1589,7 @@ class AdapterExamplesTest(unittest.TestCase):
                 received_metadata[0],
                 {"agent": "local-model", "model": "local-code-model", "hardware": "m4-pro"},
             )
-            self.assertEqual(calls[0]["messages"][1]["content"], "exact task")
+            self.assertEqual(calls[0]["messages"][1]["content"], instruction)
             self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
 
     def test_local_model_adapter_recovers_str_replace_from_assistant_text(self) -> None:

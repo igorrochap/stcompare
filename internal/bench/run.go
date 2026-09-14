@@ -34,7 +34,7 @@ const (
 	// DefaultPromptID identifies the canonical stbench task prompt.
 	DefaultPromptID = "stbench-default"
 	// DefaultPromptVersion identifies the current canonical task prompt.
-	DefaultPromptVersion = "2"
+	DefaultPromptVersion = "3"
 	// DefaultMaxIterations bounds runs that do not provide an explicit cap.
 	DefaultMaxIterations = 100
 	// DefaultStallWindow is the number of consecutive non-improving transitions
@@ -57,6 +57,9 @@ type Config struct {
 	AdapterMetadata
 	Candidate string
 	Baseline  string
+	// ReportsDir is the campaign artifact root used to identify the candidate's
+	// comparison report in the task prompt.
+	ReportsDir string
 	// SourceDir is the candidate source tree captured for final source evidence.
 	// An empty value keeps library callers that do not request source evidence
 	// compatible with the existing runner contract.
@@ -604,6 +607,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 				runner.promptTemplate,
 				runner.config.Prompt,
 				view,
+				comparisonPath(runner.config.ReportsDir, runner.config.Candidate),
 				runner.config.AdapterMetadata,
 				runner.record.Tokens,
 				&runner.hasKnownTokens,
@@ -641,6 +645,11 @@ func (runner *iterationRunner) handleComparison(
 	lastIteration bool,
 ) (bool, error) {
 	runner.lastView = view
+	runner.record.AgentViewSchemaVersion = view.SchemaVersion
+	if err := validateAgentView(view); err != nil {
+		runner.record.Final = finalSummary(view)
+		return true, runner.bail(benchrecord.TerminalStateToolError, fmt.Errorf("compare: %w", err))
+	}
 	runner.record.Final = finalSummary(view)
 	stalled := runner.progress.observe(view, runner.config.StallWindow)
 
@@ -699,7 +708,7 @@ func (runner *iterationRunner) compare() (agentreport.View, int, error) {
 	runner.report(ProgressEvent{
 		Phase:        ProgressPhaseCompare,
 		State:        ProgressDone,
-		Actionable:   len(view.Actionable),
+		Actionable:   actionableCaseCount(view),
 		Converged:    view.Converged,
 		StillFailing: view.Counts.StillFailing,
 	})
@@ -739,6 +748,17 @@ func validate(config Config, dependencies Dependencies) error {
 		return fmt.Errorf("stall window must not be negative")
 	}
 	return nil
+}
+
+func validateAgentView(view agentreport.View) error {
+	if view.SchemaVersion == agentreport.SchemaVersion {
+		return nil
+	}
+	return fmt.Errorf(
+		"agent view schema version %q, expected %q",
+		view.SchemaVersion,
+		agentreport.SchemaVersion,
+	)
 }
 
 // lifecyclePhaseObserver is notified at the boundary of each candidate
@@ -873,17 +893,37 @@ func auditReportReference(path string) string {
 
 type promptTemplateData struct {
 	Prompt         benchrecord.PromptIdentity
+	ComparisonPath string
 	ComparisonView string
 }
 
 func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (string, error) {
-	return renderPromptTemplate(promptTemplate, prompt, view)
+	return renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonPath("", view.Candidate),
+	)
 }
 
 func renderPromptTemplate(
 	selectedTemplate *template.Template,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+) (string, error) {
+	return renderPromptTemplateAtPath(
+		selectedTemplate,
+		prompt,
+		view,
+		comparisonPath("", view.Candidate),
+	)
+}
+
+func renderPromptTemplateAtPath(
+	selectedTemplate *template.Template,
+	prompt benchrecord.PromptIdentity,
+	view agentreport.View,
+	comparisonReportPath string,
 ) (string, error) {
 	compactView, err := json.Marshal(view)
 	if err != nil {
@@ -892,11 +932,19 @@ func renderPromptTemplate(
 	var instruction bytes.Buffer
 	if err := selectedTemplate.Execute(&instruction, promptTemplateData{
 		Prompt:         prompt,
+		ComparisonPath: comparisonReportPath,
 		ComparisonView: string(compactView),
 	}); err != nil {
 		return "", fmt.Errorf("render task prompt template: %w", err)
 	}
 	return instruction.String(), nil
+}
+
+func comparisonPath(reportsDir, candidate string) string {
+	if reportsDir == "" {
+		reportsDir = "reports"
+	}
+	return filepath.Join(reportsDir, candidate, "comparison.json")
 }
 
 func loadPromptTemplate(path string) (*template.Template, string, error) {
@@ -999,12 +1047,18 @@ func runAgentFix(
 	promptTemplate *template.Template,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+	comparisonReportPath string,
 	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
 	hasKnownTokens *bool,
 	unknownTokenIterations *int,
 ) (agentFixResult, error) {
-	instruction, err := renderPromptTemplate(promptTemplate, prompt, view)
+	instruction, err := renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonReportPath,
+	)
 	if err != nil {
 		return agentFixResult{}, fmt.Errorf("render task prompt: %w", err)
 	}
@@ -1055,67 +1109,72 @@ func actionableItems(view agentreport.View, stuckIDs map[string]struct{}) []benc
 	items := make([]benchrecord.ActionableItem, len(view.Actionable))
 	for i, item := range view.Actionable {
 		items[i] = benchrecord.ActionableItem{
-			ID:        item.ID,
-			Kind:      string(item.Kind),
-			Operation: item.Operation,
-			Stuck:     containsID(stuckIDs, item.ID),
+			ID:            item.ID,
+			Kind:          string(item.Kind),
+			Operation:     item.Operation,
+			CheckCategory: string(item.CheckCategory),
+			Count:         item.Count,
+			Stuck:         containsID(stuckIDs, item.ID),
 		}
 	}
 	return items
 }
 
 type progressTracker struct {
-	previousCount int
-	hasPrevious   bool
-	nonImproving  int
-	persistentIDs map[string]struct{}
+	previousCount  int
+	hasPrevious    bool
+	nonImproving   int
+	previousGroups map[string]int
+	stuckGroups    map[string]struct{}
 }
 
 func (tracker *progressTracker) observe(view agentreport.View, stallWindow int) bool {
-	currentIDs := actionableIDs(view)
-	currentCount := len(view.Actionable)
+	currentCount := actionableCaseCount(view)
+	currentGroups := groupCounts(view)
 	if !tracker.hasPrevious {
 		tracker.hasPrevious = true
 		tracker.previousCount = currentCount
-		tracker.persistentIDs = currentIDs
+		tracker.previousGroups = currentGroups
+		tracker.stuckGroups = nil
 		return false
 	}
 
 	if currentCount < tracker.previousCount {
 		tracker.nonImproving = 0
-		tracker.persistentIDs = currentIDs
 	} else {
 		tracker.nonImproving++
-		tracker.persistentIDs = intersectIDs(tracker.persistentIDs, currentIDs)
 	}
+	tracker.stuckGroups = unchangedGroups(tracker.previousGroups, currentGroups)
 	tracker.previousCount = currentCount
+	tracker.previousGroups = currentGroups
 
 	return tracker.nonImproving >= stallWindow
 }
 
 func (tracker progressTracker) stuckIDs() map[string]struct{} {
-	if tracker.nonImproving == 0 {
-		return nil
-	}
-	return tracker.persistentIDs
+	return tracker.stuckGroups
 }
 
-func actionableIDs(view agentreport.View) map[string]struct{} {
-	ids := make(map[string]struct{}, len(view.Actionable))
+func actionableCaseCount(view agentreport.View) int {
+	return view.Counts.StillFailing + view.Counts.Regressed
+}
+
+func groupCounts(view agentreport.View) map[string]int {
+	counts := make(map[string]int, len(view.Actionable))
 	for _, item := range view.Actionable {
-		ids[item.ID] = struct{}{}
+		counts[item.ID] = item.Count
 	}
-	return ids
+	return counts
 }
 
-func intersectIDs(left, right map[string]struct{}) map[string]struct{} {
-	intersection := make(map[string]struct{})
-	for id := range left {
-		if _, ok := right[id]; ok {
-			intersection[id] = struct{}{}
+func unchangedGroups(previous, current map[string]int) map[string]struct{} {
+	unchanged := make(map[string]struct{})
+	for id, count := range current {
+		if previousCount, ok := previous[id]; ok && previousCount <= count {
+			unchanged[id] = struct{}{}
 		}
 	}
-	return intersection
+	return unchanged
 }
 
 func containsID(ids map[string]struct{}, id string) bool {

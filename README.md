@@ -199,7 +199,7 @@ stbench:
   stcompare_binary: stcompare
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -750,7 +750,7 @@ stbench:
   stcompare_binary: stcompare
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -789,9 +789,18 @@ external Go `text/template`, and `--prompt-file` overrides that YAML value. The
 template must reference `.ComparisonView`; relative paths resolve against the
 current working directory, not the configuration file. When selected,
 `prompt.hash` is the SHA-256 of the file's exact content. With no file override,
-the embedded prompt and its existing hash remain unchanged. `stbench init`
+the embedded `stbench-default@3` prompt and its corresponding hash are used. `stbench init`
 deliberately does not scaffold a `file:` key, keeping the canonical embedded
 prompt as the default.
+
+The compact view sent in that prompt has one entry per Problem Group. Each
+`count` is the number of failing cases in the group, `sample` is one concrete
+case with truncated bodies, and `refs` are interaction numbers in the
+candidate's `<reports_dir>/<candidate>/comparison.json`. Stall detection uses
+the case total `counts.still_failing + counts.regressed`, not the number of
+groups. Benchmark records use schema version `2`, carry
+`agent_view_schema_version: "2"`, and record each remaining Problem Group as
+`{id, kind, operation, check_category, count, stuck}`.
 
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured

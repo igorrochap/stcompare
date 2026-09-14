@@ -2,7 +2,7 @@
 package benchrecord
 
 // SchemaVersion is the current benchmark-record schema version.
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 // TerminalState describes why a benchmark run ended.
 type TerminalState string
@@ -45,10 +45,14 @@ const (
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
 	SchemaVersion string `json:"schema_version"`
-	RunID         string `json:"run_id"`
-	Agent         string `json:"agent"`
-	Model         string `json:"model"`
-	Effort        string `json:"effort"`
+	// AgentViewSchemaVersion identifies the compact comparison view consumed by
+	// this run. It is recorded separately because the benchmark record has its
+	// own schema version.
+	AgentViewSchemaVersion string `json:"agent_view_schema_version"`
+	RunID                  string `json:"run_id"`
+	Agent                  string `json:"agent"`
+	Model                  string `json:"model"`
+	Effort                 string `json:"effort"`
 	// Temperature is the effective sampling temperature used by the adapter.
 	Temperature          float64        `json:"temperature"`
 	Hardware             string         `json:"hardware"`
@@ -222,8 +226,10 @@ type UnverifiedSummary struct {
 
 // ActionableItem identifies work remaining at the end of a run.
 type ActionableItem struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Operation string `json:"operation"`
-	Stuck     bool   `json:"stuck"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Operation     string `json:"operation"`
+	CheckCategory string `json:"check_category"`
+	Count         int    `json:"count"`
+	Stuck         bool   `json:"stuck"`
 }

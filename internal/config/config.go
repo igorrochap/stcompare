@@ -518,7 +518,7 @@ func Default() Config {
 			StcompareBinary: "stcompare",
 			Prompt: StbenchPromptConfig{
 				ID:      "stbench-default",
-				Version: "2",
+				Version: "3",
 			},
 			Lifecycle: StbenchLifecycleConfig{
 				Stop:           ".local/stbench/stop.sh",

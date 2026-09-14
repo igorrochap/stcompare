@@ -9,13 +9,14 @@ import (
 
 func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	record := Record{
-		SchemaVersion: "1",
-		RunID:         "run-1",
-		Agent:         "agent",
-		Model:         "model",
-		Effort:        "high",
-		Temperature:   0.65,
-		Hardware:      "hardware",
+		SchemaVersion:          "2",
+		AgentViewSchemaVersion: "2",
+		RunID:                  "run-1",
+		Agent:                  "agent",
+		Model:                  "model",
+		Effort:                 "high",
+		Temperature:            0.65,
+		Hardware:               "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
 			Version: "2026-01-01",
@@ -73,7 +74,14 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 				Unevaluable:  4,
 			},
 		},
-		RemainingActionable: []ActionableItem{{ID: "problem-1", Kind: "schema", Operation: "GET /widgets", Stuck: true}},
+		RemainingActionable: []ActionableItem{{
+			ID:            "problem-1",
+			Kind:          "schema",
+			Operation:     "GET /widgets",
+			CheckCategory: "response_schema_conformance",
+			Count:         3,
+			Stuck:         true,
+		}},
 	}
 
 	data, err := json.Marshal(record)
@@ -93,8 +101,11 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		t.Fatalf("unmarshal record fields: %v", err)
 	}
-	if string(fields["schema_version"]) != `"1"` {
-		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "1")
+	if string(fields["schema_version"]) != `"2"` {
+		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "2")
+	}
+	if string(fields["agent_view_schema_version"]) != `"2"` {
+		t.Fatalf("agent_view_schema_version = %s, want %q", fields["agent_view_schema_version"], "2")
 	}
 	if string(fields["unknown_token_iterations"]) != `1` {
 		t.Fatalf("unknown_token_iterations = %s, want 1", fields["unknown_token_iterations"])
