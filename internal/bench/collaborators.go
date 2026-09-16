@@ -555,11 +555,17 @@ func (adapter *CommandAdapter) ensurePersistentProcess() (*reusableAdapterProces
 	if err != nil {
 		return nil, fmt.Errorf("open adapter stdin: %w", err)
 	}
-	stdout, err := command.StdoutPipe()
+	// A manually owned pipe, rather than command.StdoutPipe(), keeps stdout
+	// open until this process closes it explicitly. command.Wait() closes a
+	// StdoutPipe() as soon as it observes the child exit, which races with
+	// in-flight reads of the child's final response and intermittently fails
+	// them with "file already closed".
+	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("open adapter stdout: %w", err)
 	}
+	command.Stdout = stdoutWrite
 	stderr := &synchronizedBuffer{}
 	if adapter.Stderr != nil {
 		command.Stderr = io.MultiWriter(stderr, adapter.Stderr)
@@ -568,14 +574,18 @@ func (adapter *CommandAdapter) ensurePersistentProcess() (*reusableAdapterProces
 	}
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
+		_ = stdoutWrite.Close()
+		_ = stdoutRead.Close()
 		return nil, fmt.Errorf("start reusable adapter: %w", err)
 	}
+	_ = stdoutWrite.Close()
 	process := &reusableAdapterProcess{
-		command: command,
-		stdin:   stdin,
-		stdout:  bufio.NewReader(stdout),
-		stderr:  stderr,
-		done:    make(chan struct{}),
+		command:    command,
+		stdin:      stdin,
+		stdout:     bufio.NewReader(stdoutRead),
+		stdoutFile: stdoutRead,
+		stderr:     stderr,
+		done:       make(chan struct{}),
 	}
 	go func() {
 		process.waitErr = command.Wait()
@@ -591,12 +601,13 @@ const (
 )
 
 type reusableAdapterProcess struct {
-	command *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	stderr  *synchronizedBuffer
-	done    chan struct{}
-	waitErr error
+	command    *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stdoutFile *os.File
+	stderr     *synchronizedBuffer
+	done       chan struct{}
+	waitErr    error
 }
 
 type adapterReadResult struct {
@@ -664,6 +675,7 @@ func (process *reusableAdapterProcess) abort() {
 	_ = killProcessGroup(process.command.Process)
 	_ = process.stdin.Close()
 	<-process.done
+	_ = process.stdoutFile.Close()
 }
 
 func (process *reusableAdapterProcess) close() error {
@@ -674,6 +686,7 @@ func (process *reusableAdapterProcess) close() error {
 		_ = killProcessGroup(process.command.Process)
 		<-process.done
 	}
+	_ = process.stdoutFile.Close()
 	return process.waitError()
 }
 
