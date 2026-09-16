@@ -585,7 +585,7 @@ func TestRunIteratesThenConvergesAndPassesRenderedPrompt(t *testing.T) {
 	if !strings.Contains(adapter.instructions[0], `"problem-1"`) {
 		t.Fatalf("rendered instruction does not contain the compact view: %q", adapter.instructions[0])
 	}
-	if !strings.Contains(adapter.instructions[0], "stbench-default@2") {
+	if !strings.Contains(adapter.instructions[0], "stbench-default@3") {
 		t.Fatalf("rendered instruction does not contain the prompt identity: %q", adapter.instructions[0])
 	}
 	if got, want := *record.Tokens, (benchrecord.TokenUsage{Input: 5, Output: 7, Total: 12}); got != want {
@@ -637,8 +637,235 @@ func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
 	if len(record.RenderedPromptHashes) != 1 || len(record.RenderedPromptHashes[0]) != 64 {
 		t.Fatalf("rendered prompt hashes = %#v, want one SHA-256 hash", record.RenderedPromptHashes)
 	}
+	if len(record.RenderedPromptBytes) != 1 || record.RenderedPromptBytes[0] != len(record.PromptInstructions[0]) {
+		t.Fatalf("rendered prompt bytes = %#v, want rendered instruction byte length", record.RenderedPromptBytes)
+	}
 	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "raw model response" {
 		t.Fatalf("agent responses = %#v, want archived raw model response", record.AgentResponses)
+	}
+}
+
+func TestRunStopsBeforeAdapterWhenPromptExceedsMaxBytes(t *testing.T) {
+	view := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Candidate:     "candidate",
+		Counts:        agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	config := Config{
+		Candidate:      "candidate",
+		ReportsDir:     "reports",
+		PromptMaxBytes: renderedPromptBytes(t, Config{Candidate: "candidate", ReportsDir: "reports"}, view) - 1,
+		MaxIterations:  3,
+		StallWindow:    2,
+		BaselineExists: func() bool { return true },
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{view: view, exitCode: agentreport.ExitCodeNotConverged}}}
+	candidate := &fakeCandidate{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(config, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("Run error = %v, want prompt size error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStatePromptTooLarge {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStatePromptTooLarge)
+	}
+	if record.PromptSizeLimit == nil {
+		t.Fatal("prompt_size_limit = nil, want observed size and cap")
+	}
+	if record.PromptSizeLimit.ObservedBytes <= record.PromptSizeLimit.MaxBytes ||
+		record.PromptSizeLimit.MaxBytes != config.PromptMaxBytes {
+		t.Fatalf("prompt_size_limit = %#v, want observed size above configured cap %d", record.PromptSizeLimit, config.PromptMaxBytes)
+	}
+	if len(record.RenderedPromptBytes) != 1 ||
+		record.RenderedPromptBytes[0] != record.PromptSizeLimit.ObservedBytes {
+		t.Fatalf("rendered prompt bytes = %#v, want observed prompt size", record.RenderedPromptBytes)
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
+	}
+	if len(comparator.configs) != 1 {
+		t.Fatalf("comparator calls = %d, want 1", len(comparator.configs))
+	}
+	if got, want := candidate.calls, preflightAndFirstIterationCalls; !sameStrings(got, want) {
+		t.Fatalf("candidate calls = %#v, want lifecycle through the guarded iteration %#v", got, want)
+	}
+}
+
+func TestRunAllowsPromptAtInclusiveMaxBytes(t *testing.T) {
+	view := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Candidate:     "candidate",
+		Counts:        agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	config := Config{Candidate: "candidate", ReportsDir: "reports"}
+	config.PromptMaxBytes = renderedPromptBytes(t, config, view)
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(config, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if len(adapter.instructions) != 1 {
+		t.Fatalf("adapter calls = %d, want 1 at inclusive prompt limit", len(adapter.instructions))
+	}
+	if record.PromptSizeLimit != nil {
+		t.Fatalf("prompt_size_limit = %#v, want nil when prompt is within inclusive limit", record.PromptSizeLimit)
+	}
+}
+
+func TestRunRejectsNegativePromptMaxBytesBeforeLifecycle(t *testing.T) {
+	candidate := &fakeCandidate{}
+	comparator := &fakeComparator{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		PromptMaxBytes: -1,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_bytes") {
+		t.Fatalf("Run error = %v, want prompt max_bytes configuration error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateToolError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateToolError)
+	}
+	if len(candidate.calls) != 0 || len(comparator.configs) != 0 || len(adapter.preflightMetadata) != 0 {
+		t.Fatalf("negative prompt limit performed work: candidate=%#v comparator=%#v adapter=%#v", candidate.calls, comparator.configs, adapter.preflightMetadata)
+	}
+}
+
+func renderedPromptBytes(t *testing.T, config Config, view agentreport.View) int {
+	t.Helper()
+	prompt := config.Prompt
+	if prompt.ID == "" {
+		prompt.ID = DefaultPromptID
+	}
+	if prompt.Version == "" {
+		prompt.Version = DefaultPromptVersion
+	}
+	instruction, err := renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonPath(config.ReportsDir, config.Candidate),
+	)
+	if err != nil {
+		t.Fatalf("render prompt fixture: %v", err)
+	}
+	return len(instruction)
+}
+
+func TestRenderPromptWrappersUseDefaultComparisonPath(t *testing.T) {
+	prompt := benchrecord.PromptIdentity{ID: "stbench-default", Version: "3"}
+	view := agentreport.View{Candidate: "candidate"}
+	wantPath := "reports/candidate/comparison.json"
+
+	renderedPrompt, err := renderPrompt(prompt, view)
+	if err != nil {
+		t.Fatalf("renderPrompt returned error: %v", err)
+	}
+	if !strings.Contains(renderedPrompt, wantPath) {
+		t.Fatalf("renderPrompt = %q, want default comparison path %q", renderedPrompt, wantPath)
+	}
+
+	renderedTemplate, err := renderPromptTemplate(promptTemplate, prompt, view)
+	if err != nil {
+		t.Fatalf("renderPromptTemplate returned error: %v", err)
+	}
+	if !strings.Contains(renderedTemplate, wantPath) {
+		t.Fatalf("renderPromptTemplate = %q, want default comparison path %q", renderedTemplate, wantPath)
+	}
+}
+
+func TestRunRecordsV3PromptExplanationsAndConfiguredComparisonPath(t *testing.T) {
+	view := agentreport.View{
+		Candidate: "candidate",
+		Counts:    agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID:            "group-1",
+			Kind:          agentreport.ActionKindStillFailing,
+			Operation:     "GET /widgets",
+			CheckCategory: "response_schema_conformance",
+			Count:         1,
+			Refs:          []int{7},
+			Sample: agentreport.Sample{
+				Ref:          7,
+				Operation:    "GET /widgets",
+				RequestBody:  "{}",
+				ResponseBody: "{}",
+			},
+		}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		Candidate:      "candidate",
+		ReportsDir:     "configured-reports",
+		Baseline:       "baseline",
+		Prompt:         benchrecord.PromptIdentity{},
+		MaxIterations:  2,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.Prompt.Version != "3" {
+		t.Fatalf("prompt version = %q, want 3", record.Prompt.Version)
+	}
+	if len(adapter.instructions) != 1 {
+		t.Fatalf("adapter instructions = %d, want 1", len(adapter.instructions))
+	}
+	instruction := adapter.instructions[0]
+	for _, fragment := range []string{
+		"one Problem Group",
+		"`count` is the number of failing cases in the group",
+		"`sample` is one concrete case with truncated request and response bodies",
+		"`refs` are interaction numbers in `configured-reports/candidate/comparison.json`",
+	} {
+		if !strings.Contains(instruction, fragment) {
+			t.Fatalf("instruction missing %q:\n%s", fragment, instruction)
+		}
+	}
+	for _, forbidden := range []string{"fix this group first", "map routes to files", "controller", "handler"} {
+		if strings.Contains(strings.ToLower(instruction), forbidden) {
+			t.Fatalf("instruction contains forbidden guidance %q:\n%s", forbidden, instruction)
+		}
 	}
 }
 
@@ -918,6 +1145,139 @@ func TestRunStopsOnStallAndMarksPersistentActionableItems(t *testing.T) {
 	}
 }
 
+func TestRunUsesCaseTotalForProgressWhenGroupCountIsConstant(t *testing.T) {
+	views := []agentreport.View{
+		caseTotalView(3),
+		caseTotalView(2),
+		caseTotalView(1),
+		{SchemaVersion: agentreport.SchemaVersion, Converged: true},
+	}
+	results := make([]comparisonResult, len(views))
+	for i, view := range views {
+		exitCode := agentreport.ExitCodeNotConverged
+		if view.Converged {
+			exitCode = agentreport.ExitCodeConverged
+		}
+		results[i] = comparisonResult{view: view, exitCode: exitCode}
+	}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  4,
+		StallWindow:    2,
+	}, Dependencies{
+		Comparator: &fakeComparator{results: results},
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want converged", record.TerminalState)
+	}
+	if record.Iterations != 4 {
+		t.Fatalf("iterations = %d, want 4", record.Iterations)
+	}
+}
+
+func TestRunStallsWhenCaseTotalDoesNotDecrease(t *testing.T) {
+	view := caseTotalView(2)
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  5,
+		StallWindow:    2,
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: &fakeAdapter{}})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateStalled || record.Iterations != 3 {
+		t.Fatalf("record = %#v, want stalled on iteration 3", record)
+	}
+}
+
+func TestRunRecordsGroupedRemainingActionableFieldsAndStuckCounts(t *testing.T) {
+	first := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Counts:        agentreport.Counts{StillFailing: 4},
+		Actionable: []agentreport.Actionable{
+			{ID: "decreasing", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets", CheckCategory: "schema", Count: 2},
+			{ID: "unchanged", Kind: agentreport.ActionKindRegressed, Operation: "POST /widgets", CheckCategory: "status", Count: 1},
+			{ID: "increasing", Kind: agentreport.ActionKindStillFailing, Operation: "PUT /widgets", CheckCategory: "body", Count: 1},
+		},
+	}
+	second := first
+	second.Actionable = []agentreport.Actionable{
+		{ID: "decreasing", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets", CheckCategory: "schema", Count: 1},
+		{ID: "unchanged", Kind: agentreport.ActionKindRegressed, Operation: "POST /widgets", CheckCategory: "status", Count: 1},
+		{ID: "increasing", Kind: agentreport.ActionKindStillFailing, Operation: "PUT /widgets", CheckCategory: "body", Count: 2},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: first, exitCode: agentreport.ExitCodeNotConverged},
+		{view: second, exitCode: agentreport.ExitCodeNotConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+		MaxIterations:  3,
+		StallWindow:    1,
+	}, Dependencies{Comparator: comparator, Candidate: &fakeCandidate{}, Adapter: &fakeAdapter{}})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateStalled {
+		t.Fatalf("terminal state = %q, want stalled", record.TerminalState)
+	}
+	if len(record.RemainingActionable) != 3 {
+		t.Fatalf("remaining actionable = %#v, want three groups", record.RemainingActionable)
+	}
+	decreasing := record.RemainingActionable[0]
+	unchanged := record.RemainingActionable[1]
+	increasing := record.RemainingActionable[2]
+	if decreasing.ID != "decreasing" || decreasing.Count != 1 || decreasing.CheckCategory != "schema" || decreasing.Stuck {
+		t.Fatalf("decreasing group = %#v, want count 1 and not stuck", decreasing)
+	}
+	if unchanged.ID != "unchanged" || unchanged.Kind != "regressed" || unchanged.Operation != "POST /widgets" ||
+		unchanged.Count != 1 || unchanged.CheckCategory != "status" || !unchanged.Stuck {
+		t.Fatalf("unchanged group = %#v, want grouped fields and stuck", unchanged)
+	}
+	if increasing.ID != "increasing" || increasing.Count != 2 || increasing.CheckCategory != "body" || !increasing.Stuck {
+		t.Fatalf("increasing group = %#v, want count 2 and stuck", increasing)
+	}
+}
+
+func TestRunRejectsUnsupportedAgentViewSchema(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{SchemaVersion: "1", Counts: agentreport.Counts{StillFailing: 1}},
+		exitCode: agentreport.ExitCodeNotConverged,
+	}}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(testConfig(), Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err == nil || !strings.Contains(err.Error(), `"1"`) || !strings.Contains(err.Error(), `"2"`) {
+		t.Fatalf("Run error = %v, want observed and expected schema versions", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateToolError {
+		t.Fatalf("terminal state = %q, want tool_error", record.TerminalState)
+	}
+	if record.AgentViewSchemaVersion != "1" {
+		t.Fatalf("agent view schema version = %q, want observed v1", record.AgentViewSchemaVersion)
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter calls = %d, want no call for rejected view", len(adapter.instructions))
+	}
+}
+
 func TestRunRejectsNegativeStallWindow(t *testing.T) {
 	_, err := Run(Config{
 		BaselineExists: func() bool { return true },
@@ -955,7 +1315,7 @@ func TestRunMarksNewlyIntroducedActionableItemsAsNotStuck(t *testing.T) {
 	record, err := Run(Config{
 		BaselineExists: func() bool { return true },
 		MaxIterations:  5,
-		StallWindow:    2,
+		StallWindow:    1,
 	}, Dependencies{
 		Comparator: comparator,
 		Candidate:  &fakeCandidate{},
@@ -1040,7 +1400,7 @@ func TestRunMaxIterationsMarksPersistentAndNewItems(t *testing.T) {
 
 	record, err := Run(Config{
 		BaselineExists: func() bool { return true },
-		MaxIterations:  3,
+		MaxIterations:  2,
 		StallWindow:    5,
 	}, Dependencies{
 		Comparator: comparator,
@@ -1286,6 +1646,9 @@ func (f *fakeComparator) Compare(config Config) (agentreport.View, int, error) {
 	f.configs = append(f.configs, config)
 	result := f.results[0]
 	f.results = f.results[1:]
+	if result.view.SchemaVersion == "" {
+		result.view.SchemaVersion = agentreport.SchemaVersion
+	}
 	return result.view, result.exitCode, result.err
 }
 
@@ -1436,6 +1799,18 @@ func (f *fakeAdapter) Fix(
 
 func testConfig() Config {
 	return Config{BaselineExists: func() bool { return true }, MaxIterations: 5, StallWindow: 3}
+}
+
+func caseTotalView(total int) agentreport.View {
+	return agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Counts:        agentreport.Counts{StillFailing: total},
+		Actionable: []agentreport.Actionable{{
+			ID:    "group-1",
+			Kind:  agentreport.ActionKindStillFailing,
+			Count: total,
+		}},
+	}
 }
 
 var preflightAndFirstIterationCalls = []string{

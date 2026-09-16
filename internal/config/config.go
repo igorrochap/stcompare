@@ -133,9 +133,10 @@ func (c *StbenchConfig) UnmarshalYAML(node *yaml.Node) error {
 
 // StbenchPromptConfig identifies the fixed task prompt used by a run.
 type StbenchPromptConfig struct {
-	ID      string `yaml:"id"`
-	Version string `yaml:"version"`
-	File    string `yaml:"file,omitempty"`
+	ID       string `yaml:"id"`
+	Version  string `yaml:"version"`
+	File     string `yaml:"file,omitempty"`
+	MaxBytes int    `yaml:"max_bytes"`
 }
 
 // StbenchLifecycleConfig contains candidate process and health-check hooks.
@@ -169,6 +170,9 @@ func validateConfigBasics(c Config) error {
 		return errors.New("base_url must be an absolute HTTP(S) URL")
 	}
 	if c.Stbench != nil {
+		if c.Stbench.Prompt.MaxBytes < 0 {
+			return errors.New("stbench.prompt.max_bytes must not be negative")
+		}
 		if err := validateStbenchHealthURL(baseURL, c.Stbench.Lifecycle.HealthURL); err != nil {
 			return err
 		}
@@ -517,8 +521,9 @@ func Default() Config {
 			SourceDir:       ".",
 			StcompareBinary: "stcompare",
 			Prompt: StbenchPromptConfig{
-				ID:      "stbench-default",
-				Version: "2",
+				ID:       "stbench-default",
+				Version:  "3",
+				MaxBytes: 0,
 			},
 			Lifecycle: StbenchLifecycleConfig{
 				Stop:           ".local/stbench/stop.sh",

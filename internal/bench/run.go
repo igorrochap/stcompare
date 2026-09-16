@@ -34,7 +34,7 @@ const (
 	// DefaultPromptID identifies the canonical stbench task prompt.
 	DefaultPromptID = "stbench-default"
 	// DefaultPromptVersion identifies the current canonical task prompt.
-	DefaultPromptVersion = "2"
+	DefaultPromptVersion = "3"
 	// DefaultMaxIterations bounds runs that do not provide an explicit cap.
 	DefaultMaxIterations = 100
 	// DefaultStallWindow is the number of consecutive non-improving transitions
@@ -57,6 +57,9 @@ type Config struct {
 	AdapterMetadata
 	Candidate string
 	Baseline  string
+	// ReportsDir is the campaign artifact root used to identify the candidate's
+	// comparison report in the task prompt.
+	ReportsDir string
 	// SourceDir is the candidate source tree captured for final source evidence.
 	// An empty value keeps library callers that do not request source evidence
 	// compatible with the existing runner contract.
@@ -69,6 +72,9 @@ type Config struct {
 	// canonical embedded template. Relative paths resolve against the process's
 	// current working directory.
 	PromptFile string
+	// PromptMaxBytes limits the rendered task instruction. Zero disables the
+	// limit; negative values are invalid configuration.
+	PromptMaxBytes int
 
 	// BaselineExists is checked before any candidate lifecycle operation. A nil
 	// check means the caller has already established the precondition.
@@ -215,7 +221,14 @@ type ProcessReuseReporter interface {
 }
 
 // Run drives a candidate until convergence or a terminal condition.
-func Run(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
+func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+	if config.PromptMaxBytes < 0 {
+		return invalidPromptMaxBytesRun(config, dependencies)
+	}
+	return runValidated(config, dependencies)
+}
+
+func runValidated(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
 	if err := validate(config, dependencies); err != nil {
 		return benchrecord.Record{}, err
 	}
@@ -238,29 +251,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	applyRunDefaults(&config)
 	config.Prompt.Hash = selectedPromptHash
 
-	record = benchrecord.Record{
-		SchemaVersion:        benchrecord.SchemaVersion,
-		RunID:                runID,
-		Agent:                config.Agent,
-		Model:                config.Model,
-		Effort:               config.Effort,
-		Temperature:          effectiveTemperature(config.Temperature),
-		Hardware:             config.Hardware,
-		Prompt:               config.Prompt,
-		Candidate:            config.Candidate,
-		Baseline:             config.Baseline,
-		StartedAt:            startedAt.Format(time.RFC3339Nano),
-		PromptInstructions:   []string{},
-		RenderedPromptHashes: []string{},
-		AgentResponses:       []string{},
-		ProcessReuse:         config.ReuseProcess,
-		Efficiency: benchrecord.EfficiencySummary{
-			Status:      benchrecord.EfficiencyStatusNotReported,
-			TokenStatus: benchrecord.TokenStatusNotReported,
-		},
-		IterationEfficiency: []benchrecord.EfficiencySummary{},
-		Final:               benchrecord.FinalSummary{},
-	}
+	record = newBenchmarkRecord(config, runID, startedAt)
 	configureRunAudit(&config, &record, runID)
 	runnerEvidence := newRunnerAuditEvidence(config)
 	defer func() {
@@ -289,6 +280,50 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	runnerEvidence.captureStartingSource()
 
 	return runIterations(config, dependencies, selectedPrompt, record, startedAt, runnerEvidence)
+}
+
+func invalidPromptMaxBytesRun(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+	now := dependencies.Now
+	if now == nil {
+		now = time.Now
+	}
+	startedAt := now()
+	runID, err := resolveRunID(config.RunID, startedAt)
+	if err != nil {
+		return benchrecord.Record{}, fmt.Errorf("create benchmark run identity: %w", err)
+	}
+	config.RunID = runID
+	applyRunDefaults(&config)
+	record := newBenchmarkRecord(config, runID, startedAt)
+	return finish(record, now(), benchrecord.TerminalStateToolError),
+		errors.New("stbench.prompt.max_bytes must not be negative")
+}
+
+func newBenchmarkRecord(config Config, runID string, startedAt time.Time) benchrecord.Record {
+	return benchrecord.Record{
+		SchemaVersion:        benchrecord.SchemaVersion,
+		RunID:                runID,
+		Agent:                config.Agent,
+		Model:                config.Model,
+		Effort:               config.Effort,
+		Temperature:          effectiveTemperature(config.Temperature),
+		Hardware:             config.Hardware,
+		Prompt:               config.Prompt,
+		Candidate:            config.Candidate,
+		Baseline:             config.Baseline,
+		StartedAt:            startedAt.Format(time.RFC3339Nano),
+		PromptInstructions:   []string{},
+		RenderedPromptHashes: []string{},
+		RenderedPromptBytes:  []int{},
+		AgentResponses:       []string{},
+		ProcessReuse:         config.ReuseProcess,
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:      benchrecord.EfficiencyStatusNotReported,
+			TokenStatus: benchrecord.TokenStatusNotReported,
+		},
+		IterationEfficiency: []benchrecord.EfficiencySummary{},
+		Final:               benchrecord.FinalSummary{},
+	}
 }
 
 func applyRunDefaults(config *Config) {
@@ -604,6 +639,8 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 				runner.promptTemplate,
 				runner.config.Prompt,
 				view,
+				comparisonPath(runner.config.ReportsDir, runner.config.Candidate),
+				runner.config.PromptMaxBytes,
 				runner.config.AdapterMetadata,
 				runner.record.Tokens,
 				&runner.hasKnownTokens,
@@ -622,6 +659,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		)
 		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
 		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
+		runner.record.RenderedPromptBytes = append(runner.record.RenderedPromptBytes, fix.Bytes)
 		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
 	}
 	if fix.Temperature != nil {
@@ -641,6 +679,11 @@ func (runner *iterationRunner) handleComparison(
 	lastIteration bool,
 ) (bool, error) {
 	runner.lastView = view
+	runner.record.AgentViewSchemaVersion = view.SchemaVersion
+	if err := validateAgentView(view); err != nil {
+		runner.record.Final = finalSummary(view)
+		return true, runner.bail(benchrecord.TerminalStateToolError, fmt.Errorf("compare: %w", err))
+	}
 	runner.record.Final = finalSummary(view)
 	stalled := runner.progress.observe(view, runner.config.StallWindow)
 
@@ -699,7 +742,7 @@ func (runner *iterationRunner) compare() (agentreport.View, int, error) {
 	runner.report(ProgressEvent{
 		Phase:        ProgressPhaseCompare,
 		State:        ProgressDone,
-		Actionable:   len(view.Actionable),
+		Actionable:   actionableCaseCount(view),
 		Converged:    view.Converged,
 		StillFailing: view.Counts.StillFailing,
 	})
@@ -709,6 +752,15 @@ func (runner *iterationRunner) compare() (agentreport.View, int, error) {
 func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) error {
 	if state == benchrecord.TerminalStateAdapterError {
 		state = adapterTerminalState(err)
+	}
+	if state == benchrecord.TerminalStatePromptTooLarge {
+		var promptError *promptTooLargeError
+		if errors.As(err, &promptError) {
+			runner.record.PromptSizeLimit = &benchrecord.PromptSizeLimit{
+				ObservedBytes: promptError.ObservedBytes,
+				MaxBytes:      promptError.MaxBytes,
+			}
+		}
 	}
 	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
@@ -738,7 +790,21 @@ func validate(config Config, dependencies Dependencies) error {
 	if config.StallWindow < 0 {
 		return fmt.Errorf("stall window must not be negative")
 	}
+	if config.PromptMaxBytes < 0 {
+		return errors.New("stbench.prompt.max_bytes must not be negative")
+	}
 	return nil
+}
+
+func validateAgentView(view agentreport.View) error {
+	if view.SchemaVersion == agentreport.SchemaVersion {
+		return nil
+	}
+	return fmt.Errorf(
+		"agent view schema version %q, expected %q",
+		view.SchemaVersion,
+		agentreport.SchemaVersion,
+	)
 }
 
 // lifecyclePhaseObserver is notified at the boundary of each candidate
@@ -821,6 +887,10 @@ func adapterTerminalState(err error) benchrecord.TerminalState {
 	if errors.As(err, &auditFailure) {
 		return benchrecord.TerminalStateAuditError
 	}
+	var promptError *promptTooLargeError
+	if errors.As(err, &promptError) {
+		return benchrecord.TerminalStatePromptTooLarge
+	}
 	return benchrecord.TerminalStateAdapterError
 }
 
@@ -873,17 +943,37 @@ func auditReportReference(path string) string {
 
 type promptTemplateData struct {
 	Prompt         benchrecord.PromptIdentity
+	ComparisonPath string
 	ComparisonView string
 }
 
 func renderPrompt(prompt benchrecord.PromptIdentity, view agentreport.View) (string, error) {
-	return renderPromptTemplate(promptTemplate, prompt, view)
+	return renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonPath("", view.Candidate),
+	)
 }
 
 func renderPromptTemplate(
 	selectedTemplate *template.Template,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+) (string, error) {
+	return renderPromptTemplateAtPath(
+		selectedTemplate,
+		prompt,
+		view,
+		comparisonPath("", view.Candidate),
+	)
+}
+
+func renderPromptTemplateAtPath(
+	selectedTemplate *template.Template,
+	prompt benchrecord.PromptIdentity,
+	view agentreport.View,
+	comparisonReportPath string,
 ) (string, error) {
 	compactView, err := json.Marshal(view)
 	if err != nil {
@@ -892,11 +982,19 @@ func renderPromptTemplate(
 	var instruction bytes.Buffer
 	if err := selectedTemplate.Execute(&instruction, promptTemplateData{
 		Prompt:         prompt,
+		ComparisonPath: comparisonReportPath,
 		ComparisonView: string(compactView),
 	}); err != nil {
 		return "", fmt.Errorf("render task prompt template: %w", err)
 	}
 	return instruction.String(), nil
+}
+
+func comparisonPath(reportsDir, candidate string) string {
+	if reportsDir == "" {
+		reportsDir = "reports"
+	}
+	return filepath.Join(reportsDir, candidate, "comparison.json")
 }
 
 func loadPromptTemplate(path string) (*template.Template, string, error) {
@@ -989,6 +1087,7 @@ func hashContent(content string) string {
 type agentFixResult struct {
 	Instruction string
 	Hash        string
+	Bytes       int
 	Response    string
 	Temperature *float64
 	Rendered    bool
@@ -999,19 +1098,33 @@ func runAgentFix(
 	promptTemplate *template.Template,
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
+	comparisonReportPath string,
+	maxPromptBytes int,
 	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
 	hasKnownTokens *bool,
 	unknownTokenIterations *int,
 ) (agentFixResult, error) {
-	instruction, err := renderPromptTemplate(promptTemplate, prompt, view)
+	instruction, err := renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonReportPath,
+	)
 	if err != nil {
 		return agentFixResult{}, fmt.Errorf("render task prompt: %w", err)
 	}
 	fix := agentFixResult{
 		Instruction: instruction,
 		Hash:        hashContent(instruction),
+		Bytes:       len(instruction),
 		Rendered:    true,
+	}
+	if maxPromptBytes > 0 && fix.Bytes > maxPromptBytes {
+		return fix, &promptTooLargeError{
+			ObservedBytes: fix.Bytes,
+			MaxBytes:      maxPromptBytes,
+		}
 	}
 	result, err := adapter.Fix(instruction, view, metadata)
 	if result == nil || result.Tokens == nil {
@@ -1037,6 +1150,19 @@ func runAgentFix(
 	return fix, nil
 }
 
+type promptTooLargeError struct {
+	ObservedBytes int
+	MaxBytes      int
+}
+
+func (err *promptTooLargeError) Error() string {
+	return fmt.Sprintf(
+		"rendered prompt is %d bytes, exceeds stbench.prompt.max_bytes %d",
+		err.ObservedBytes,
+		err.MaxBytes,
+	)
+}
+
 func finalSummary(view agentreport.View) benchrecord.FinalSummary {
 	return benchrecord.FinalSummary{
 		Converged:    view.Converged,
@@ -1055,67 +1181,72 @@ func actionableItems(view agentreport.View, stuckIDs map[string]struct{}) []benc
 	items := make([]benchrecord.ActionableItem, len(view.Actionable))
 	for i, item := range view.Actionable {
 		items[i] = benchrecord.ActionableItem{
-			ID:        item.ID,
-			Kind:      string(item.Kind),
-			Operation: item.Operation,
-			Stuck:     containsID(stuckIDs, item.ID),
+			ID:            item.ID,
+			Kind:          string(item.Kind),
+			Operation:     item.Operation,
+			CheckCategory: string(item.CheckCategory),
+			Count:         item.Count,
+			Stuck:         containsID(stuckIDs, item.ID),
 		}
 	}
 	return items
 }
 
 type progressTracker struct {
-	previousCount int
-	hasPrevious   bool
-	nonImproving  int
-	persistentIDs map[string]struct{}
+	previousCount  int
+	hasPrevious    bool
+	nonImproving   int
+	previousGroups map[string]int
+	stuckGroups    map[string]struct{}
 }
 
 func (tracker *progressTracker) observe(view agentreport.View, stallWindow int) bool {
-	currentIDs := actionableIDs(view)
-	currentCount := len(view.Actionable)
+	currentCount := actionableCaseCount(view)
+	currentGroups := groupCounts(view)
 	if !tracker.hasPrevious {
 		tracker.hasPrevious = true
 		tracker.previousCount = currentCount
-		tracker.persistentIDs = currentIDs
+		tracker.previousGroups = currentGroups
+		tracker.stuckGroups = nil
 		return false
 	}
 
 	if currentCount < tracker.previousCount {
 		tracker.nonImproving = 0
-		tracker.persistentIDs = currentIDs
 	} else {
 		tracker.nonImproving++
-		tracker.persistentIDs = intersectIDs(tracker.persistentIDs, currentIDs)
 	}
+	tracker.stuckGroups = unchangedGroups(tracker.previousGroups, currentGroups)
 	tracker.previousCount = currentCount
+	tracker.previousGroups = currentGroups
 
 	return tracker.nonImproving >= stallWindow
 }
 
 func (tracker progressTracker) stuckIDs() map[string]struct{} {
-	if tracker.nonImproving == 0 {
-		return nil
-	}
-	return tracker.persistentIDs
+	return tracker.stuckGroups
 }
 
-func actionableIDs(view agentreport.View) map[string]struct{} {
-	ids := make(map[string]struct{}, len(view.Actionable))
+func actionableCaseCount(view agentreport.View) int {
+	return view.Counts.StillFailing + view.Counts.Regressed
+}
+
+func groupCounts(view agentreport.View) map[string]int {
+	counts := make(map[string]int, len(view.Actionable))
 	for _, item := range view.Actionable {
-		ids[item.ID] = struct{}{}
+		counts[item.ID] = item.Count
 	}
-	return ids
+	return counts
 }
 
-func intersectIDs(left, right map[string]struct{}) map[string]struct{} {
-	intersection := make(map[string]struct{})
-	for id := range left {
-		if _, ok := right[id]; ok {
-			intersection[id] = struct{}{}
+func unchangedGroups(previous, current map[string]int) map[string]struct{} {
+	unchanged := make(map[string]struct{})
+	for id, count := range current {
+		if previousCount, ok := previous[id]; ok && previousCount <= count {
+			unchanged[id] = struct{}{}
 		}
 	}
-	return intersection
+	return unchanged
 }
 
 func containsID(ids map[string]struct{}, id string) bool {

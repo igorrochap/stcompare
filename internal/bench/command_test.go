@@ -27,9 +27,10 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		SourceDir:       "candidate-src",
 		StcompareBinary: "./stcompare",
 		Prompt: config.StbenchPromptConfig{
-			ID:      "prompt",
-			Version: "2",
-			File:    "prompts/ablation.md",
+			ID:       "prompt",
+			Version:  "2",
+			File:     "prompts/ablation.md",
+			MaxBytes: 262144,
 		},
 		Lifecycle: config.StbenchLifecycleConfig{
 			Stop:           "./stop.sh",
@@ -54,7 +55,8 @@ func TestDefaultRunSettingsLoadsStbenchConfiguration(t *testing.T) {
 		t.Fatalf("lifecycle settings = %#v, want caller configuration", settings)
 	}
 	if settings.maxIterations != 7 || settings.stallWindow != 3 ||
-		settings.promptVersion != "2" || settings.promptFile != "prompts/ablation.md" {
+		settings.promptVersion != "2" || settings.promptFile != "prompts/ablation.md" ||
+		settings.promptMaxBytes != 262144 {
 		t.Fatalf("run limits/prompt = %#v, want caller configuration", settings)
 	}
 }
@@ -125,7 +127,7 @@ cat > %q
 printf '%%s' '{"status":"ok"}'
 `, adapterInputPath))
 	stcompare := writeExecutable(t, directory, "stcompare", `#!/bin/sh
-printf '%s' '{"schema_version":"1","converged":true,"candidate":"sonnet5-high","baseline":"baseline","counts":{},"unverified":{},"actionable":[]}'
+printf '%s' '{"schema_version":"2","converged":true,"candidate":"sonnet5-high","baseline":"baseline","counts":{},"unverified":{},"actionable":[]}'
 `)
 	healthServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusNoContent)
@@ -429,6 +431,7 @@ func TestExitCodeForBenchmarkTerminalState(t *testing.T) {
 		{state: benchrecord.TerminalStateAdapterError, want: 1},
 		{state: benchrecord.TerminalStateLifecycleError, want: 1},
 		{state: benchrecord.TerminalStateAuditError, want: 1},
+		{state: benchrecord.TerminalStatePromptTooLarge, want: 2},
 	} {
 		if got := exitCodeForState(test.state); got != test.want {
 			t.Errorf("exitCodeForState(%q) = %d, want %d", test.state, got, test.want)

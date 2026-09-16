@@ -65,6 +65,47 @@ func TestRenderAddsBenchmarkRunToComparisonHTML(t *testing.T) {
 	}
 }
 
+func TestRenderShowsPromptTooLargeTerminalStateAndLimit(t *testing.T) {
+	record := benchrecord.Record{
+		TerminalState: benchrecord.TerminalStatePromptTooLarge,
+		PromptSizeLimit: &benchrecord.PromptSizeLimit{
+			ObservedBytes: 376788,
+			MaxBytes:      262144,
+		},
+	}
+
+	html, err := Render(comparisonFixture(t), record)
+	if err != nil {
+		t.Fatalf("render scorecard: %v", err)
+	}
+	for _, fragment := range []string{
+		"Terminal state</span><strong>prompt_too_large</strong>",
+		"Rendered prompt size</span><strong>376788 bytes</strong>",
+		"Prompt size limit</span><strong>262144 bytes</strong>",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("scorecard missing prompt guard fragment %q:\n%s", fragment, html)
+		}
+	}
+}
+
+func TestRenderAcceptsGroupedRemainingActionable(t *testing.T) {
+	record := benchrecord.Record{
+		AgentViewSchemaVersion: "2",
+		RemainingActionable: []benchrecord.ActionableItem{{
+			ID:            "group-1",
+			Kind:          "still_failing",
+			Operation:     "GET /widgets/{id}",
+			CheckCategory: "response_schema_conformance",
+			Count:         4,
+			Stuck:         true,
+		}},
+	}
+	if _, err := Render(comparisonFixture(t), record); err != nil {
+		t.Fatalf("render grouped remaining actionable record: %v", err)
+	}
+}
+
 func TestRenderStatesWhenTokenUsageWasNotReported(t *testing.T) {
 	html, err := Render(comparisonFixture(t), benchrecord.Record{})
 	if err != nil {

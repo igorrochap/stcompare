@@ -176,9 +176,11 @@ func runCommand(command *cobra.Command, configPath string, options runCommandOpt
 		},
 		Candidate:         settings.campaign,
 		Baseline:          baselineName,
+		ReportsDir:        effective.ReportsDir,
 		SourceDir:         workingDir,
 		Prompt:            benchrecord.PromptIdentity{ID: settings.promptID, Version: settings.promptVersion},
 		PromptFile:        settings.promptFile,
+		PromptMaxBytes:    settings.promptMaxBytes,
 		ReuseProcess:      settings.reuseProcess,
 		MaxIterations:     settings.maxIterations,
 		StallWindow:       settings.stallWindow,
@@ -342,6 +344,7 @@ type runSettings struct {
 	promptID          string
 	promptVersion     string
 	promptFile        string
+	promptMaxBytes    int
 }
 
 // defaultHeartbeatInterval keeps the terminal visibly alive during long agent
@@ -379,6 +382,7 @@ func defaultRunSettings(source *config.StbenchConfig) runSettings {
 	settings.promptID = source.Prompt.ID
 	settings.promptVersion = source.Prompt.Version
 	settings.promptFile = source.Prompt.File
+	settings.promptMaxBytes = source.Prompt.MaxBytes
 	return settings
 }
 
@@ -506,6 +510,9 @@ func validateRunSettings(settings runSettings) error {
 	if settings.stallWindow < 0 {
 		return errors.New("stall window must not be negative")
 	}
+	if settings.promptMaxBytes < 0 {
+		return errors.New("stbench.prompt.max_bytes must not be negative")
+	}
 	return nil
 }
 
@@ -577,6 +584,8 @@ func exitCodeForState(state benchrecord.TerminalState) int {
 	case benchrecord.TerminalStateConverged:
 		return 0
 	case benchrecord.TerminalStateStalled, benchrecord.TerminalStateMaxIterations:
+		return agentreport.ExitCodeNotConverged
+	case benchrecord.TerminalStatePromptTooLarge:
 		return agentreport.ExitCodeNotConverged
 	default:
 		return agentreport.ExitCodeToolError

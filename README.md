@@ -199,7 +199,8 @@ stbench:
   stcompare_binary: stcompare
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -353,6 +354,43 @@ standard output:
 ```sh
 stcompare campaign compare gpt5.6 --format agent
 ```
+
+The agent view uses schema version `2`. Its `actionable` list contains one
+Problem Group per distinct `kind`, OpenAPI operation template (or concrete
+operation when no template resolves), check category, message, and status pair:
+
+```json
+{
+  "schema_version": "2",
+  "actionable": [
+    {
+      "id": "<stable hash of the Problem Group key>",
+      "kind": "still_failing",
+      "check_category": "status_code_conformance",
+      "operation": "GET /widgets/{id}",
+      "status": {"baseline": 200, "candidate": 500},
+      "message": "Undocumented HTTP status code",
+      "count": 3,
+      "refs": [1, 4, 9],
+      "sample": {
+        "ref": 1,
+        "operation": "GET /widgets/0",
+        "request_body": "...",
+        "response_body": "...",
+        "details": []
+      }
+    }
+  ]
+}
+```
+
+Groups are ordered regressions first, then by operation, check category,
+baseline status, and candidate status; ordering never uses `count`. `refs` has
+at most three lowest interaction numbers, and the sample is from the lowest
+ref. Each body is capped at 512 bytes plus a `…[truncated N bytes]` marker when
+needed; `details` has at most five check-specific lines. The group `id` is a
+stable hash of the full six-part key, so it is stable per problem rather than
+per case.
 
 Comparison exit statuses are part of the public automation contract:
 
@@ -588,9 +626,9 @@ include:
 - Problem outcome totals for extracted baseline Schemathesis problems:
   `fixed`, `still_failing`, and `inconclusive`, plus separate total,
   `evaluable`, `unevaluable`, `uncorrelated`, and `ambiguous` counts. Every
-  extracted problem falls into exactly one top-level bucket: evaluable,
+  extracted problem falls into exactly one top-level category: evaluable,
   unevaluable, uncorrelated, or ambiguous. The outcome totals always sum to the
-  evaluable count, and the top-level buckets always sum to total. A problem is
+  evaluable count, and the top-level categories always sum to total. A problem is
   `evaluable` when it is correlated to a replay interaction and the comparison
   has evidence for an outcome. Correlated problems whose check category is not
   yet supported are `unevaluable`, not inconclusive. Check-specific evaluation
@@ -713,7 +751,8 @@ stbench:
   stcompare_binary: stcompare
   prompt:
     id: stbench-default
-    version: "2"
+    version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -752,9 +791,23 @@ external Go `text/template`, and `--prompt-file` overrides that YAML value. The
 template must reference `.ComparisonView`; relative paths resolve against the
 current working directory, not the configuration file. When selected,
 `prompt.hash` is the SHA-256 of the file's exact content. With no file override,
-the embedded prompt and its existing hash remain unchanged. `stbench init`
+the embedded `stbench-default@3` prompt and its corresponding hash are used. `stbench init`
 deliberately does not scaffold a `file:` key, keeping the canonical embedded
-prompt as the default.
+prompt as the default. `stbench.prompt.max_bytes` is an opt-in inclusive byte
+limit for the rendered instruction; absent or `0` means unlimited. A prompt
+that exceeds the limit ends the run before the adapter fix request with
+`terminal_state: prompt_too_large`.
+
+The compact view sent in that prompt has one entry per Problem Group. Each
+`count` is the number of failing cases in the group, `sample` is one concrete
+case with truncated bodies, and `refs` are interaction numbers in the
+candidate's `<reports_dir>/<candidate>/comparison.json`. Stall detection uses
+the case total `counts.still_failing + counts.regressed`, not the number of
+groups. Benchmark records use schema version `2`, carry
+`agent_view_schema_version: "2"`, and record each remaining Problem Group as
+`{id, kind, operation, check_category, count, stuck}`. Each rendered adapter
+instruction is recorded in `prompt_instructions`, its hash in
+`rendered_prompt_hashes`, and its UTF-8 byte length in `rendered_prompt_bytes`.
 
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured
@@ -827,7 +880,7 @@ outside that tree. It receives one
 JSON object on stdin and must write one JSON object to stdout:
 
 ```json
-{"agent":"codex","model":"gpt-5","effort":"high","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"schema_version":"1", "actionable":[]}}
+{"agent":"codex","model":"gpt-5","effort":"high","temperature":0.0,"hardware":"local-machine","instruction":"...","view":{"schema_version":"2", "actionable":[]}}
 ```
 
 `agent`, `model`, `effort`, and optional `temperature` come from the selected Candidate Campaign;
@@ -870,8 +923,8 @@ versioned benchmark record to the selected Candidate Campaign's derived report
 path; its `tokens` field sums known usage, while
 `unknown_token_iterations` counts fix iterations that reported `null`. If no
 iteration reports token usage, `tokens` remains `null`. The command exits `0`
-on convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
-lifecycle errors.
+on convergence, `2` on a stalled, capped, or `prompt_too_large` run, and `1`
+on tool, adapter, or lifecycle errors.
 
 ### Adapter examples
 
@@ -968,8 +1021,10 @@ stcompare scorecard build \
 ```
 
 The self-contained HTML includes every section from `comparison.html` plus a
-Benchmark Run section with the agent, model, iteration count, total and
-agent-fix durations, and token usage. Audited records add an Efficiency
+Benchmark Run section with the agent, model, iteration count, terminal state,
+total and agent-fix durations, and token usage. A `prompt_too_large` record
+also shows its observed rendered prompt bytes and configured cap. Audited
+records add an Efficiency
 summary with model-turn count, inference time, known/unknown token status,
 known subtotal, and audit-recording overhead. All three paths are required.
 Missing or malformed inputs fail without writing the output file; a record

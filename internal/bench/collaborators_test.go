@@ -23,7 +23,7 @@ func TestCommandComparatorParsesAgentViewAndExitCode(t *testing.T) {
 	argsPath := filepath.Join(dir, "args")
 	script := writeExecutable(t, dir, "compare.sh", "#!/bin/sh\n"+
 		"printf '%s\\n' \"$@\" > \"$STBENCH_ARGS\"\n"+
-		"printf '%s' '{\"schema_version\":\"1\",\"converged\":false,\"candidate\":\"candidate\",\"baseline\":\"baseline\",\"counts\":{\"fixed\":0,\"still_failing\":1,\"regressed\":0},\"unverified\":{\"inconclusive\":0,\"uncorrelated\":0,\"ambiguous\":0,\"unevaluable\":0},\"actionable\":[]}'\n"+
+		"printf '%s' '{\"schema_version\":\"2\",\"converged\":false,\"candidate\":\"candidate\",\"baseline\":\"baseline\",\"counts\":{\"fixed\":0,\"still_failing\":1,\"regressed\":0},\"unverified\":{\"inconclusive\":0,\"uncorrelated\":0,\"ambiguous\":0,\"unevaluable\":0},\"actionable\":[]}'\n"+
 		"exit 2\n")
 
 	comparator := &CommandComparator{

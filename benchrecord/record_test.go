@@ -9,13 +9,14 @@ import (
 
 func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	record := Record{
-		SchemaVersion: "1",
-		RunID:         "run-1",
-		Agent:         "agent",
-		Model:         "model",
-		Effort:        "high",
-		Temperature:   0.65,
-		Hardware:      "hardware",
+		SchemaVersion:          "2",
+		AgentViewSchemaVersion: "2",
+		RunID:                  "run-1",
+		Agent:                  "agent",
+		Model:                  "model",
+		Effort:                 "high",
+		Temperature:            0.65,
+		Hardware:               "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
 			Version: "2026-01-01",
@@ -23,6 +24,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		},
 		PromptInstructions:   []string{"Task prompt stbench-default@2026-01-01"},
 		RenderedPromptHashes: []string{"rendered-prompt-hash"},
+		RenderedPromptBytes:  []int{42},
 		AgentResponses:       []string{"raw model response"},
 		ProcessReuse:         true,
 		Candidate:            "candidate",
@@ -31,6 +33,10 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		EndedAt:              "2026-01-01T00:01:00Z",
 		Iterations:           2,
 		TerminalState:        TerminalStateConverged,
+		PromptSizeLimit: &PromptSizeLimit{
+			ObservedBytes: 376788,
+			MaxBytes:      262144,
+		},
 		TimeMS: TimeBreakdown{
 			Total:          60000,
 			AgentFix:       20000,
@@ -73,7 +79,14 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 				Unevaluable:  4,
 			},
 		},
-		RemainingActionable: []ActionableItem{{ID: "problem-1", Kind: "schema", Operation: "GET /widgets", Stuck: true}},
+		RemainingActionable: []ActionableItem{{
+			ID:            "problem-1",
+			Kind:          "schema",
+			Operation:     "GET /widgets",
+			CheckCategory: "response_schema_conformance",
+			Count:         3,
+			Stuck:         true,
+		}},
 	}
 
 	data, err := json.Marshal(record)
@@ -93,11 +106,21 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		t.Fatalf("unmarshal record fields: %v", err)
 	}
-	if string(fields["schema_version"]) != `"1"` {
-		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "1")
+	if string(fields["schema_version"]) != `"2"` {
+		t.Fatalf("schema_version = %s, want %q", fields["schema_version"], "2")
+	}
+	if string(fields["agent_view_schema_version"]) != `"2"` {
+		t.Fatalf("agent_view_schema_version = %s, want %q", fields["agent_view_schema_version"], "2")
 	}
 	if string(fields["unknown_token_iterations"]) != `1` {
 		t.Fatalf("unknown_token_iterations = %s, want 1", fields["unknown_token_iterations"])
+	}
+	if string(fields["rendered_prompt_bytes"]) != `[42]` {
+		t.Fatalf("rendered_prompt_bytes = %s, want [42]", fields["rendered_prompt_bytes"])
+	}
+	if !strings.Contains(string(fields["prompt_size_limit"]), `"observed_bytes":376788`) ||
+		!strings.Contains(string(fields["prompt_size_limit"]), `"max_bytes":262144`) {
+		t.Fatalf("prompt_size_limit = %s, want observed size and cap", fields["prompt_size_limit"])
 	}
 	if string(fields["temperature"]) != `0.65` {
 		t.Fatalf("temperature = %s, want 0.65", fields["temperature"])
@@ -153,6 +176,7 @@ func TestTerminalStatesMarshalAsFixedValues(t *testing.T) {
 		TerminalStateAdapterError,
 		TerminalStateLifecycleError,
 		TerminalStateAuditError,
+		TerminalStatePromptTooLarge,
 	} {
 		data, err := json.Marshal(Record{TerminalState: state})
 		if err != nil {

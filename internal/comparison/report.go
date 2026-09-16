@@ -36,6 +36,8 @@ type report struct {
 	BaselineProblemsNote      string                      `json:"baseline_problems_note"`
 	Problems                  []baselineProblem           `json:"problems"`
 	Findings                  []reportInteractionEvidence `json:"findings"`
+	// schemaValidation is used only to resolve operation templates in the agent view.
+	schemaValidation *OpenAPIContract
 	// allInteractions retains every interaction for compact-view references,
 	// including interactions omitted from the reportable findings list.
 	allInteractions []reportInteractionEvidence
@@ -244,6 +246,7 @@ func newReport(input reportInput) report {
 		BaselineProblemsNote:      problemState.note,
 		Problems:                  classification.problems,
 		Findings:                  classification.interactions,
+		schemaValidation:          input.SchemaValidation,
 		allInteractions:           interactions,
 	}
 }
