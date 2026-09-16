@@ -72,6 +72,9 @@ type Config struct {
 	// canonical embedded template. Relative paths resolve against the process's
 	// current working directory.
 	PromptFile string
+	// PromptMaxBytes limits the rendered task instruction. Zero disables the
+	// limit; negative values are invalid configuration.
+	PromptMaxBytes int
 
 	// BaselineExists is checked before any candidate lifecycle operation. A nil
 	// check means the caller has already established the precondition.
@@ -218,7 +221,14 @@ type ProcessReuseReporter interface {
 }
 
 // Run drives a candidate until convergence or a terminal condition.
-func Run(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
+func Run(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+	if config.PromptMaxBytes < 0 {
+		return invalidPromptMaxBytesRun(config, dependencies)
+	}
+	return runValidated(config, dependencies)
+}
+
+func runValidated(config Config, dependencies Dependencies) (record benchrecord.Record, runErr error) {
 	if err := validate(config, dependencies); err != nil {
 		return benchrecord.Record{}, err
 	}
@@ -241,29 +251,7 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	applyRunDefaults(&config)
 	config.Prompt.Hash = selectedPromptHash
 
-	record = benchrecord.Record{
-		SchemaVersion:        benchrecord.SchemaVersion,
-		RunID:                runID,
-		Agent:                config.Agent,
-		Model:                config.Model,
-		Effort:               config.Effort,
-		Temperature:          effectiveTemperature(config.Temperature),
-		Hardware:             config.Hardware,
-		Prompt:               config.Prompt,
-		Candidate:            config.Candidate,
-		Baseline:             config.Baseline,
-		StartedAt:            startedAt.Format(time.RFC3339Nano),
-		PromptInstructions:   []string{},
-		RenderedPromptHashes: []string{},
-		AgentResponses:       []string{},
-		ProcessReuse:         config.ReuseProcess,
-		Efficiency: benchrecord.EfficiencySummary{
-			Status:      benchrecord.EfficiencyStatusNotReported,
-			TokenStatus: benchrecord.TokenStatusNotReported,
-		},
-		IterationEfficiency: []benchrecord.EfficiencySummary{},
-		Final:               benchrecord.FinalSummary{},
-	}
+	record = newBenchmarkRecord(config, runID, startedAt)
 	configureRunAudit(&config, &record, runID)
 	runnerEvidence := newRunnerAuditEvidence(config)
 	defer func() {
@@ -292,6 +280,50 @@ func Run(config Config, dependencies Dependencies) (record benchrecord.Record, r
 	runnerEvidence.captureStartingSource()
 
 	return runIterations(config, dependencies, selectedPrompt, record, startedAt, runnerEvidence)
+}
+
+func invalidPromptMaxBytesRun(config Config, dependencies Dependencies) (benchrecord.Record, error) {
+	now := dependencies.Now
+	if now == nil {
+		now = time.Now
+	}
+	startedAt := now()
+	runID, err := resolveRunID(config.RunID, startedAt)
+	if err != nil {
+		return benchrecord.Record{}, fmt.Errorf("create benchmark run identity: %w", err)
+	}
+	config.RunID = runID
+	applyRunDefaults(&config)
+	record := newBenchmarkRecord(config, runID, startedAt)
+	return finish(record, now(), benchrecord.TerminalStateToolError),
+		errors.New("stbench.prompt.max_bytes must not be negative")
+}
+
+func newBenchmarkRecord(config Config, runID string, startedAt time.Time) benchrecord.Record {
+	return benchrecord.Record{
+		SchemaVersion:        benchrecord.SchemaVersion,
+		RunID:                runID,
+		Agent:                config.Agent,
+		Model:                config.Model,
+		Effort:               config.Effort,
+		Temperature:          effectiveTemperature(config.Temperature),
+		Hardware:             config.Hardware,
+		Prompt:               config.Prompt,
+		Candidate:            config.Candidate,
+		Baseline:             config.Baseline,
+		StartedAt:            startedAt.Format(time.RFC3339Nano),
+		PromptInstructions:   []string{},
+		RenderedPromptHashes: []string{},
+		RenderedPromptBytes:  []int{},
+		AgentResponses:       []string{},
+		ProcessReuse:         config.ReuseProcess,
+		Efficiency: benchrecord.EfficiencySummary{
+			Status:      benchrecord.EfficiencyStatusNotReported,
+			TokenStatus: benchrecord.TokenStatusNotReported,
+		},
+		IterationEfficiency: []benchrecord.EfficiencySummary{},
+		Final:               benchrecord.FinalSummary{},
+	}
 }
 
 func applyRunDefaults(config *Config) {
@@ -608,6 +640,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 				runner.config.Prompt,
 				view,
 				comparisonPath(runner.config.ReportsDir, runner.config.Candidate),
+				runner.config.PromptMaxBytes,
 				runner.config.AdapterMetadata,
 				runner.record.Tokens,
 				&runner.hasKnownTokens,
@@ -626,6 +659,7 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 		)
 		runner.record.PromptInstructions = append(runner.record.PromptInstructions, fix.Instruction)
 		runner.record.RenderedPromptHashes = append(runner.record.RenderedPromptHashes, fix.Hash)
+		runner.record.RenderedPromptBytes = append(runner.record.RenderedPromptBytes, fix.Bytes)
 		runner.record.AgentResponses = append(runner.record.AgentResponses, fix.Response)
 	}
 	if fix.Temperature != nil {
@@ -719,6 +753,15 @@ func (runner *iterationRunner) bail(state benchrecord.TerminalState, err error) 
 	if state == benchrecord.TerminalStateAdapterError {
 		state = adapterTerminalState(err)
 	}
+	if state == benchrecord.TerminalStatePromptTooLarge {
+		var promptError *promptTooLargeError
+		if errors.As(err, &promptError) {
+			runner.record.PromptSizeLimit = &benchrecord.PromptSizeLimit{
+				ObservedBytes: promptError.ObservedBytes,
+				MaxBytes:      promptError.MaxBytes,
+			}
+		}
+	}
 	runner.record.Tokens = tokenRecord(runner.hasKnownTokens, runner.record.Tokens)
 	*runner.record = finish(*runner.record, runner.timer.current(), state)
 	runner.report(ProgressEvent{Phase: ProgressPhaseTerminal, State: ProgressError, Terminal: state, Err: err})
@@ -746,6 +789,9 @@ func validate(config Config, dependencies Dependencies) error {
 	}
 	if config.StallWindow < 0 {
 		return fmt.Errorf("stall window must not be negative")
+	}
+	if config.PromptMaxBytes < 0 {
+		return errors.New("stbench.prompt.max_bytes must not be negative")
 	}
 	return nil
 }
@@ -840,6 +886,10 @@ func adapterTerminalState(err error) benchrecord.TerminalState {
 	var auditFailure *AuditFailureError
 	if errors.As(err, &auditFailure) {
 		return benchrecord.TerminalStateAuditError
+	}
+	var promptError *promptTooLargeError
+	if errors.As(err, &promptError) {
+		return benchrecord.TerminalStatePromptTooLarge
 	}
 	return benchrecord.TerminalStateAdapterError
 }
@@ -1037,6 +1087,7 @@ func hashContent(content string) string {
 type agentFixResult struct {
 	Instruction string
 	Hash        string
+	Bytes       int
 	Response    string
 	Temperature *float64
 	Rendered    bool
@@ -1048,6 +1099,7 @@ func runAgentFix(
 	prompt benchrecord.PromptIdentity,
 	view agentreport.View,
 	comparisonReportPath string,
+	maxPromptBytes int,
 	metadata AdapterMetadata,
 	tokens *benchrecord.TokenUsage,
 	hasKnownTokens *bool,
@@ -1065,7 +1117,14 @@ func runAgentFix(
 	fix := agentFixResult{
 		Instruction: instruction,
 		Hash:        hashContent(instruction),
+		Bytes:       len(instruction),
 		Rendered:    true,
+	}
+	if maxPromptBytes > 0 && fix.Bytes > maxPromptBytes {
+		return fix, &promptTooLargeError{
+			ObservedBytes: fix.Bytes,
+			MaxBytes:      maxPromptBytes,
+		}
 	}
 	result, err := adapter.Fix(instruction, view, metadata)
 	if result == nil || result.Tokens == nil {
@@ -1089,6 +1148,19 @@ func runAgentFix(
 		return fix, fmt.Errorf("adapter fix: %w", err)
 	}
 	return fix, nil
+}
+
+type promptTooLargeError struct {
+	ObservedBytes int
+	MaxBytes      int
+}
+
+func (err *promptTooLargeError) Error() string {
+	return fmt.Sprintf(
+		"rendered prompt is %d bytes, exceeds stbench.prompt.max_bytes %d",
+		err.ObservedBytes,
+		err.MaxBytes,
+	)
 }
 
 func finalSummary(view agentreport.View) benchrecord.FinalSummary {

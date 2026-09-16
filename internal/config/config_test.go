@@ -93,6 +93,7 @@ stbench:
     id: ablation-terse
     version: "1"
     file: prompts/ablation-terse.md
+    max_bytes: 262144
   adapters:
     remote: python adapters/anthropic_adapter.py
   adapter_timeout: 3m
@@ -135,6 +136,9 @@ candidate_spec: /openapi.json
 	}
 	if got, want := loaded.Stbench.Prompt.File, "prompts/ablation-terse.md"; got != want {
 		t.Fatalf("prompt file = %q, want %q", got, want)
+	}
+	if got, want := loaded.Stbench.Prompt.MaxBytes, 262144; got != want {
+		t.Fatalf("prompt max bytes = %d, want %d", got, want)
 	}
 	if loaded.CandidateSpec != "/openapi.json" {
 		t.Fatalf("candidate spec = %q, want %q", loaded.CandidateSpec, "/openapi.json")
@@ -521,6 +525,16 @@ func TestConfigValidateRejectsStbenchHealthURLHostPortMismatch(t *testing.T) {
 				t.Fatalf("Validate() error = %q, want %q", err.Error(), test.wantError)
 			}
 		})
+	}
+}
+
+func TestConfigValidateRejectsNegativePromptMaxBytes(t *testing.T) {
+	config := validCandidateIdentityConfig()
+	config.Stbench.Prompt.MaxBytes = -1
+
+	err := config.Validate()
+	if err == nil || err.Error() != "stbench.prompt.max_bytes must not be negative" {
+		t.Fatalf("Validate() error = %v, want negative prompt max_bytes error", err)
 	}
 }
 

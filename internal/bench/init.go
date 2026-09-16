@@ -733,6 +733,7 @@ stbench:
   prompt:
     id: stbench-default
     version: "3"
+    max_bytes: 0
   lifecycle:
     stop: %s
     reset: %s

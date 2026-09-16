@@ -4,12 +4,22 @@
 <div class="identity">
 <div><span>Agent</span><strong>{{.Agent}}</strong></div>
 <div><span>Model</span><strong>{{.Model}}</strong></div>
+{{with .TerminalState}}<div><span>Terminal state</span><strong>{{.}}</strong></div>{{end}}
 </div>
 <div class="counts">
 <div class="count"><span>Total time</span><strong>{{.TotalTime}}</strong></div>
 <div class="count"><span>Agent-fix time</span><strong>{{.AgentFixTime}}</strong></div>
 <div class="count"><span>Iterations</span><strong>{{.Iterations}}</strong></div>
 </div>
+{{with .PromptSizeLimit}}
+<div class="category-counts">
+<h3>Prompt size guard</h3>
+<div class="counts">
+<div class="count"><span>Rendered prompt size</span><strong>{{.ObservedBytes}} bytes</strong></div>
+<div class="count"><span>Prompt size limit</span><strong>{{.MaxBytes}} bytes</strong></div>
+</div>
+</div>
+{{end}}
 <div class="category-counts">
 <h3>Token usage</h3>
 {{with .Tokens}}

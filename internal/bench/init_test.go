@@ -84,6 +84,7 @@ func TestInitCreatesLifecycleScaffoldAndWritesLoadableConfig(t *testing.T) {
 		"coding-agent:",
 		"hardware: hardware-name",
 		"prompt:",
+		"max_bytes: 0",
 		"source_dir: .",
 		filepath.Join(harnessDir, "stop.sh"),
 		filepath.Join(harnessDir, "reset.sh"),

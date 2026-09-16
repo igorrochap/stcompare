@@ -32,13 +32,17 @@ see ADR-0004, ADR-0006). For each run it:
    healthy; run `stcompare campaign compare <candidate> --format agent`; branch
    on the exit code —
    - `0` (Converged) → stop, success.
-   - `2` (not converged) → hand the compact actionable list to the agent via a
-     per-agent **adapter**, which edits the candidate source and reports its
-     token usage; then loop.
+   - `2` (not converged) → render the fixed task instruction, measure its UTF-8
+     byte length, and if it is within the optional `stbench.prompt.max_bytes`
+     cap, hand the compact actionable list to the agent via a per-agent
+     **adapter**, which edits the candidate source and reports its token usage;
+     otherwise stop as `prompt_too_large` before invoking the adapter fix
+     request.
    - `1` (tool error) → stop, surface.
 3. Terminates the loop on convergence, on a **stall** (the case total
-   `counts.still_failing + counts.regressed` stops strictly decreasing), or on
-   a **max-iteration** cap.
+   `counts.still_failing + counts.regressed` stops strictly decreasing), on a
+   **max-iteration** cap, or when the rendered prompt exceeds its configured
+   byte cap.
 4. Emits one **benchmark record** per `(agent, candidate, run)` at a path
    derived from the selected Candidate Campaign, capturing
    terminal state, iteration count, a per-phase time breakdown, known token
@@ -267,6 +271,12 @@ integration test.
 - **Tool error** — `compare` exits `1`; terminal state `tool_error`.
 - **Adapter error** / **lifecycle error** — terminal states `adapter_error` /
   `lifecycle_error`.
+- **Prompt too large** — the rendered instruction exceeds the positive
+  `stbench.prompt.max_bytes` cap. Terminal state `prompt_too_large`; the
+  candidate lifecycle for that iteration has already run, but the adapter fix
+  request is not invoked. The cap is inclusive, so an equal-size prompt is
+  allowed. A negative cap is a configuration error with terminal state
+  `tool_error` before lifecycle commands run.
 
 **Benchmark record (`benchrecord`, one per run):**
 
@@ -283,12 +293,15 @@ integration test.
                                                         // task-prompt identity (ADR-0007)
   "prompt_instructions": ["..."],                     // rendered instruction per agent fix
   "rendered_prompt_hashes": ["..."],                   // hash of each exact instruction
+  "rendered_prompt_bytes": [N],                        // UTF-8 byte length of each instruction
+  "prompt_size_limit": { "observed_bytes": N, "max_bytes": N }, // only when guarded
   "agent_responses": ["..."],                          // raw adapter/model response per fix
   "candidate": "...", "baseline": "...",
   "started_at": "...", "ended_at": "...",
   "iterations": N,
   "terminal_state": "converged" | "stalled" | "max_iterations"
-                    | "tool_error" | "adapter_error" | "lifecycle_error" | "audit_error",
+                    | "tool_error" | "adapter_error" | "lifecycle_error" | "audit_error"
+                    | "prompt_too_large",
   "time_ms": { "total": N, "agent_fix": N, "candidate_reset": N, "compare": N },
   "tokens": { "input": N, "output": N, "total": N } | null,
   "unknown_token_iterations": N,
@@ -425,8 +438,11 @@ comparison scorecard. When a scorecard exists, it links to the audit report;
 an HTML rendering failure is reported as a warning while the captured JSON
 evidence and benchmark result remain intact.
 
-The three per-fix arrays use the same index: instruction, rendered-instruction
-hash, and raw agent response.
+The four per-fix arrays use the same index: instruction, rendered-instruction
+hash, rendered-instruction byte length, and raw agent response. The byte length
+is the UTF-8 byte length of the exact instruction passed to the adapter. When
+the prompt-size guard triggers, `prompt_size_limit` records the observed byte
+length and configured cap.
 
 - `tokens` at the record level is the sum of iterations with known usage.
   `unknown_token_iterations` counts fix iterations whose usage was unknown.
@@ -482,6 +498,7 @@ stbench:
   prompt:
     id: stbench-default
     version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -497,6 +514,12 @@ paths, process reuse, prompt identity, iteration and stall limits, base URL,
 and scorecard emission. `effort` is an identity axis, not an execution knob:
 `sonnet5-high` and `sonnet5-low` are distinct candidates and are compared as
 separate scorecard rows.
+
+`stbench.prompt.max_bytes` is an optional inclusive cap on the rendered task
+instruction's UTF-8 byte length. An absent or `0` value means unlimited. A
+positive cap that the instruction exceeds ends the run as `prompt_too_large`
+before the adapter fix request; a negative value is a configuration error and
+ends the run as `tool_error` before lifecycle commands run.
 
 For the bundled local-model adapter, `temperature` is an independent sampling
 knob. It is resolved as adapter `--temperature` flag, campaign `temperature`,

@@ -17,6 +17,7 @@ import (
 type benchmarkView struct {
 	Agent               string
 	Model               string
+	TerminalState       benchrecord.TerminalState
 	Iterations          int
 	TotalTime           string
 	AgentFixTime        string
@@ -27,6 +28,7 @@ type benchmarkView struct {
 	AuditAvailable      bool
 	Activity            *benchrecord.ActivitySummary
 	ActivityAvailable   bool
+	PromptSizeLimit     *benchrecord.PromptSizeLimit
 	FinalSource         *audit.FinalSource
 }
 
@@ -58,6 +60,7 @@ func render(
 	view := benchmarkView{
 		Agent:               record.Agent,
 		Model:               record.Model,
+		TerminalState:       record.TerminalState,
 		Iterations:          record.Iterations,
 		TotalTime:           formatMilliseconds(record.TimeMS.Total),
 		AgentFixTime:        formatMilliseconds(record.TimeMS.AgentFix),
@@ -68,6 +71,7 @@ func render(
 		AuditAvailable:      auditAvailable(record.Audit),
 		Activity:            record.Audit.Activity,
 		ActivityAvailable:   activityAvailable(record.Audit),
+		PromptSizeLimit:     record.PromptSizeLimit,
 	}
 	if auditDocument != nil && efficiencyAvailable(auditDocument.Efficiency) {
 		view.Efficiency = auditDocument.Efficiency
