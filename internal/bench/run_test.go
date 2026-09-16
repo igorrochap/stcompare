@@ -637,9 +637,150 @@ func TestRunRecordsPromptHashAndRenderedInstructions(t *testing.T) {
 	if len(record.RenderedPromptHashes) != 1 || len(record.RenderedPromptHashes[0]) != 64 {
 		t.Fatalf("rendered prompt hashes = %#v, want one SHA-256 hash", record.RenderedPromptHashes)
 	}
+	if len(record.RenderedPromptBytes) != 1 || record.RenderedPromptBytes[0] != len(record.PromptInstructions[0]) {
+		t.Fatalf("rendered prompt bytes = %#v, want rendered instruction byte length", record.RenderedPromptBytes)
+	}
 	if len(record.AgentResponses) != 1 || record.AgentResponses[0] != "raw model response" {
 		t.Fatalf("agent responses = %#v, want archived raw model response", record.AgentResponses)
 	}
+}
+
+func TestRunStopsBeforeAdapterWhenPromptExceedsMaxBytes(t *testing.T) {
+	view := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Candidate:     "candidate",
+		Counts:        agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	config := Config{
+		Candidate:      "candidate",
+		ReportsDir:     "reports",
+		PromptMaxBytes: renderedPromptBytes(t, Config{Candidate: "candidate", ReportsDir: "reports"}, view) - 1,
+		MaxIterations:  3,
+		StallWindow:    2,
+		BaselineExists: func() bool { return true },
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{view: view, exitCode: agentreport.ExitCodeNotConverged}}}
+	candidate := &fakeCandidate{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(config, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("Run error = %v, want prompt size error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStatePromptTooLarge {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStatePromptTooLarge)
+	}
+	if record.PromptSizeLimit == nil {
+		t.Fatal("prompt_size_limit = nil, want observed size and cap")
+	}
+	if record.PromptSizeLimit.ObservedBytes <= record.PromptSizeLimit.MaxBytes ||
+		record.PromptSizeLimit.MaxBytes != config.PromptMaxBytes {
+		t.Fatalf("prompt_size_limit = %#v, want observed size above configured cap %d", record.PromptSizeLimit, config.PromptMaxBytes)
+	}
+	if len(record.RenderedPromptBytes) != 1 ||
+		record.RenderedPromptBytes[0] != record.PromptSizeLimit.ObservedBytes {
+		t.Fatalf("rendered prompt bytes = %#v, want observed prompt size", record.RenderedPromptBytes)
+	}
+	if len(adapter.instructions) != 0 {
+		t.Fatalf("adapter calls = %d, want 0", len(adapter.instructions))
+	}
+	if len(comparator.configs) != 1 {
+		t.Fatalf("comparator calls = %d, want 1", len(comparator.configs))
+	}
+	if got, want := candidate.calls, preflightAndFirstIterationCalls; !sameStrings(got, want) {
+		t.Fatalf("candidate calls = %#v, want lifecycle through the guarded iteration %#v", got, want)
+	}
+}
+
+func TestRunAllowsPromptAtInclusiveMaxBytes(t *testing.T) {
+	view := agentreport.View{
+		SchemaVersion: agentreport.SchemaVersion,
+		Candidate:     "candidate",
+		Counts:        agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID: "problem-1", Kind: agentreport.ActionKindStillFailing, Operation: "GET /widgets",
+		}},
+	}
+	config := Config{Candidate: "candidate", ReportsDir: "reports"}
+	config.PromptMaxBytes = renderedPromptBytes(t, config, view)
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(config, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateConverged {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateConverged)
+	}
+	if len(adapter.instructions) != 1 {
+		t.Fatalf("adapter calls = %d, want 1 at inclusive prompt limit", len(adapter.instructions))
+	}
+	if record.PromptSizeLimit != nil {
+		t.Fatalf("prompt_size_limit = %#v, want nil when prompt is within inclusive limit", record.PromptSizeLimit)
+	}
+}
+
+func TestRunRejectsNegativePromptMaxBytesBeforeLifecycle(t *testing.T) {
+	candidate := &fakeCandidate{}
+	comparator := &fakeComparator{}
+	adapter := &fakeAdapter{}
+
+	record, err := Run(Config{
+		PromptMaxBytes: -1,
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  candidate,
+		Adapter:    adapter,
+		Now:        fixedNow(time.Unix(0, 0)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_bytes") {
+		t.Fatalf("Run error = %v, want prompt max_bytes configuration error", err)
+	}
+	if record.TerminalState != benchrecord.TerminalStateToolError {
+		t.Fatalf("terminal state = %q, want %q", record.TerminalState, benchrecord.TerminalStateToolError)
+	}
+	if len(candidate.calls) != 0 || len(comparator.configs) != 0 || len(adapter.preflightMetadata) != 0 {
+		t.Fatalf("negative prompt limit performed work: candidate=%#v comparator=%#v adapter=%#v", candidate.calls, comparator.configs, adapter.preflightMetadata)
+	}
+}
+
+func renderedPromptBytes(t *testing.T, config Config, view agentreport.View) int {
+	t.Helper()
+	prompt := config.Prompt
+	if prompt.ID == "" {
+		prompt.ID = DefaultPromptID
+	}
+	if prompt.Version == "" {
+		prompt.Version = DefaultPromptVersion
+	}
+	instruction, err := renderPromptTemplateAtPath(
+		promptTemplate,
+		prompt,
+		view,
+		comparisonPath(config.ReportsDir, config.Candidate),
+	)
+	if err != nil {
+		t.Fatalf("render prompt fixture: %v", err)
+	}
+	return len(instruction)
 }
 
 func TestRenderPromptWrappersUseDefaultComparisonPath(t *testing.T) {

@@ -73,8 +73,9 @@ func loadValidConfig(t *testing.T) configDocument {
 		"source_dir":       "candidate-src",
 		"stcompare_binary": "stcompare",
 		"prompt": map[string]any{
-			"id":      "fixture-prompt",
-			"version": "1",
+			"id":        "fixture-prompt",
+			"version":   "1",
+			"max_bytes": 0,
 		},
 		"lifecycle": map[string]any{
 			"stop":            "./stop.sh",

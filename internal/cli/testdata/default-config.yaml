@@ -44,6 +44,7 @@ stbench:
   prompt:
     id: stbench-default
     version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh

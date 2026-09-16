@@ -200,6 +200,7 @@ stbench:
   prompt:
     id: stbench-default
     version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -751,6 +752,7 @@ stbench:
   prompt:
     id: stbench-default
     version: "3"
+    max_bytes: 0
   lifecycle:
     stop: .local/stbench/stop.sh
     reset: .local/stbench/reset.sh
@@ -791,7 +793,10 @@ current working directory, not the configuration file. When selected,
 `prompt.hash` is the SHA-256 of the file's exact content. With no file override,
 the embedded `stbench-default@3` prompt and its corresponding hash are used. `stbench init`
 deliberately does not scaffold a `file:` key, keeping the canonical embedded
-prompt as the default.
+prompt as the default. `stbench.prompt.max_bytes` is an opt-in inclusive byte
+limit for the rendered instruction; absent or `0` means unlimited. A prompt
+that exceeds the limit ends the run before the adapter fix request with
+`terminal_state: prompt_too_large`.
 
 The compact view sent in that prompt has one entry per Problem Group. Each
 `count` is the number of failing cases in the group, `sample` is one concrete
@@ -800,7 +805,9 @@ candidate's `<reports_dir>/<candidate>/comparison.json`. Stall detection uses
 the case total `counts.still_failing + counts.regressed`, not the number of
 groups. Benchmark records use schema version `2`, carry
 `agent_view_schema_version: "2"`, and record each remaining Problem Group as
-`{id, kind, operation, check_category, count, stuck}`.
+`{id, kind, operation, check_category, count, stuck}`. Each rendered adapter
+instruction is recorded in `prompt_instructions`, its hash in
+`rendered_prompt_hashes`, and its UTF-8 byte length in `rendered_prompt_bytes`.
 
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured
@@ -916,8 +923,8 @@ versioned benchmark record to the selected Candidate Campaign's derived report
 path; its `tokens` field sums known usage, while
 `unknown_token_iterations` counts fix iterations that reported `null`. If no
 iteration reports token usage, `tokens` remains `null`. The command exits `0`
-on convergence, `2` on a stalled or capped run, and `1` on tool, adapter, or
-lifecycle errors.
+on convergence, `2` on a stalled, capped, or `prompt_too_large` run, and `1`
+on tool, adapter, or lifecycle errors.
 
 ### Adapter examples
 
@@ -1014,8 +1021,10 @@ stcompare scorecard build \
 ```
 
 The self-contained HTML includes every section from `comparison.html` plus a
-Benchmark Run section with the agent, model, iteration count, total and
-agent-fix durations, and token usage. Audited records add an Efficiency
+Benchmark Run section with the agent, model, iteration count, terminal state,
+total and agent-fix durations, and token usage. A `prompt_too_large` record
+also shows its observed rendered prompt bytes and configured cap. Audited
+records add an Efficiency
 summary with model-turn count, inference time, known/unknown token status,
 known subtotal, and audit-recording overhead. All three paths are required.
 Missing or malformed inputs fail without writing the output file; a record

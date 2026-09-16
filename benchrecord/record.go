@@ -22,6 +22,8 @@ const (
 	TerminalStateLifecycleError TerminalState = "lifecycle_error"
 	// TerminalStateAuditError indicates that required audit evidence could not be saved.
 	TerminalStateAuditError TerminalState = "audit_error"
+	// TerminalStatePromptTooLarge indicates that the rendered prompt exceeded its configured byte cap.
+	TerminalStatePromptTooLarge TerminalState = "prompt_too_large"
 )
 
 // LifecyclePhase identifies the phase that failed while preparing a run.
@@ -54,12 +56,14 @@ type Record struct {
 	Model                  string `json:"model"`
 	Effort                 string `json:"effort"`
 	// Temperature is the effective sampling temperature used by the adapter.
-	Temperature          float64        `json:"temperature"`
-	Hardware             string         `json:"hardware"`
-	Prompt               PromptIdentity `json:"prompt"`
-	PromptInstructions   []string       `json:"prompt_instructions"`
-	RenderedPromptHashes []string       `json:"rendered_prompt_hashes"`
-	AgentResponses       []string       `json:"agent_responses"`
+	Temperature          float64          `json:"temperature"`
+	Hardware             string           `json:"hardware"`
+	Prompt               PromptIdentity   `json:"prompt"`
+	PromptInstructions   []string         `json:"prompt_instructions"`
+	RenderedPromptHashes []string         `json:"rendered_prompt_hashes"`
+	RenderedPromptBytes  []int            `json:"rendered_prompt_bytes"`
+	PromptSizeLimit      *PromptSizeLimit `json:"prompt_size_limit,omitempty"`
+	AgentResponses       []string         `json:"agent_responses"`
 	// ProcessReuse reports whether the adapter negotiated a reusable process.
 	ProcessReuse   bool           `json:"process_reuse"`
 	Candidate      string         `json:"candidate"`
@@ -82,6 +86,13 @@ type Record struct {
 	UnknownTokenIterations int              `json:"unknown_token_iterations"`
 	Final                  FinalSummary     `json:"final"`
 	RemainingActionable    []ActionableItem `json:"remaining_actionable"`
+}
+
+// PromptSizeLimit describes a rendered prompt that exceeded the configured
+// byte cap.
+type PromptSizeLimit struct {
+	ObservedBytes int `json:"observed_bytes"`
+	MaxBytes      int `json:"max_bytes"`
 }
 
 // AuditStatus describes the availability of model-turn audit evidence.
