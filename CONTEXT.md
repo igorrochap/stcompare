@@ -110,3 +110,8 @@ _Avoid_: Adapter Operation
 An action performed by the adapter to deliver inputs or process model output,
 such as preparing a source snapshot or validating and applying a returned patch.
 It is distinct from a Model Tool Call.
+
+**History Elision**:
+The scaffold's removal of older tool-result payloads from the model's message
+history, replaced by a marker. It never alters the model's own messages.
+_Avoid_: Compaction, context truncation, summarization
