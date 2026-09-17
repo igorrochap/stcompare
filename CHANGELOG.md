@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v2.1.0 (2026-09-16)
+
+### Bug Fixes
+
+- **bench**: Prevent stdout pipe race condition
+  ([`0421e3e`](https://github.com/igorrochap/stcompare/commit/0421e3e85159f3ff4c952b98afd8b2e7b0bf988c))
+
+### Features
+
+- **agent**: Group actionable problems in schema v2
+  ([#108](https://github.com/igorrochap/stcompare/pull/108),
+  [`32efc39`](https://github.com/igorrochap/stcompare/commit/32efc3971040a5750952722d89e44b2b027fb1a0))
+
+- **bench**: Add prompt size limit guard ([#108](https://github.com/igorrochap/stcompare/pull/108),
+  [`32efc39`](https://github.com/igorrochap/stcompare/commit/32efc3971040a5750952722d89e44b2b027fb1a0))
+
+- **bench**: Update benchmark record to version 2
+  ([#108](https://github.com/igorrochap/stcompare/pull/108),
+  [`32efc39`](https://github.com/igorrochap/stcompare/commit/32efc3971040a5750952722d89e44b2b027fb1a0))
+
+- **bench**: Upgrade benchmark schema to v2 and add prompt constraints
+  ([#108](https://github.com/igorrochap/stcompare/pull/108),
+  [`32efc39`](https://github.com/igorrochap/stcompare/commit/32efc3971040a5750952722d89e44b2b027fb1a0))
+
+
 ## v2.0.0 (2026-09-14)
 
 ### Features
