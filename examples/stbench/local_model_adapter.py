@@ -47,6 +47,12 @@ DEFAULT_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
+HISTORY_MARKER_ERROR = "is a History Elision marker, not file content"
+HISTORY_MARKER_ARGUMENTS = {
+    "read_file": ("path",),
+    "write_file": ("path", "content"),
+    "str_replace": ("path", "old_string", "new_string"),
+}
 EDIT_TOOL_NAMES = frozenset({"str_replace", "write_file"})
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
@@ -1273,6 +1279,12 @@ def post_json(
 def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         return tool_error("invalid_tool_arguments", "tool arguments must be an object")
+    marker_argument = history_marker_argument(name, arguments)
+    if marker_argument is not None:
+        return tool_error(
+            "history_marker_argument",
+            f"{marker_argument} {HISTORY_MARKER_ERROR}",
+        )
     try:
         if name == "list_files":
             return list_files(root, str(arguments.get("path", ".")))
@@ -1294,6 +1306,16 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         return tool_error("file_not_found", str(error))
     except (KeyError, OSError, TypeError, ValueError) as error:
         return tool_error("tool_error", str(error))
+
+
+def history_marker_argument(name: str, arguments: dict[str, Any]) -> str | None:
+    """Return the name of a tool argument carrying a History Elision marker."""
+
+    for argument_name in HISTORY_MARKER_ARGUMENTS.get(name, ()):
+        value = arguments.get(argument_name)
+        if isinstance(value, str) and value == READ_FILE_HISTORY_PLACEHOLDER:
+            return argument_name
+    return None
 
 
 def tool_error(code: str, message: str) -> dict[str, Any]:

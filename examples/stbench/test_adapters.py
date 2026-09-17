@@ -20,6 +20,7 @@ from adapter import apply_patch, tracked_snapshot
 from local_model_adapter import (
     AuditCaptureError,
     AuditWriter,
+    READ_FILE_HISTORY_PLACEHOLDER,
     NUDGE_PROMPT,
     SYSTEM_PROMPT,
     TOOLS,
@@ -27,6 +28,7 @@ from local_model_adapter import (
     efficiency_summary,
     reconstruct_input,
     recover_tool_calls,
+    execute_model_tool_call,
     execute_tool,
     list_files,
     parse_args,
@@ -1351,6 +1353,130 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(multiple_matches["error_code"], "str_replace_multiple_matches")
             self.assertIn("2 matches", multiple_matches["error"])
             self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "return 1\nreturn 2\n")
+
+    def test_local_model_tool_boundary_rejects_history_markers_without_touching_files(self) -> None:
+        marker = READ_FILE_HISTORY_PLACEHOLDER
+
+        def call(name: str, arguments: dict[str, object]) -> dict:
+            return execute_model_tool_call(
+                {
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                    }
+                },
+                root,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "api.py"
+            target.write_text("before\n", encoding="utf-8")
+
+            old_string = call(
+                "str_replace",
+                {"path": "api.py", "old_string": marker, "new_string": "after"},
+            )
+            new_string = call(
+                "str_replace",
+                {"path": "api.py", "old_string": "before", "new_string": marker},
+            )
+            content = call("write_file", {"path": "new.txt", "content": marker})
+            path = call("read_file", {"path": marker})
+
+            for argument_name, result in (
+                ("old_string", old_string),
+                ("new_string", new_string),
+                ("content", content),
+                ("path", path),
+            ):
+                with self.subTest(argument_name=argument_name):
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(
+                        result["error"],
+                        f"{argument_name} is a History Elision marker, not file content",
+                    )
+
+            substring = call(
+                "str_replace",
+                {
+                    "path": "api.py",
+                    "old_string": f"before {marker}",
+                    "new_string": "after",
+                },
+            )
+            self.assertFalse(substring["ok"])
+            self.assertEqual(substring["error_code"], "str_replace_no_match")
+            self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+            self.assertFalse((root / "new.txt").exists())
+
+    def test_local_model_audit_records_guarded_history_marker_as_failed_activity(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "guarded-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "str_replace",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "api.py",
+                                            "old_string": READ_FILE_HISTORY_PLACEHOLDER,
+                                            "new_string": "after",
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "api.py"
+            target.write_text("before\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-marker-guard"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch(
+                "local_model_adapter.post_json",
+                side_effect=[response, {"choices": [{"message": {"role": "assistant", "content": "done"}}]}],
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            operations = [event for event in document["events"] if event["type"] == "adapter_operation"]
+            self.assertEqual(calls[0]["status"], "failed")
+            self.assertEqual(operations[0]["status"], "failed")
+            self.assertEqual(
+                operations[0]["error"],
+                "old_string is a History Elision marker, not file content",
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
 
     def test_local_model_write_file_is_new_file_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
