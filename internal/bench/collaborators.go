@@ -620,6 +620,9 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 	// process group so these I/O goroutines can finish. Buffered result channels
 	// let them report completion even while the caller is tearing the process
 	// down.
+	// A stateless adapter may exit immediately after consuming this request or
+	// writing its response, so the pipe operations are authoritative rather than
+	// racing them against the process-exited channel.
 	payload := append(append([]byte(nil), input...), '\n')
 	writeResult := make(chan error, 1)
 	go func() {
@@ -633,8 +636,6 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-process.done:
-		return nil, fmt.Errorf("adapter process exited: %w", process.waitError())
 	}
 
 	readResult := make(chan adapterReadResult, 1)
@@ -650,8 +651,6 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 		return bytes.TrimSpace(result.line), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-process.done:
-		return nil, fmt.Errorf("adapter process exited: %w", process.waitError())
 	}
 }
 
