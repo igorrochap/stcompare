@@ -164,7 +164,7 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_INPUT\"\n"+
 		"pwd > \"$STBENCH_PWD\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"response\":\"raw model response\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18}}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"response\":\"raw model response\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18},\"history_policy\":{\"read_results\":\"keep\"}}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -195,6 +195,9 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	}
 	if result.Response != "raw model response" {
 		t.Fatalf("response = %q, want raw model response", result.Response)
+	}
+	if result.HistoryPolicy == nil || result.HistoryPolicy.ReadResults != "keep" {
+		t.Fatalf("history policy = %#v, want keep", result.HistoryPolicy)
 	}
 
 	contents, err := os.ReadFile(inputPath)
@@ -239,7 +242,7 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	inputPath := filepath.Join(dir, "preflight.json")
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_PREFLIGHT\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"tokens\":null,\"temperature\":0.8}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"tokens\":null,\"temperature\":0.8,\"history_policy\":{\"read_results\":\"elide_before_current_turn\"}}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -253,6 +256,10 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	temperature := adapter.EffectiveTemperature()
 	if temperature == nil || *temperature != 0.8 {
 		t.Fatalf("preflight temperature = %#v, want 0.8", temperature)
+	}
+	historyPolicy := adapter.EffectiveHistoryPolicy()
+	if historyPolicy == nil || historyPolicy.ReadResults != "elide_before_current_turn" {
+		t.Fatalf("preflight history policy = %#v, want default History Elision policy", historyPolicy)
 	}
 
 	contents, err := os.ReadFile(inputPath)
