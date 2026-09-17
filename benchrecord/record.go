@@ -44,6 +44,11 @@ const (
 	LifecyclePhaseWaitHealthy LifecyclePhase = "wait_healthy"
 )
 
+// HistoryPolicy identifies the History Elision regime used by an adapter.
+type HistoryPolicy struct {
+	ReadResults string `json:"read_results"`
+}
+
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
 	SchemaVersion string `json:"schema_version"`
@@ -56,7 +61,9 @@ type Record struct {
 	Model                  string `json:"model"`
 	Effort                 string `json:"effort"`
 	// Temperature is the effective sampling temperature used by the adapter.
-	Temperature          float64          `json:"temperature"`
+	Temperature float64 `json:"temperature"`
+	// HistoryPolicy identifies the History Elision regime used by the adapter.
+	HistoryPolicy        *HistoryPolicy   `json:"history_policy,omitempty"`
 	Hardware             string           `json:"hardware"`
 	Prompt               PromptIdentity   `json:"prompt"`
 	PromptInstructions   []string         `json:"prompt_instructions"`

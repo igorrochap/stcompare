@@ -1071,6 +1071,63 @@ func TestRunRecordsAdapterReportedEffectiveTemperature(t *testing.T) {
 	}
 }
 
+func TestRunRecordsAdapterReportedHistoryPolicy(t *testing.T) {
+	adapter := &fakeAdapter{
+		preflightResult: &AdapterResult{
+			HistoryPolicy: &benchrecord.HistoryPolicy{ReadResults: "keep"},
+		},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.HistoryPolicy == nil || record.HistoryPolicy.ReadResults != "keep" {
+		t.Fatalf("record history policy = %#v, want adapter-reported keep policy", record.HistoryPolicy)
+	}
+}
+
+func TestRunRecordsHistoryPolicyReportedByFix(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID:   "problem-1",
+			Kind: agentreport.ActionKindStillFailing,
+		}},
+	}
+	adapter := &fakeAdapter{
+		historyPolicies: []*benchrecord.HistoryPolicy{{ReadResults: "keep"}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.HistoryPolicy == nil || record.HistoryPolicy.ReadResults != "keep" {
+		t.Fatalf("record history policy = %#v, want fix-reported keep policy", record.HistoryPolicy)
+	}
+}
+
 func float64Pointer(value float64) *float64 {
 	return &value
 }
@@ -1714,6 +1771,7 @@ type fakeAdapter struct {
 	metadata          []AdapterMetadata
 	usages            []*benchrecord.TokenUsage
 	responses         []string
+	historyPolicies   []*benchrecord.HistoryPolicy
 	errs              []error
 }
 
@@ -1772,6 +1830,13 @@ func (f *fakeAdapter) EffectiveTemperature() *float64 {
 	return f.preflightResult.Temperature
 }
 
+func (f *fakeAdapter) EffectiveHistoryPolicy() *benchrecord.HistoryPolicy {
+	if f.preflightResult == nil {
+		return nil
+	}
+	return f.preflightResult.HistoryPolicy
+}
+
 func (f *fakeAdapter) Fix(
 	instruction string,
 	_ agentreport.View,
@@ -1789,12 +1854,17 @@ func (f *fakeAdapter) Fix(
 		response = f.responses[0]
 		f.responses = f.responses[1:]
 	}
+	var historyPolicy *benchrecord.HistoryPolicy
+	if len(f.historyPolicies) != 0 {
+		historyPolicy = f.historyPolicies[0]
+		f.historyPolicies = f.historyPolicies[1:]
+	}
 	var err error
 	if len(f.errs) != 0 {
 		err = f.errs[0]
 		f.errs = f.errs[1:]
 	}
-	return &AdapterResult{Tokens: usage, Response: response}, err
+	return &AdapterResult{Tokens: usage, Response: response, HistoryPolicy: historyPolicy}, err
 }
 
 func testConfig() Config {

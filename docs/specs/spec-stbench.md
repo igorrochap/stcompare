@@ -225,11 +225,14 @@ integration test.
   (those are internal evidence only; see Further Notes).
 - The adapter edits the candidate source **in place** and writes a small result
   JSON to **stdout**: `{ "tokens": {"input": N, "output": N, "total": N} | null,
-  "temperature": N | null, "response": "<raw model response>",
+  "temperature": N | null, "history_policy": { "read_results":
+  "elide_before_current_turn" | "keep" } | omitted, "response": "<raw model response>",
   "status": "ok" | "error", "message": "…" }`. A non-zero adapter exit or
   `status: "error"` ends the run as `adapter_error`; the response text is
   retained for audit. Bundled local-model adapters report their resolved
-  temperature during preflight and each fix.
+  temperature and History Elision regime during preflight and each fix. An
+  adapter that does not report `history_policy` remains compatible and omits
+  the field from the benchmark record.
 - Before the first comparison, `stbench` sends a no-op preflight request with
   `"preflight": true`. The adapter must execute its command, return an `ok`
   result, and exit without invoking a model or editing the candidate. The
@@ -287,6 +290,7 @@ integration test.
   "run_id": "...",
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
   "temperature": N,                                     // effective adapter sampling temperature
+  "history_policy": { "read_results": "elide_before_current_turn" | "keep" }, // optional History Elision regime
   "hardware": "...",                                    // harness identity
   "process_reuse": bool,                                // negotiated adapter mode
   "prompt": { "id": "...", "version": "...", "hash": "..." },
@@ -527,6 +531,13 @@ then `0` (greedy), and the effective value is recorded on every benchmark
 record. `effort` is never read as or mapped to temperature. The local adapter
 rejects values outside `0`–`2` before making model requests and sends the
 resolved temperature on every request; when it is `0`, it pins `top_p` to `1`.
+
+The bundled local-model adapter also records its History Elision regime in the
+optional `history_policy` record field and the audit document's `run` section.
+The value is `{"read_results":"elide_before_current_turn"}` by default and
+`{"read_results":"keep"}` when `STBENCH_ADAPTER_NO_COMPACT=1`. Adapters that
+do not report the field omit it; this additive field does not change the record
+or audit schema versions.
 
 The benchmark record path is derived from the campaign and `reports_dir` as
 `reports/<candidate>/benchmark-record.json`. It is not configurable, which

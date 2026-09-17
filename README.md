@@ -808,6 +808,9 @@ groups. Benchmark records use schema version `2`, carry
 `{id, kind, operation, check_category, count, stuck}`. Each rendered adapter
 instruction is recorded in `prompt_instructions`, its hash in
 `rendered_prompt_hashes`, and its UTF-8 byte length in `rendered_prompt_bytes`.
+The optional `history_policy` object records the adapter's History Elision
+regime as `{"read_results":"elide_before_current_turn"}` or
+`{"read_results":"keep"}`; adapters that do not report it omit the field.
 
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured
@@ -915,7 +918,9 @@ false`; enabling the runner option is a verified no-op for those adapters.
 
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
-null, "temperature": N | null, "reuse_process": false }`. The adapter edits
+null, "temperature": N | null, "history_policy": { "read_results":
+"elide_before_current_turn" | "keep" } | omitted, "reuse_process": false }`.
+The adapter edits
 the candidate in place; unknown token usage must remain unknown. The audit
 artifact, when enabled, is the source of per-model-turn efficiency evidence.
 The command writes the
@@ -952,7 +957,8 @@ installs byte-identical copies into `.local/stbench/adapters/`.
   environment variables tune the scaffold loop for weaker local models:
   `STBENCH_ADAPTER_NO_COMPACT=1` keeps full `read_file` results in the message
   history; by default, History Elision applies only to older `read_file`
-  results and assistant messages remain unchanged.
+  results and assistant messages remain unchanged. The selected History Elision
+  regime is reported in the adapter result and in the audit run provenance.
   `STBENCH_ADAPTER_MAX_REPEATS=N` ends the run cleanly after `N` consecutive
   identical failing tool-call turns so partial edits are still scored (default
   `4`, `0` disables); `STBENCH_ADAPTER_DEBUG=1` writes a per-turn and

@@ -121,6 +121,7 @@ def emit_result(
     message: str = "",
     reuse_process: bool = False,
     temperature: float | None = None,
+    history_policy: dict[str, str] | None = None,
     audit_error: str = "",
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
@@ -134,6 +135,8 @@ def emit_result(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if history_policy is not None:
+        payload["history_policy"] = history_policy
     if audit_error:
         payload["audit_error"] = audit_error
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")

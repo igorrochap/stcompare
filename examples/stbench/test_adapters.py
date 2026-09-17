@@ -1562,6 +1562,96 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["temperature"], 0.9)
 
+    def test_local_model_adapter_reports_history_policy_and_audit_provenance(self) -> None:
+        for no_compact, expected_read_results in (
+            (False, "elide_before_current_turn"),
+            (True, "keep"),
+        ):
+            with self.subTest(no_compact=no_compact):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    audit_path = root / "benchmark-audit.json"
+                    request = {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "effort": "high",
+                        "hardware": "machine",
+                        "instruction": "task",
+                        "view": {"actionable": []},
+                        "audit": {
+                            "enabled": True,
+                            "path": str(audit_path),
+                            "run_id": "run-history-policy",
+                            "candidate": "candidate",
+                            "baseline": "baseline",
+                            "iteration": 1,
+                            "iteration_id": "iteration-1",
+                        },
+                    }
+                    metadata = {
+                        "agent": request["agent"],
+                        "model": request["model"],
+                        "effort": request["effort"],
+                        "hardware": request["hardware"],
+                    }
+                    environment = os.environ.copy()
+                    environment.pop("STBENCH_ADAPTER_NO_COMPACT", None)
+                    if no_compact:
+                        environment["STBENCH_ADAPTER_NO_COMPACT"] = "1"
+
+                    with patch.dict(os.environ, environment, clear=True):
+                        AuditWriter.create(request, metadata)
+
+                        class Handler(BaseHTTPRequestHandler):
+                            def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+                                response = {
+                                    "choices": [{"message": {"role": "assistant", "content": "done"}}]
+                                }
+                                encoded = json.dumps(response).encode("utf-8")
+                                self.send_response(200)
+                                self.send_header("Content-Type", "application/json")
+                                self.send_header("Content-Length", str(len(encoded)))
+                                self.end_headers()
+                                self.wfile.write(encoded)
+
+                            def log_message(self, *_: object) -> None:
+                                return
+
+                        class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+                            allow_reuse_address = True
+
+                        with Server(("127.0.0.1", 0), Handler) as server:
+                            thread = threading.Thread(target=server.serve_forever, daemon=True)
+                            thread.start()
+                            url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+                            completed = subprocess.run(
+                                [
+                                    sys.executable,
+                                    str(LOCAL_ADAPTER),
+                                    "--url",
+                                    url,
+                                    "--timeout",
+                                    "5",
+                                    "--max-turns",
+                                    "1",
+                                ],
+                                cwd=directory,
+                                input=json.dumps(request),
+                                text=True,
+                                capture_output=True,
+                                env=environment,
+                                check=False,
+                            )
+                            server.shutdown()
+                            thread.join(timeout=5)
+
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    result = json.loads(completed.stdout)
+                    expected_policy = {"read_results": expected_read_results}
+                    self.assertEqual(result["history_policy"], expected_policy)
+                    document = json.loads(audit_path.read_text(encoding="utf-8"))
+                    self.assertEqual(document["run"]["history_policy"], expected_policy)
+
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
             candidate = Path(directory)

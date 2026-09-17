@@ -158,10 +158,18 @@ class AuditWriter:
         self._recording_overhead_seconds = 0.0
 
     @classmethod
-    def create(cls, request: dict[str, Any], metadata: dict[str, Any]) -> "AuditWriter | None":
+    def create(
+        cls,
+        request: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        history_policy: dict[str, str] | None = None,
+    ) -> "AuditWriter | None":
         context = audit_context(request)
         if context is None:
             return None
+        if history_policy is None:
+            history_policy = resolve_history_policy()
         run_id = required_audit_value(context, "run_id")
         path = Path(required_audit_value(context, "path"))
         document = {
@@ -174,6 +182,7 @@ class AuditWriter:
                 "model": metadata["model"],
                 "effort": str(metadata.get("effort", "")),
                 "hardware": metadata["hardware"],
+                "history_policy": history_policy,
                 "started_at": utc_now(),
             },
             "capture": {
@@ -798,6 +807,14 @@ def validate_temperature(value: Any, source: str) -> float:
     return temperature
 
 
+def resolve_history_policy() -> dict[str, str]:
+    """Resolve the History Elision policy used for model message history."""
+
+    if _env_flag("STBENCH_ADAPTER_NO_COMPACT"):
+        return {"read_results": "keep"}
+    return {"read_results": "elide_before_current_turn"}
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
@@ -808,14 +825,20 @@ def main(argv: list[str] | None = None) -> int:
                     if all(name in request for name in ("agent", "model", "hardware")):
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
-                        AuditWriter.create(request, metadata)
-                        emit_result(status="ok", temperature=temperature)
+                        history_policy = resolve_history_policy()
+                        AuditWriter.create(request, metadata, history_policy=history_policy)
+                        emit_result(
+                            status="ok",
+                            temperature=temperature,
+                            history_policy=history_policy,
+                        )
                     else:
                         handle_preflight(request)
                     continue
 
                 metadata = request_metadata(request)
                 temperature = resolve_temperature(settings.temperature, metadata)
+                history_policy = resolve_history_policy()
                 audit = AuditWriter.open(request)
                 response, usages = run_agent(
                     instruction,
@@ -836,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
                     response=response,
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
+                    history_policy=history_policy,
                 )
             except AuditCaptureError as error:
                 emit_error(str(error), audit_error=str(error))
