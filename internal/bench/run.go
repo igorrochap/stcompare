@@ -151,6 +151,12 @@ type EffectiveTemperatureReporter interface {
 	EffectiveTemperature() *float64
 }
 
+// EffectiveHistoryPolicyReporter exposes an adapter's History Elision regime
+// when it reports one during preflight.
+type EffectiveHistoryPolicyReporter interface {
+	EffectiveHistoryPolicy() *benchrecord.HistoryPolicy
+}
+
 // AdapterCloser releases adapter resources after a benchmark run.
 type AdapterCloser interface {
 	Close() error
@@ -270,6 +276,7 @@ func runValidated(config Config, dependencies Dependencies) (record benchrecord.
 		dependencies,
 		&record.LifecyclePhase,
 		&record.Temperature,
+		&record.HistoryPolicy,
 		runnerEvidence,
 	); err != nil {
 		report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressError, Err: err})
@@ -665,6 +672,9 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 	if fix.Temperature != nil {
 		runner.record.Temperature = *fix.Temperature
 	}
+	if fix.HistoryPolicy != nil {
+		runner.record.HistoryPolicy = fix.HistoryPolicy
+	}
 	if err != nil {
 		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
 		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
@@ -855,6 +865,7 @@ func runPreflight(
 	dependencies Dependencies,
 	failedPhase *benchrecord.LifecyclePhase,
 	recordedTemperature *float64,
+	recordedHistoryPolicy **benchrecord.HistoryPolicy,
 	runnerEvidence *runnerAuditEvidence,
 ) (benchrecord.TerminalState, error) {
 	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
@@ -871,6 +882,9 @@ func runPreflight(
 			// of truth for the recorded effective value.
 			*recordedTemperature = *temperature
 		}
+	}
+	if reporter, ok := dependencies.Adapter.(EffectiveHistoryPolicyReporter); ok {
+		*recordedHistoryPolicy = reporter.EffectiveHistoryPolicy()
 	}
 	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil, runnerEvidence.auditLifecycle); err != nil {
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
@@ -1085,12 +1099,13 @@ func hashContent(content string) string {
 }
 
 type agentFixResult struct {
-	Instruction string
-	Hash        string
-	Bytes       int
-	Response    string
-	Temperature *float64
-	Rendered    bool
+	Instruction   string
+	Hash          string
+	Bytes         int
+	Response      string
+	Temperature   *float64
+	HistoryPolicy *benchrecord.HistoryPolicy
+	Rendered      bool
 }
 
 func runAgentFix(
@@ -1143,6 +1158,7 @@ func runAgentFix(
 			}
 		}
 		fix.Temperature = result.Temperature
+		fix.HistoryPolicy = result.HistoryPolicy
 	}
 	if err != nil {
 		return fix, fmt.Errorf("adapter fix: %w", err)

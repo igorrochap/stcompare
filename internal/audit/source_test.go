@@ -262,6 +262,39 @@ func TestCaptureSourceIncludesUntrackedFilesAndExcludesManagedState(t *testing.T
 	}
 }
 
+func TestCaptureSourceSkipsFilesAboveSizeCapAndCapturesFilesAtCap(t *testing.T) {
+	directory := t.TempDir()
+	atCapPath := filepath.Join(directory, "at-cap.txt")
+	aboveCapPath := filepath.Join(directory, "above-cap.txt")
+	atCapContent := strings.Repeat("a", MaxSourceFileSize)
+	aboveCapSize := MaxSourceFileSize + 1
+
+	if err := os.WriteFile(atCapPath, []byte(atCapContent), 0o644); err != nil {
+		t.Fatalf("write at-cap source: %v", err)
+	}
+	if err := os.WriteFile(aboveCapPath, []byte(strings.Repeat("b", aboveCapSize)), 0o644); err != nil {
+		t.Fatalf("write above-cap source: %v", err)
+	}
+
+	snapshot := CaptureSource(directory, nil)
+	if snapshot.Status != SourceStatusPartial {
+		t.Fatalf("source snapshot status = %q, want partial", snapshot.Status)
+	}
+	if !strings.Contains(snapshot.Error, aboveCapPath) ||
+		!strings.Contains(snapshot.Error, fmt.Sprintf("%d", aboveCapSize)) {
+		t.Fatalf("source snapshot error = %q, want path %q and size %d", snapshot.Error, aboveCapPath, aboveCapSize)
+	}
+	if len(snapshot.Files) != 1 || snapshot.Files[0].Path != "at-cap.txt" || snapshot.Files[0].Content != atCapContent {
+		t.Fatalf("source snapshot files = %#v, want complete at-cap file only", snapshot.Files)
+	}
+}
+
+func TestMaxSourceFileSizeIsFourMiB(t *testing.T) {
+	if MaxSourceFileSize != 4*1024*1024 {
+		t.Fatalf("MaxSourceFileSize = %d, want 4 MiB", MaxSourceFileSize)
+	}
+}
+
 func TestAppendEvidencePreservesModelHistoryAndStoresRunnerEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "benchmark-audit.json")
 	contents, err := json.Marshal(Artifact{

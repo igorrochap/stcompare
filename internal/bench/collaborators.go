@@ -248,21 +248,23 @@ func (AdapterPreflightRequest) isAdapterRequest() {}
 
 // AdapterResponse is the JSON result expected from an external adapter.
 type AdapterResponse struct {
-	Tokens       *benchrecord.TokenUsage `json:"tokens"`
-	Response     string                  `json:"response"`
-	Status       string                  `json:"status"`
-	Message      string                  `json:"message"`
-	ReuseProcess bool                    `json:"reuse_process"`
-	Temperature  *float64                `json:"temperature,omitempty"`
-	AuditError   string                  `json:"audit_error,omitempty"`
+	Tokens        *benchrecord.TokenUsage    `json:"tokens"`
+	Response      string                     `json:"response"`
+	Status        string                     `json:"status"`
+	Message       string                     `json:"message"`
+	ReuseProcess  bool                       `json:"reuse_process"`
+	Temperature   *float64                   `json:"temperature,omitempty"`
+	HistoryPolicy *benchrecord.HistoryPolicy `json:"history_policy,omitempty"`
+	AuditError    string                     `json:"audit_error,omitempty"`
 }
 
 // AdapterResult contains the result returned to the benchmark runner.
 type AdapterResult struct {
-	Tokens       *benchrecord.TokenUsage
-	Response     string
-	ReuseProcess bool
-	Temperature  *float64
+	Tokens        *benchrecord.TokenUsage
+	Response      string
+	ReuseProcess  bool
+	Temperature   *float64
+	HistoryPolicy *benchrecord.HistoryPolicy
 }
 
 // AuditContext identifies the durable artifact and the benchmark position for
@@ -302,7 +304,8 @@ type CommandAdapter struct {
 	// Adapters that do not advertise support during preflight use cold calls.
 	ReuseProcess bool
 
-	effectiveTemperature *float64
+	effectiveTemperature   *float64
+	effectiveHistoryPolicy *benchrecord.HistoryPolicy
 
 	reuse adapterReuseState
 }
@@ -335,6 +338,7 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 			return err
 		}
 		adapter.effectiveTemperature = result.Temperature
+		adapter.effectiveHistoryPolicy = result.HistoryPolicy
 		if result.ReuseProcess && adapter.reuse.process != nil && adapter.reuse.process.running(adapterReuseProbe) {
 			adapter.reuse.active = true
 			adapter.reuse.wasActive = true
@@ -350,6 +354,7 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 	})
 	if result != nil {
 		adapter.effectiveTemperature = result.Temperature
+		adapter.effectiveHistoryPolicy = result.HistoryPolicy
 	}
 	return err
 }
@@ -358,6 +363,12 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 // preflight, if one was provided.
 func (adapter *CommandAdapter) EffectiveTemperature() *float64 {
 	return adapter.effectiveTemperature
+}
+
+// EffectiveHistoryPolicy returns the History Elision regime reported during
+// adapter preflight, if one was provided.
+func (adapter *CommandAdapter) EffectiveHistoryPolicy() *benchrecord.HistoryPolicy {
+	return adapter.effectiveHistoryPolicy
 }
 
 // Fix sends execution metadata, the rendered instruction, and compact view to the adapter.
@@ -519,10 +530,11 @@ func interpretAdapterResponse(output []byte) (*AdapterResult, error) {
 		return nil, err
 	}
 	result := &AdapterResult{
-		Tokens:       response.Tokens,
-		Response:     response.Response,
-		ReuseProcess: response.ReuseProcess,
-		Temperature:  response.Temperature,
+		Tokens:        response.Tokens,
+		Response:      response.Response,
+		ReuseProcess:  response.ReuseProcess,
+		Temperature:   response.Temperature,
+		HistoryPolicy: response.HistoryPolicy,
 	}
 	switch response.Status {
 	case "ok":
@@ -620,6 +632,9 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 	// process group so these I/O goroutines can finish. Buffered result channels
 	// let them report completion even while the caller is tearing the process
 	// down.
+	// A stateless adapter may exit immediately after consuming this request or
+	// writing its response, so the pipe operations are authoritative rather than
+	// racing them against the process-exited channel.
 	payload := append(append([]byte(nil), input...), '\n')
 	writeResult := make(chan error, 1)
 	go func() {
@@ -633,8 +648,6 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-process.done:
-		return nil, fmt.Errorf("adapter process exited: %w", process.waitError())
 	}
 
 	readResult := make(chan adapterReadResult, 1)
@@ -650,8 +663,6 @@ func (process *reusableAdapterProcess) request(ctx context.Context, input []byte
 		return bytes.TrimSpace(result.line), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-process.done:
-		return nil, fmt.Errorf("adapter process exited: %w", process.waitError())
 	}
 }
 

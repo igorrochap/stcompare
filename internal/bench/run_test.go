@@ -197,9 +197,14 @@ func TestRunAuditMarksEditWithoutSubsequentComparisonAsNotEvaluated(t *testing.T
 func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
 	directory := t.TempDir()
 	sourceDir := filepath.Join(directory, "source")
-	reportDir := filepath.Join(sourceDir, "reports", "candidate")
+	reportsDir := filepath.Join(sourceDir, "reports")
+	reportDir := filepath.Join(reportsDir, "candidate")
+	otherReportDir := filepath.Join(reportsDir, "other-candidate")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("create source/report directories: %v", err)
+	}
+	if err := os.MkdirAll(otherReportDir, 0o755); err != nil {
+		t.Fatalf("create other report directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(sourceDir, "api.py"), []byte("source\n"), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
@@ -207,15 +212,50 @@ func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(reportDir, "comparison.json"), []byte("generated\n"), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(otherReportDir, "benchmark-audit.json"), []byte("previous audit\n"), 0o644); err != nil {
+		t.Fatalf("write other audit: %v", err)
+	}
 
 	tracker := newSourceTracker(Config{
 		SourceDir:       sourceDir,
+		ReportsDir:      reportsDir,
 		AuditPath:       filepath.Join(reportDir, "benchmark-audit.json"),
 		AuditReportPath: filepath.Join(reportDir, "benchmark-audit.html"),
 	})
-	snapshot := tracker.captureCurrent()
-	if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
-		t.Fatalf("source snapshot = %#v, want source without generated reports", snapshot)
+	tracker.captureStarting()
+	final := tracker.finalSource()
+	for name, snapshot := range map[string]audit.SourceSnapshot{
+		"starting": tracker.starting,
+		"final":    final.Final,
+	} {
+		if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
+			t.Fatalf("%s source snapshot = %#v, want source without generated reports", name, snapshot)
+		}
+	}
+}
+
+func TestSourceExcludesKeepsExistingExclusionsWhenReportsOutsideSource(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	reportsDir := filepath.Join(directory, "reports")
+	auditDir := filepath.Join(sourceDir, ".audit")
+	auditPath := filepath.Join(auditDir, "benchmark-audit.json")
+	auditReportPath := filepath.Join(auditDir, "benchmark-audit.html")
+
+	got := sourceExcludes(Config{
+		SourceDir:       sourceDir,
+		ReportsDir:      reportsDir,
+		AuditPath:       auditPath,
+		AuditReportPath: auditReportPath,
+	})
+	want := []string{auditPath, auditReportPath, auditDir}
+	if len(got) != len(want) {
+		t.Fatalf("source exclusions = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("source exclusions = %#v, want %#v", got, want)
+		}
 	}
 }
 
@@ -1071,6 +1111,63 @@ func TestRunRecordsAdapterReportedEffectiveTemperature(t *testing.T) {
 	}
 }
 
+func TestRunRecordsAdapterReportedHistoryPolicy(t *testing.T) {
+	adapter := &fakeAdapter{
+		preflightResult: &AdapterResult{
+			HistoryPolicy: &benchrecord.HistoryPolicy{ReadResults: "keep"},
+		},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.HistoryPolicy == nil || record.HistoryPolicy.ReadResults != "keep" {
+		t.Fatalf("record history policy = %#v, want adapter-reported keep policy", record.HistoryPolicy)
+	}
+}
+
+func TestRunRecordsHistoryPolicyReportedByFix(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID:   "problem-1",
+			Kind: agentreport.ActionKindStillFailing,
+		}},
+	}
+	adapter := &fakeAdapter{
+		historyPolicies: []*benchrecord.HistoryPolicy{{ReadResults: "keep"}},
+	}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.HistoryPolicy == nil || record.HistoryPolicy.ReadResults != "keep" {
+		t.Fatalf("record history policy = %#v, want fix-reported keep policy", record.HistoryPolicy)
+	}
+}
+
 func float64Pointer(value float64) *float64 {
 	return &value
 }
@@ -1714,6 +1811,7 @@ type fakeAdapter struct {
 	metadata          []AdapterMetadata
 	usages            []*benchrecord.TokenUsage
 	responses         []string
+	historyPolicies   []*benchrecord.HistoryPolicy
 	errs              []error
 }
 
@@ -1772,6 +1870,13 @@ func (f *fakeAdapter) EffectiveTemperature() *float64 {
 	return f.preflightResult.Temperature
 }
 
+func (f *fakeAdapter) EffectiveHistoryPolicy() *benchrecord.HistoryPolicy {
+	if f.preflightResult == nil {
+		return nil
+	}
+	return f.preflightResult.HistoryPolicy
+}
+
 func (f *fakeAdapter) Fix(
 	instruction string,
 	_ agentreport.View,
@@ -1789,12 +1894,17 @@ func (f *fakeAdapter) Fix(
 		response = f.responses[0]
 		f.responses = f.responses[1:]
 	}
+	var historyPolicy *benchrecord.HistoryPolicy
+	if len(f.historyPolicies) != 0 {
+		historyPolicy = f.historyPolicies[0]
+		f.historyPolicies = f.historyPolicies[1:]
+	}
 	var err error
 	if len(f.errs) != 0 {
 		err = f.errs[0]
 		f.errs = f.errs[1:]
 	}
-	return &AdapterResult{Tokens: usage, Response: response}, err
+	return &AdapterResult{Tokens: usage, Response: response, HistoryPolicy: historyPolicy}, err
 }
 
 func testConfig() Config {

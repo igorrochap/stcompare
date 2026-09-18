@@ -130,7 +130,7 @@ models. They are unset by default and change no behaviour unless set:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `STBENCH_ADAPTER_NO_COMPACT` | unset | Keep full file contents in the message history instead of eliding older `read_file` and edit payloads. Use it when a model re-reads the same files every turn because the elided content is gone from its context. |
+| `STBENCH_ADAPTER_NO_COMPACT` | unset | Keep full `read_file` results in the message history. By default, History Elision replaces only results from turns older than the current turn; assistant messages remain unchanged. |
 | `STBENCH_ADAPTER_MAX_REPEATS` | `4` | End the run cleanly after this many consecutive turns that repeat an identical tool call with no successful result, instead of consuming every remaining turn and failing with a turn-limit error. The partial edits already on disk are then scored. `0` disables the check. |
 | `STBENCH_ADAPTER_DEBUG` | unset | Write a per-turn and per-tool trace to stderr (`stbench` forwards it to the run output). stdout, which carries the adapter protocol, is untouched. |
 

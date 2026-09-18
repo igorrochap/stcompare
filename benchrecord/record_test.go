@@ -16,6 +16,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		Model:                  "model",
 		Effort:                 "high",
 		Temperature:            0.65,
+		HistoryPolicy:          &HistoryPolicy{ReadResults: "elide_before_current_turn"},
 		Hardware:               "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
@@ -125,11 +126,37 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	if string(fields["temperature"]) != `0.65` {
 		t.Fatalf("temperature = %s, want 0.65", fields["temperature"])
 	}
+	if string(fields["history_policy"]) != `{"read_results":"elide_before_current_turn"}` {
+		t.Fatalf("history_policy = %s, want default History Elision policy", fields["history_policy"])
+	}
 	if !strings.Contains(string(fields["efficiency"]), `"token_status":"partial"`) {
 		t.Fatalf("efficiency = %s, want partial token status", fields["efficiency"])
 	}
 	if !strings.Contains(string(fields["iteration_efficiency"]), `"turns":2`) {
 		t.Fatalf("iteration_efficiency = %s, want iteration aggregate", fields["iteration_efficiency"])
+	}
+}
+
+func TestRecordOmitsHistoryPolicyWhenAdapterDoesNotReportIt(t *testing.T) {
+	data, err := json.Marshal(Record{})
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("unmarshal record fields: %v", err)
+	}
+	if _, ok := fields["history_policy"]; ok {
+		t.Fatalf("history_policy = %s, want field omitted", fields["history_policy"])
+	}
+
+	var decoded Record
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	if decoded.HistoryPolicy != nil {
+		t.Fatalf("round-trip history policy = %#v, want nil", decoded.HistoryPolicy)
 	}
 }
 

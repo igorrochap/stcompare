@@ -47,7 +47,12 @@ DEFAULT_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
-EDIT_HISTORY_PLACEHOLDER = "[edit content elided from history]"
+HISTORY_MARKER_ERROR = "is a History Elision marker, not file content"
+HISTORY_MARKER_ARGUMENTS = {
+    "read_file": ("path",),
+    "write_file": ("path", "content"),
+    "str_replace": ("path", "old_string", "new_string"),
+}
 EDIT_TOOL_NAMES = frozenset({"str_replace", "write_file"})
 
 SYSTEM_PROMPT = """You are the coding agent inside a stbench adapter.
@@ -153,10 +158,18 @@ class AuditWriter:
         self._recording_overhead_seconds = 0.0
 
     @classmethod
-    def create(cls, request: dict[str, Any], metadata: dict[str, Any]) -> "AuditWriter | None":
+    def create(
+        cls,
+        request: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        history_policy: dict[str, str] | None = None,
+    ) -> "AuditWriter | None":
         context = audit_context(request)
         if context is None:
             return None
+        if history_policy is None:
+            history_policy = resolve_history_policy()
         run_id = required_audit_value(context, "run_id")
         path = Path(required_audit_value(context, "path"))
         document = {
@@ -169,6 +182,7 @@ class AuditWriter:
                 "model": metadata["model"],
                 "effort": str(metadata.get("effort", "")),
                 "hardware": metadata["hardware"],
+                "history_policy": history_policy,
                 "started_at": utc_now(),
             },
             "capture": {
@@ -793,6 +807,14 @@ def validate_temperature(value: Any, source: str) -> float:
     return temperature
 
 
+def resolve_history_policy() -> dict[str, str]:
+    """Resolve the History Elision policy used for model message history."""
+
+    if _env_flag("STBENCH_ADAPTER_NO_COMPACT"):
+        return {"read_results": "keep"}
+    return {"read_results": "elide_before_current_turn"}
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_args(argv)
@@ -803,14 +825,20 @@ def main(argv: list[str] | None = None) -> int:
                     if all(name in request for name in ("agent", "model", "hardware")):
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
-                        AuditWriter.create(request, metadata)
-                        emit_result(status="ok", temperature=temperature)
+                        history_policy = resolve_history_policy()
+                        AuditWriter.create(request, metadata, history_policy=history_policy)
+                        emit_result(
+                            status="ok",
+                            temperature=temperature,
+                            history_policy=history_policy,
+                        )
                     else:
                         handle_preflight(request)
                     continue
 
                 metadata = request_metadata(request)
                 temperature = resolve_temperature(settings.temperature, metadata)
+                history_policy = resolve_history_policy()
                 audit = AuditWriter.open(request)
                 response, usages = run_agent(
                     instruction,
@@ -831,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
                     response=response,
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
+                    history_policy=history_policy,
                 )
             except AuditCaptureError as error:
                 emit_error(str(error), audit_error=str(error))
@@ -1212,64 +1241,17 @@ def recover_tool_calls(content: Any) -> list[dict[str, Any]]:
 
 
 def compact_history(messages: list[dict[str, Any]], current_turn_start: int) -> None:
-    """Elide bulky file payloads from messages older than the current turn."""
+    """Apply History Elision to older read_file result payloads only."""
 
     if _env_flag("STBENCH_ADAPTER_NO_COMPACT"):
-        _debug("[compact] disabled via STBENCH_ADAPTER_NO_COMPACT")
+        _debug("[History Elision] disabled via STBENCH_ADAPTER_NO_COMPACT")
         return
 
+    # History Elision never rewrites assistant messages because their arguments
+    # are model output that a later turn can imitate.
     for message in messages[:current_turn_start]:
-        role = message.get("role")
-        if role == "assistant":
-            compact_edit_arguments(message)
-        elif role == "tool":
+        if message.get("role") == "tool":
             compact_read_file_result(message)
-
-
-def compact_edit_arguments(message: dict[str, Any]) -> None:
-    tool_calls = message.get("tool_calls")
-    if not isinstance(tool_calls, list):
-        return
-    echoed_content = message.get("content")
-    redactions: list[str] = []
-    for call in tool_calls:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function")
-        if not isinstance(function, dict):
-            continue
-        name = function.get("name")
-        if name not in {"write_file", "str_replace"}:
-            continue
-        arguments = function.get("arguments")
-        was_string = isinstance(arguments, str)
-        if was_string:
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                continue
-        if not isinstance(arguments, dict):
-            continue
-        fields = ("content",) if name == "write_file" else ("old_string", "new_string")
-        changed = False
-        for field in fields:
-            value = arguments.get(field)
-            if isinstance(value, str) and value and value != EDIT_HISTORY_PLACEHOLDER:
-                redactions.append(value)
-            if field in arguments and arguments[field] != EDIT_HISTORY_PLACEHOLDER:
-                arguments[field] = EDIT_HISTORY_PLACEHOLDER
-                changed = True
-        if changed and was_string:
-            function["arguments"] = json.dumps(arguments, ensure_ascii=False)
-        elif changed:
-            function["arguments"] = arguments
-    if isinstance(echoed_content, str):
-        # Text-recovered calls repeat their JSON arguments in assistant
-        # content. Keep the surrounding model decision while eliding only the
-        # repeated edit payload.
-        for value in sorted(set(redactions), key=len, reverse=True):
-            echoed_content = echoed_content.replace(value, EDIT_HISTORY_PLACEHOLDER)
-        message["content"] = echoed_content
 
 
 def compact_read_file_result(message: dict[str, Any]) -> None:
@@ -1321,6 +1303,12 @@ def post_json(
 def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         return tool_error("invalid_tool_arguments", "tool arguments must be an object")
+    marker_argument = history_marker_argument(name, arguments)
+    if marker_argument is not None:
+        return tool_error(
+            "history_marker_argument",
+            f"{marker_argument} {HISTORY_MARKER_ERROR}",
+        )
     try:
         if name == "list_files":
             return list_files(root, str(arguments.get("path", ".")))
@@ -1342,6 +1330,16 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         return tool_error("file_not_found", str(error))
     except (KeyError, OSError, TypeError, ValueError) as error:
         return tool_error("tool_error", str(error))
+
+
+def history_marker_argument(name: str, arguments: dict[str, Any]) -> str | None:
+    """Return the name of a tool argument carrying a History Elision marker."""
+
+    for argument_name in HISTORY_MARKER_ARGUMENTS.get(name, ()):
+        value = arguments.get(argument_name)
+        if isinstance(value, str) and value == READ_FILE_HISTORY_PLACEHOLDER:
+            return argument_name
+    return None
 
 
 def tool_error(code: str, message: str) -> dict[str, Any]:

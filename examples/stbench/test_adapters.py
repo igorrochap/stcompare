@@ -20,6 +20,7 @@ from adapter import apply_patch, tracked_snapshot
 from local_model_adapter import (
     AuditCaptureError,
     AuditWriter,
+    READ_FILE_HISTORY_PLACEHOLDER,
     NUDGE_PROMPT,
     SYSTEM_PROMPT,
     TOOLS,
@@ -27,6 +28,7 @@ from local_model_adapter import (
     efficiency_summary,
     reconstruct_input,
     recover_tool_calls,
+    execute_model_tool_call,
     execute_tool,
     list_files,
     parse_args,
@@ -1352,6 +1354,130 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertIn("2 matches", multiple_matches["error"])
             self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "return 1\nreturn 2\n")
 
+    def test_local_model_tool_boundary_rejects_history_markers_without_touching_files(self) -> None:
+        marker = READ_FILE_HISTORY_PLACEHOLDER
+
+        def call(name: str, arguments: dict[str, object]) -> dict:
+            return execute_model_tool_call(
+                {
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                    }
+                },
+                root,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "api.py"
+            target.write_text("before\n", encoding="utf-8")
+
+            old_string = call(
+                "str_replace",
+                {"path": "api.py", "old_string": marker, "new_string": "after"},
+            )
+            new_string = call(
+                "str_replace",
+                {"path": "api.py", "old_string": "before", "new_string": marker},
+            )
+            content = call("write_file", {"path": "new.txt", "content": marker})
+            path = call("read_file", {"path": marker})
+
+            for argument_name, result in (
+                ("old_string", old_string),
+                ("new_string", new_string),
+                ("content", content),
+                ("path", path),
+            ):
+                with self.subTest(argument_name=argument_name):
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(
+                        result["error"],
+                        f"{argument_name} is a History Elision marker, not file content",
+                    )
+
+            substring = call(
+                "str_replace",
+                {
+                    "path": "api.py",
+                    "old_string": f"before {marker}",
+                    "new_string": "after",
+                },
+            )
+            self.assertFalse(substring["ok"])
+            self.assertEqual(substring["error_code"], "str_replace_no_match")
+            self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+            self.assertFalse((root / "new.txt").exists())
+
+    def test_local_model_audit_records_guarded_history_marker_as_failed_activity(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "guarded-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "str_replace",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "api.py",
+                                            "old_string": READ_FILE_HISTORY_PLACEHOLDER,
+                                            "new_string": "after",
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "api.py"
+            target.write_text("before\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {
+                "audit": {"enabled": True, "path": str(audit_path), "run_id": "run-marker-guard"}
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+            with patch(
+                "local_model_adapter.post_json",
+                side_effect=[response, {"choices": [{"message": {"role": "assistant", "content": "done"}}]}],
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=2,
+                    metadata=metadata,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            calls = [event for event in document["events"] if event["type"] == "model_tool_call"]
+            operations = [event for event in document["events"] if event["type"] == "adapter_operation"]
+            self.assertEqual(calls[0]["status"], "failed")
+            self.assertEqual(operations[0]["status"], "failed")
+            self.assertEqual(
+                operations[0]["error"],
+                "old_string is a History Elision marker, not file content",
+            )
+            self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+
     def test_local_model_write_file_is_new_file_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1435,6 +1561,96 @@ class AdapterExamplesTest(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["temperature"], 0.9)
+
+    def test_local_model_adapter_reports_history_policy_and_audit_provenance(self) -> None:
+        for no_compact, expected_read_results in (
+            (False, "elide_before_current_turn"),
+            (True, "keep"),
+        ):
+            with self.subTest(no_compact=no_compact):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    audit_path = root / "benchmark-audit.json"
+                    request = {
+                        "agent": "local-model",
+                        "model": "local-code-model",
+                        "effort": "high",
+                        "hardware": "machine",
+                        "instruction": "task",
+                        "view": {"actionable": []},
+                        "audit": {
+                            "enabled": True,
+                            "path": str(audit_path),
+                            "run_id": "run-history-policy",
+                            "candidate": "candidate",
+                            "baseline": "baseline",
+                            "iteration": 1,
+                            "iteration_id": "iteration-1",
+                        },
+                    }
+                    metadata = {
+                        "agent": request["agent"],
+                        "model": request["model"],
+                        "effort": request["effort"],
+                        "hardware": request["hardware"],
+                    }
+                    environment = os.environ.copy()
+                    environment.pop("STBENCH_ADAPTER_NO_COMPACT", None)
+                    if no_compact:
+                        environment["STBENCH_ADAPTER_NO_COMPACT"] = "1"
+
+                    with patch.dict(os.environ, environment, clear=True):
+                        AuditWriter.create(request, metadata)
+
+                        class Handler(BaseHTTPRequestHandler):
+                            def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+                                response = {
+                                    "choices": [{"message": {"role": "assistant", "content": "done"}}]
+                                }
+                                encoded = json.dumps(response).encode("utf-8")
+                                self.send_response(200)
+                                self.send_header("Content-Type", "application/json")
+                                self.send_header("Content-Length", str(len(encoded)))
+                                self.end_headers()
+                                self.wfile.write(encoded)
+
+                            def log_message(self, *_: object) -> None:
+                                return
+
+                        class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+                            allow_reuse_address = True
+
+                        with Server(("127.0.0.1", 0), Handler) as server:
+                            thread = threading.Thread(target=server.serve_forever, daemon=True)
+                            thread.start()
+                            url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+                            completed = subprocess.run(
+                                [
+                                    sys.executable,
+                                    str(LOCAL_ADAPTER),
+                                    "--url",
+                                    url,
+                                    "--timeout",
+                                    "5",
+                                    "--max-turns",
+                                    "1",
+                                ],
+                                cwd=directory,
+                                input=json.dumps(request),
+                                text=True,
+                                capture_output=True,
+                                env=environment,
+                                check=False,
+                            )
+                            server.shutdown()
+                            thread.join(timeout=5)
+
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    result = json.loads(completed.stdout)
+                    expected_policy = {"read_results": expected_read_results}
+                    self.assertEqual(result["history_policy"], expected_policy)
+                    document = json.loads(audit_path.read_text(encoding="utf-8"))
+                    self.assertEqual(document["run"]["history_policy"], expected_policy)
 
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
@@ -1661,63 +1877,78 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual((root / "api.py").read_text(encoding="utf-8"), "return 2\n")
             self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
 
-    def test_local_model_adapter_elides_older_file_and_edit_content_from_history(self) -> None:
+    def run_local_model_history_scenario(self, no_compact: bool) -> tuple[list[dict], list[dict], str, str, str]:
         calls: list[dict] = []
         source = "".join(f"line {index:05d}\n" for index in range(5_000))
         replacement = source.replace("line 02500", "edited 02500")
+        created_content = "created file body\n"
+        assistant_messages = [
+            {
+                "role": "assistant",
+                "content": "I am reading the source before editing it.",
+                "tool_calls": [
+                    {
+                        "id": "read-1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "api.py"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": f"I will replace this exact source:\n{source}\nwith:\n{replacement}",
+                "tool_calls": [
+                    {
+                        "id": "replace-1",
+                        "type": "function",
+                        "function": {
+                            "name": "str_replace",
+                            "arguments": json.dumps(
+                                {
+                                    "path": "api.py",
+                                    "old_string": source,
+                                    "new_string": replacement,
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": f"I created this file:\n{created_content}",
+                "tool_calls": [
+                    {
+                        "id": "write-1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps(
+                                {"path": "created.txt", "content": created_content}
+                            ),
+                        },
+                    },
+                    {
+                        "id": "read-2",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "created.txt"}),
+                        },
+                    },
+                ],
+            },
+        ]
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
                 length = int(self.headers["Content-Length"])
                 calls.append(json.loads(self.rfile.read(length)))
-                if len(calls) == 1:
-                    message = {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "read-1",
-                                "type": "function",
-                                "function": {
-                                    "name": "read_file",
-                                    "arguments": json.dumps({"path": "api.py"}),
-                                },
-                            }
-                        ],
-                    }
-                elif len(calls) == 2:
-                    message = {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "replace-1",
-                                "type": "function",
-                                "function": {
-                                    "name": "str_replace",
-                                    "arguments": json.dumps(
-                                        {
-                                            "path": "api.py",
-                                            "old_string": source,
-                                            "new_string": replacement,
-                                        }
-                                    ),
-                                },
-                            }
-                        ],
-                    }
-                elif len(calls) == 3:
-                    message = {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "command-1",
-                                "type": "function",
-                                "function": {
-                                    "name": "run_command",
-                                    "arguments": json.dumps({"command": ["true"]}),
-                                },
-                            }
-                        ],
-                    }
+                if len(calls) <= len(assistant_messages):
+                    message = assistant_messages[len(calls) - 1]
                 else:
                     message = {"role": "assistant", "content": "done"}
                 encoded = json.dumps({"choices": [{"message": message}]}).encode("utf-8")
@@ -1739,6 +1970,10 @@ class AdapterExamplesTest(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+            environment = os.environ.copy()
+            environment.pop("STBENCH_ADAPTER_NO_COMPACT", None)
+            if no_compact:
+                environment["STBENCH_ADAPTER_NO_COMPACT"] = "1"
             completed = subprocess.run(
                 [sys.executable, str(LOCAL_ADAPTER), "--url", url, "--timeout", "5", "--max-turns", "5"],
                 cwd=directory,
@@ -1753,6 +1988,7 @@ class AdapterExamplesTest(unittest.TestCase):
                 ),
                 text=True,
                 capture_output=True,
+                env=environment,
                 check=False,
             )
             server.shutdown()
@@ -1761,18 +1997,62 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(json.loads(completed.stdout)["response"], "done")
             self.assertEqual((root / "api.py").read_text(encoding="utf-8"), replacement)
-            self.assertEqual(len(calls), 4)
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), created_content)
 
-            fourth_messages = calls[3]["messages"]
-            older_history = json.dumps(fourth_messages[2:6])
-            self.assertIn("[read_file content elided from history]", older_history)
-            self.assertNotIn(source, older_history)
-            self.assertNotIn(replacement, older_history)
-            older_edit = json.dumps(fourth_messages[4:6])
-            self.assertIn("[edit content elided from history]", older_edit)
-            self.assertNotIn(source, older_edit)
-            self.assertNotIn(replacement, older_edit)
-            self.assertEqual(fourth_messages[-2]["tool_calls"][0]["function"]["name"], "run_command")
+        return calls, assistant_messages, source, replacement, created_content
+
+    def test_local_model_adapter_preserves_assistant_messages_and_elides_only_older_read_results(self) -> None:
+        calls, assistant_messages, source, replacement, created_content = self.run_local_model_history_scenario(
+            no_compact=False
+        )
+
+        self.assertEqual(len(calls), 4)
+        final_messages = calls[-1]["messages"]
+        self.assertEqual(
+            [message for message in final_messages if message.get("role") == "assistant"],
+            assistant_messages,
+        )
+        old_read_result = json.loads(final_messages[3]["content"])
+        self.assertEqual(
+            old_read_result,
+            {
+                "ok": True,
+                "path": "api.py",
+                "content": "[read_file content elided from history]",
+                "truncated": False,
+            },
+        )
+        current_read_message = next(message for message in final_messages if message.get("tool_call_id") == "read-2")
+        self.assertEqual(json.loads(current_read_message["content"])["content"], created_content)
+        self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["old_string"], source)
+        self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["new_string"], replacement)
+
+    def test_local_model_adapter_no_compact_keeps_every_read_result_verbatim(self) -> None:
+        calls, assistant_messages, source, replacement, created_content = self.run_local_model_history_scenario(
+            no_compact=True
+        )
+
+        self.assertEqual(len(calls), 4)
+        final_messages = calls[-1]["messages"]
+        self.assertEqual(
+            [message for message in final_messages if message.get("role") == "assistant"],
+            assistant_messages,
+        )
+        read_results = [
+            json.loads(message["content"])
+            for message in final_messages
+            if message.get("role") == "tool"
+            and message.get("tool_call_id") in {"read-1", "read-2"}
+        ]
+        self.assertEqual(
+            read_results,
+            [
+                {"ok": True, "path": "api.py", "content": source, "truncated": False},
+                {"ok": True, "path": "created.txt", "content": created_content, "truncated": False},
+            ],
+        )
+        self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["old_string"], source)
+        self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["new_string"], replacement)
 
     def test_coding_agent_adapter_supports_claude_code_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
