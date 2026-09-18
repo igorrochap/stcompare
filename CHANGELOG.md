@@ -2,6 +2,37 @@
 
 <!-- version list -->
 
+## v2.2.0 (2026-09-18)
+
+### Bug Fixes
+
+- **adapter**: Preserve assistant tool-call arguments
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+- **adapter**: Prevent use of history elision markers in tools
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+- **adapter, audit**: Improve history elision and file handling
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+- **audit**: Cap source file size and exclude report dir
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+- **bench**: Prevent premature exit during IO operations
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+### Features
+
+- **bench**: Add history policy to adapter reporting
+  ([#117](https://github.com/igorrochap/stcompare/pull/117),
+  [`b193a2a`](https://github.com/igorrochap/stcompare/commit/b193a2a64f482a33969840961b4972aec1b77643))
+
+
 ## v2.1.0 (2026-09-16)
 
 ### Bug Fixes
