@@ -190,6 +190,10 @@ func sourceExcludes(config Config) []string {
 	if rootErr == nil && dirErr == nil && root != auditDir && isSourcePathWithin(root, auditDir) {
 		excludes = append(excludes, auditDir)
 	}
+	reportsDir, reportsErr := filepath.Abs(config.ReportsDir)
+	if config.ReportsDir != "" && rootErr == nil && reportsErr == nil && isSourcePathWithin(root, reportsDir) {
+		excludes = append(excludes, reportsDir)
+	}
 	return excludes
 }
 

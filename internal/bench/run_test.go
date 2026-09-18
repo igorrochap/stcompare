@@ -197,9 +197,14 @@ func TestRunAuditMarksEditWithoutSubsequentComparisonAsNotEvaluated(t *testing.T
 func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
 	directory := t.TempDir()
 	sourceDir := filepath.Join(directory, "source")
-	reportDir := filepath.Join(sourceDir, "reports", "candidate")
+	reportsDir := filepath.Join(sourceDir, "reports")
+	reportDir := filepath.Join(reportsDir, "candidate")
+	otherReportDir := filepath.Join(reportsDir, "other-candidate")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("create source/report directories: %v", err)
+	}
+	if err := os.MkdirAll(otherReportDir, 0o755); err != nil {
+		t.Fatalf("create other report directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(sourceDir, "api.py"), []byte("source\n"), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
@@ -207,15 +212,50 @@ func TestSourceTrackerExcludesBenchmarkReportDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(reportDir, "comparison.json"), []byte("generated\n"), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(otherReportDir, "benchmark-audit.json"), []byte("previous audit\n"), 0o644); err != nil {
+		t.Fatalf("write other audit: %v", err)
+	}
 
 	tracker := newSourceTracker(Config{
 		SourceDir:       sourceDir,
+		ReportsDir:      reportsDir,
 		AuditPath:       filepath.Join(reportDir, "benchmark-audit.json"),
 		AuditReportPath: filepath.Join(reportDir, "benchmark-audit.html"),
 	})
-	snapshot := tracker.captureCurrent()
-	if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
-		t.Fatalf("source snapshot = %#v, want source without generated reports", snapshot)
+	tracker.captureStarting()
+	final := tracker.finalSource()
+	for name, snapshot := range map[string]audit.SourceSnapshot{
+		"starting": tracker.starting,
+		"final":    final.Final,
+	} {
+		if snapshot.Status != audit.SourceStatusComplete || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "api.py" {
+			t.Fatalf("%s source snapshot = %#v, want source without generated reports", name, snapshot)
+		}
+	}
+}
+
+func TestSourceExcludesKeepsExistingExclusionsWhenReportsOutsideSource(t *testing.T) {
+	directory := t.TempDir()
+	sourceDir := filepath.Join(directory, "source")
+	reportsDir := filepath.Join(directory, "reports")
+	auditDir := filepath.Join(sourceDir, ".audit")
+	auditPath := filepath.Join(auditDir, "benchmark-audit.json")
+	auditReportPath := filepath.Join(auditDir, "benchmark-audit.html")
+
+	got := sourceExcludes(Config{
+		SourceDir:       sourceDir,
+		ReportsDir:      reportsDir,
+		AuditPath:       auditPath,
+		AuditReportPath: auditReportPath,
+	})
+	want := []string{auditPath, auditReportPath, auditDir}
+	if len(got) != len(want) {
+		t.Fatalf("source exclusions = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("source exclusions = %#v, want %#v", got, want)
+		}
 	}
 }
 
