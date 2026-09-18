@@ -416,6 +416,12 @@ between those snapshots. Created and deleted files are included, and
 the starting content. A restored file therefore has no net entry even though
 its `file_modifications` history remains.
 
+When `reports_dir` is inside `source_dir`, the configured reports directory is
+excluded from both source snapshots because campaign reports are benchmark
+outputs, not source. `CaptureSource` also omits any regular source file larger
+than 4 MiB, marks that snapshot `partial`, and records the skipped path and
+size in its error; files at or below the cap are captured in full.
+
 `lifecycle_changes` records source changes observed around lifecycle commands
 such as build and remains separate from model `file_modifications`. Net diffs
 whose origin cannot be established use `origin: "unattributed"`.

@@ -15,6 +15,9 @@ import (
 )
 
 const (
+	// MaxSourceFileSize is the largest regular file captured in a source snapshot.
+	MaxSourceFileSize = 4 * 1024 * 1024
+
 	// SourceStatusComplete identifies a fully captured source snapshot.
 	SourceStatusComplete = "complete"
 	// SourceStatusPartial identifies a snapshot that could not read every source file.
@@ -339,6 +342,10 @@ func captureSourceEntry(
 		return nil
 	}
 
+	if skipOversizedSourceFile(snapshot, path, entry) {
+		return nil
+	}
+
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		markSnapshotPartial(snapshot, fmt.Sprintf("read source file %q: %v", path, err))
@@ -358,6 +365,25 @@ func captureSourceEntry(
 		Content: string(contents),
 	})
 	return nil
+}
+
+func skipOversizedSourceFile(snapshot *SourceSnapshot, path string, entry fs.DirEntry) bool {
+	fileInfo, err := entry.Info()
+	if err != nil {
+		markSnapshotPartial(snapshot, fmt.Sprintf("inspect source file %q: %v", path, err))
+		return true
+	}
+	fileSize := fileInfo.Size()
+	if fileSize <= MaxSourceFileSize {
+		return false
+	}
+	markSnapshotPartial(snapshot, fmt.Sprintf(
+		"skip source file %q: size %d bytes exceeds capture cap of %d bytes",
+		path,
+		fileSize,
+		MaxSourceFileSize,
+	))
+	return true
 }
 
 func isManagedSourcePath(relative string) bool {
