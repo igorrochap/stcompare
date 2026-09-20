@@ -40,7 +40,7 @@ from _protocol import (
 )
 
 
-DEFAULT_URL = "http://127.0.0.1:8000/v1/chat/completions"
+DEFAULT_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_TURNS = 20
 DEFAULT_TEMPERATURE = 0.0
