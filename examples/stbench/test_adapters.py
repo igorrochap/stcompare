@@ -1410,6 +1410,123 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
             self.assertFalse((root / "new.txt").exists())
 
+    def test_local_model_rejects_unsupported_arguments_from_every_tool_schema(self) -> None:
+        """An Unsupported Argument fails before a tool can use its arguments."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("line one\nline two\n", encoding="utf-8")
+            cases = (
+                (
+                    "read_file",
+                    {"path": "a.txt", "line_start": 1, "line_end": 50},
+                    ("line_start", "line_end"),
+                    ("path", "max_bytes"),
+                ),
+                ("list_files", {"path": ".", "pattern": "*.txt"}, ("pattern",), ("path",)),
+                (
+                    "write_file",
+                    {"path": "new.txt", "content": "new", "overwrite": True},
+                    ("overwrite",),
+                    ("path", "content"),
+                ),
+                (
+                    "str_replace",
+                    {
+                        "path": "a.txt",
+                        "old_string": "line one",
+                        "new_string": "line 1",
+                        "regex": True,
+                    },
+                    ("regex",),
+                    ("path", "old_string", "new_string"),
+                ),
+            )
+
+            for name, arguments, unsupported, supported in cases:
+                with self.subTest(name=name):
+                    result = execute_tool(name, arguments, root)
+
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["error_code"], "unsupported_argument")
+                    for argument_name in unsupported + supported:
+                        self.assertIn(argument_name, result["error"])
+                    self.assertIn(
+                        f"supported arguments: {', '.join(supported)}",
+                        result["error"],
+                    )
+
+            self.assertFalse((root / "new.txt").exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "line one\nline two\n")
+
+    def test_local_model_unsupported_argument_precedes_history_marker_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = execute_tool(
+                "read_file",
+                {"path": READ_FILE_HISTORY_PLACEHOLDER, "line_start": 1},
+                root,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "unsupported_argument")
+            self.assertIn("line_start", result["error"])
+            self.assertIn("path", result["error"])
+            self.assertIn("max_bytes", result["error"])
+            self.assertNotIn("History Elision marker", result["error"])
+
+    def test_local_model_unsupported_argument_does_not_read_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("file content", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "offset": "100"}, root)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "unsupported_argument")
+            self.assertIn("offset", result["error"])
+            self.assertIn("path", result["error"])
+            self.assertIn("max_bytes", result["error"])
+
+    def test_local_model_unsupported_argument_reaches_both_call_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("file content", encoding="utf-8")
+            arguments = {"path": "a.txt", "offset": 100}
+
+            structured = execute_model_tool_call(
+                {
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps(arguments),
+                    }
+                },
+                root,
+            )
+            recovered_calls = recover_tool_calls(
+                f'<tool_call>{{"name":"read_file","arguments":{json.dumps(arguments)}}}</tool_call>'
+            )
+            recovered = execute_model_tool_call(recovered_calls[0], root)
+
+            for result in (structured, recovered):
+                with self.subTest(result=result):
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["error_code"], "unsupported_argument")
+                    self.assertIn("offset", result["error"])
+
+    def test_local_model_declared_read_file_arguments_keep_current_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("0123456789", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "max_bytes": "50"}, root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "0123456789")
+            self.assertLessEqual(len(result["content"].encode("utf-8")), 50)
+
     def test_local_model_audit_records_guarded_history_marker_as_failed_activity(self) -> None:
         response = {
             "choices": [

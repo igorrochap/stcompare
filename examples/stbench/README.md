@@ -134,9 +134,10 @@ models. They are unset by default and change no behaviour unless set:
 | `STBENCH_ADAPTER_MAX_REPEATS` | `4` | End the run cleanly after this many consecutive turns that repeat an identical tool call with no successful result, instead of consuming every remaining turn and failing with a turn-limit error. The partial edits already on disk are then scored. `0` disables the check. |
 | `STBENCH_ADAPTER_DEBUG` | unset | Write a per-turn and per-tool trace to stderr (`stbench` forwards it to the run output). stdout, which carries the adapter protocol, is untouched. |
 
-The scaffold exposes `list_files`, `read_file`, `str_replace`, `write_file`, and
-shell-free `run_command` tools. `str_replace` applies one exact, unique
-substring replacement to an existing file; `write_file` only creates new
+The scaffold exposes `list_files`, `read_file`, `str_replace`, and `write_file`
+tools. A call with an argument outside the tool schema fails with
+`unsupported_argument`. `str_replace` applies one exact, unique substring
+replacement to an existing file; `write_file` only creates new
 files. Paths are confined to the API source tree, and managed `.local/stbench`
 and `.local/stcompare` state is hidden from file listing and write tools.
 `stbench init` uses `.local/stbench` by default, while an external state

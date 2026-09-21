@@ -1303,6 +1303,19 @@ def post_json(
 def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         return tool_error("invalid_tool_arguments", "tool arguments must be an object")
+    supported_arguments = tool_argument_names(name)
+    if supported_arguments is None:
+        return tool_error("unknown_tool", f"unknown tool {name!r}")
+    # Unsupported Arguments take precedence so the model receives the full correction.
+    unsupported_arguments = sorted(
+        argument_name for argument_name in arguments if argument_name not in supported_arguments
+    )
+    if unsupported_arguments:
+        return tool_error(
+            "unsupported_argument",
+            f"{name} does not accept {', '.join(unsupported_arguments)}; "
+            f"supported arguments: {', '.join(supported_arguments)}",
+        )
     marker_argument = history_marker_argument(name, arguments)
     if marker_argument is not None:
         return tool_error(
@@ -1330,6 +1343,23 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         return tool_error("file_not_found", str(error))
     except (KeyError, OSError, TypeError, ValueError) as error:
         return tool_error("tool_error", str(error))
+
+
+def tool_argument_names(name: str) -> tuple[str, ...] | None:
+    """Resolve declared argument names for rejecting an Unsupported Argument."""
+
+    for tool in TOOLS:
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != name:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return ()
+        properties = parameters.get("properties")
+        if not isinstance(properties, dict):
+            return ()
+        return tuple(properties)
+    return None
 
 
 def history_marker_argument(name: str, arguments: dict[str, Any]) -> str | None:
