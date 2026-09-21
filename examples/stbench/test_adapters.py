@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import socketserver
@@ -31,6 +32,7 @@ from local_model_adapter import (
     execute_model_tool_call,
     execute_tool,
     list_files,
+    main as local_model_main,
     parse_args,
     run_agent,
     safe_path,
@@ -45,6 +47,52 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    @staticmethod
+    def _read_file_response(call_number: int, max_bytes: int) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": f"read-{call_number}",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps(
+                                        {"path": "sample.txt", "max_bytes": max_bytes}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    @staticmethod
+    def _unknown_tool_response(call_number: int) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": f"unknown-{call_number}",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": json.dumps({"query": f"term-{call_number}"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
     def test_recovery_counts_identical_tagged_requests_individually(self) -> None:
         content = (
             '<tool_call>{"name":"list_files","arguments":{"path":"."}}</tool_call>'
@@ -171,6 +219,167 @@ class AdapterExamplesTest(unittest.TestCase):
 
         self.assertEqual(response, "done")
         self.assertEqual(post_json.call_count, 1)
+
+    def test_local_model_stops_after_four_result_keyed_unproductive_repeats(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("STBENCH_ADAPTER_MAX_REPEATS", None)
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 5)
+
+    def test_local_model_reaches_turn_limit_when_tool_results_change(self) -> None:
+        responses = [self._read_file_response(index, 100) for index in range(10)]
+        contents = [f"changed-{index}\n" for index in range(10)]
+        seen: list[int] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "sample.txt"
+
+            def respond(*_args: object, **_kwargs: object) -> dict:
+                index = len(seen)
+                target.write_text(contents[index], encoding="utf-8")
+                seen.append(index)
+                return responses[index]
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=respond
+            ) as post_json, self.assertRaisesRegex(
+                RuntimeError, "local model reached the 10-turn limit"
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="local-model",
+                    timeout=5,
+                    max_turns=10,
+                )
+
+        self.assertEqual(post_json.call_count, 10)
+
+    def test_local_model_stops_on_result_keyed_repeats_of_failing_tools(self) -> None:
+        responses = [self._unknown_tool_response(index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json", side_effect=responses
+        ) as post_json:
+            run_agent(
+                "task",
+                Path(directory),
+                url="http://model.invalid",
+                model="local-model",
+                timeout=5,
+                max_turns=10,
+            )
+
+        self.assertEqual(post_json.call_count, 5)
+
+    def test_local_model_max_repeats_zero_disables_unproductive_repeat_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(10)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "0"}):
+                with patch(
+                    "local_model_adapter.post_json", side_effect=responses
+                ) as post_json, self.assertRaisesRegex(
+                    RuntimeError, "local model reached the 10-turn limit"
+                ):
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 10)
+
+    def test_local_model_honors_custom_unproductive_repeat_threshold(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(3)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "2"}):
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 3)
+
+    def test_local_model_no_tool_turn_does_not_reset_unproductive_repeat_count(self) -> None:
+        responses = [
+            self._read_file_response(0, 100),
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            self._read_file_response(1, 101),
+            self._read_file_response(2, 102),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "2"}):
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 4)
+
+    def test_local_model_main_emits_ok_for_unproductive_repeat_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+        request = {
+            "agent": "local-model",
+            "model": "local-model",
+            "hardware": "test-machine",
+            "instruction": "task",
+            "view": {"actionable": []},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            output = io.StringIO()
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("STBENCH_ADAPTER_MAX_REPEATS", None)
+                os.environ.pop("STBENCH_REUSE_PROCESS", None)
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    with patch("local_model_adapter.Path.cwd", return_value=root):
+                        with patch("sys.stdin", io.StringIO(json.dumps(request))):
+                            with patch("sys.stdout", output):
+                                exit_code = local_model_main(["--max-turns", "10"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "ok")
+        self.assertEqual(post_json.call_count, 5)
 
     def test_local_model_audit_captures_exact_inputs_and_returned_messages(self) -> None:
         requests: list[dict] = []
