@@ -926,23 +926,18 @@ def _debug_tool(call: Any, tool_result: Any) -> None:
     _debug(f"    -> {name}: ok={ok}{detail}")
 
 
-def _tool_call_signature(tool_calls: list[Any]) -> str:
-    """Stable identity for a turn's tool calls, used to detect a stalled loop."""
+def _tool_result_signature(
+    tool_calls: list[Any],
+    model_tool_results: list[Any],
+) -> list[tuple[str | None, Any]]:
+    """Return ordered tool/result pairs used to detect an Unproductive Repeat."""
 
-    parts: list[str] = []
-    for call in tool_calls:
+    signature: list[tuple[str | None, Any]] = []
+    for call, model_tool_result in zip(tool_calls, model_tool_results):
         function = call.get("function") if isinstance(call, dict) else None
-        parts.append(
-            json.dumps(
-                [
-                    function.get("name") if isinstance(function, dict) else None,
-                    function.get("arguments") if isinstance(function, dict) else None,
-                ],
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-        )
-    return "\n".join(parts)
+        name = function.get("name") if isinstance(function, dict) else None
+        signature.append((name, copy.deepcopy(model_tool_result)))
+    return signature
 
 
 def run_agent(
@@ -976,10 +971,10 @@ def run_agent(
     final_response = ""
     current_turn_start = len(messages)
 
-    # Stop a run that is stuck re-issuing the same failing tool call rather than
-    # burning every remaining turn. Set STBENCH_ADAPTER_MAX_REPEATS=0 to disable.
+    # Stop a run after consecutive Unproductive Repeats rather than burning
+    # every remaining turn. Set STBENCH_ADAPTER_MAX_REPEATS=0 to disable.
     max_repeats = _env_int("STBENCH_ADAPTER_MAX_REPEATS", 4)
-    stall_signature: str | None = None
+    stall_signature: list[tuple[str | None, Any]] | None = None
     stall_count = 0
     stalled = False
 
@@ -1039,7 +1034,7 @@ def run_agent(
         assistant_message_start = len(messages)
         messages.append(message)
 
-        any_success = False
+        model_tool_results: list[Any] = []
         for call in tool_calls:
             tool_event = None
             operation_event = None
@@ -1059,9 +1054,8 @@ def run_agent(
             if audit is not None and tool_event is not None:
                 audit.record_tool_call_completed(tool_event, tool_result)
             _debug_tool(call, tool_result)
-            if isinstance(tool_result, dict) and tool_result.get("ok"):
-                any_success = True
             model_tool_result = tool_result_for_model(tool_result)
+            model_tool_results.append(model_tool_result)
             messages.append(
                 {
                     "role": "tool",
@@ -1071,15 +1065,15 @@ def run_agent(
             )
         current_turn_start = assistant_message_start
 
-        turn_signature = _tool_call_signature(tool_calls)
-        if not any_success and turn_signature == stall_signature:
+        turn_signature = _tool_result_signature(tool_calls, model_tool_results)
+        if turn_signature == stall_signature:
             stall_count += 1
         else:
             stall_count = 0
             stall_signature = turn_signature
         if max_repeats > 0 and stall_count >= max_repeats:
             _debug(
-                f"[stall] same failing tool call repeated {stall_count + 1}x; "
+                f"[Unproductive Repeat] {stall_count} consecutive repeats; "
                 f"stopping at turn {turn_index + 1}/{max_turns}"
             )
             stalled = True
