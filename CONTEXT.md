@@ -115,3 +115,26 @@ It is distinct from a Model Tool Call.
 The scaffold's removal of older tool-result payloads from the model's message
 history, replaced by a marker. It never alters the model's own messages.
 _Avoid_: Compaction, context truncation, summarization
+
+**Unproductive Repeat**:
+A model turn whose tool results are identical to the previous turn's tool
+results, regardless of the arguments the model sent. It is the unit the
+adapter counts before ending a run early.
+_Avoid_: Stall, loop, retry
+
+**Stalled**:
+A benchmark run's terminal state when the comparison shows no progress across
+consecutive iterations. It is a property of the loop, not of any single model
+turn.
+_Avoid_: Unproductive Repeat, Adapter Stop
+
+**Adapter Stop**:
+The reason the adapter ended its turn loop for one iteration: the model
+finished, an Unproductive Repeat threshold was reached, or the turn limit was
+exhausted.
+_Avoid_: Stalled, terminal state
+
+**Unsupported Argument**:
+A tool-call argument the tool's declared schema does not accept. Its presence
+fails the call rather than being ignored.
+_Avoid_: Extra argument, hallucinated parameter
