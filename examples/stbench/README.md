@@ -52,6 +52,12 @@ when the response or request error is received. Audit-recording overhead is
 reported separately and is not included in that duration; the benchmark's
 existing wall-clock fields still include both.
 
+Each iteration that reaches a turn-loop exit ends with exactly one
+`adapter_stop` event containing the Adapter Stop reason and 1-based turn. An
+Unproductive Repeat stop also records the repeat count and ordered tool names;
+this event is not included in Model Tool Call or Adapter Operation activity
+totals.
+
 Edit-tool requests are counted separately as Edit Attempts, including failed
 and no-op requests. Actual content changes are recorded as File Modifications
 with before/after content and a unified diff, one entry per changed file per

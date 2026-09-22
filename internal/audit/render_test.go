@@ -137,6 +137,37 @@ func TestRenderShowsExpandableToolActivityAndIncompleteEvidence(t *testing.T) {
 	}
 }
 
+func TestRenderShowsAdapterStopReasonAndTurn(t *testing.T) {
+	html, err := Render(Artifact{
+		SchemaVersion: SchemaVersion,
+		Capture:       Capture{Enabled: true, Status: "complete", Complete: true},
+		Iterations:    []Iteration{{ID: "iteration-1", Number: 1}},
+		Events: []Event{{
+			Sequence:    2,
+			Type:        "adapter_stop",
+			Iteration:   1,
+			IterationID: "iteration-1",
+			TurnID:      "iteration-1-turn-3",
+			Reason:      "model_finished",
+			Turn:        3,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render Adapter Stop: %v", err)
+	}
+	for _, fragment := range []string{
+		"Adapter Stop",
+		"model_finished",
+		"turn 3",
+		"Reason",
+		"Turn",
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("Adapter Stop HTML missing %q:\n%s", fragment, html)
+		}
+	}
+}
+
 func TestRenderShowsFinalSourceLifecycleAndComparisonEvidence(t *testing.T) {
 	before := "before\n"
 	after := "after\n"

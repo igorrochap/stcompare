@@ -88,12 +88,16 @@ type FileModification struct {
 	Created            bool            `json:"created"`
 }
 
-// Event is one chronological model-turn or activity record. Model-turn input
-// is reconstructable from its shared-content references, and Returned retains
-// its exact JSON value from the adapter boundary.
+// Event is one chronological model-turn, activity, or Adapter Stop record.
+// Model-turn input is reconstructable from its shared-content references, and
+// Returned retains its exact JSON value from the adapter boundary.
 type Event struct {
 	Sequence               int                     `json:"sequence"`
 	Type                   string                  `json:"type"`
+	Turn                   int                     `json:"turn,omitempty"`
+	Reason                 string                  `json:"reason,omitempty"`
+	RepeatCount            int                     `json:"repeat_count,omitempty"`
+	ToolNames              []string                `json:"tool_names,omitempty"`
 	RunID                  string                  `json:"run_id"`
 	IterationID            string                  `json:"iteration_id"`
 	Iteration              int                     `json:"iteration"`
