@@ -48,6 +48,9 @@ MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
 HISTORY_MARKER_ERROR = "is a History Elision marker, not file content"
+# Bump whenever this adapter's tool contract or loop policy changes.
+ADAPTER_VERSION = "1"
+ADAPTER_NAME = "local"
 HISTORY_MARKER_ARGUMENTS = {
     "read_file": ("path",),
     "write_file": ("path", "content"),
@@ -84,12 +87,31 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 text file in the candidate.",
+            "description": (
+                "Read a UTF-8 text-file window. The result reports total_lines, "
+                "next_offset, and truncated."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "max_bytes": {"type": "integer", "default": MAX_FILE_BYTES},
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the UTF-8 text file to read.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "default": MAX_FILE_BYTES,
+                        "description": "Maximum number of bytes in the returned content.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "1-based offset in lines at which to start reading.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of lines to read; defaults to all remaining lines.",
+                    },
                 },
                 "required": ["path"],
                 "additionalProperties": False,
@@ -148,7 +170,7 @@ class AuditCaptureError(RuntimeError):
 
 
 class AuditWriter:
-    """Persist model-turn and activity events without changing the model request."""
+    """Persist model-turn, activity, and Adapter Stop events without changing the model request."""
 
     def __init__(self, path: Path, document: dict[str, Any]) -> None:
         self.path = path
@@ -164,12 +186,15 @@ class AuditWriter:
         metadata: dict[str, Any],
         *,
         history_policy: dict[str, str] | None = None,
+        adapter: dict[str, str] | None = None,
     ) -> "AuditWriter | None":
         context = audit_context(request)
         if context is None:
             return None
         if history_policy is None:
             history_policy = resolve_history_policy()
+        if adapter is None:
+            adapter = local_adapter_identity()
         run_id = required_audit_value(context, "run_id")
         path = Path(required_audit_value(context, "path"))
         document = {
@@ -183,6 +208,7 @@ class AuditWriter:
                 "effort": str(metadata.get("effort", "")),
                 "hardware": metadata["hardware"],
                 "history_policy": history_policy,
+                "adapter": adapter,
                 "started_at": utc_now(),
             },
             "capture": {
@@ -273,6 +299,34 @@ class AuditWriter:
         event["error"] = str(error)
         event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
         event.pop("_started_monotonic", None)
+        self._write()
+
+    def record_adapter_stop(
+        self,
+        turn_event: dict[str, Any],
+        reason: str,
+        turn: int,
+        *,
+        repeat_count: int | None = None,
+        tool_names: list[str] | None = None,
+    ) -> None:
+        """Persist one Adapter Stop for the current iteration and model turn."""
+
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "adapter_stop",
+            "run_id": turn_event["run_id"],
+            "iteration_id": turn_event["iteration_id"],
+            "iteration": turn_event["iteration"],
+            "turn_id": turn_event["turn_id"],
+            "reason": reason,
+            "turn": turn,
+        }
+        if repeat_count is not None:
+            event["repeat_count"] = repeat_count
+        if tool_names is not None:
+            event["tool_names"] = copy.deepcopy(tool_names)
+        self.document["events"].append(event)
         self._write()
 
     def record_tool_call_started(
@@ -815,7 +869,19 @@ def resolve_history_policy() -> dict[str, str]:
     return {"read_results": "elide_before_current_turn"}
 
 
+def local_adapter_identity() -> dict[str, str]:
+    """Return the local adapter identity, including its current source hash."""
+
+    source_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return {
+        "name": ADAPTER_NAME,
+        "version": ADAPTER_VERSION,
+        "source_sha256": source_hash,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    adapter = local_adapter_identity()
     try:
         settings = parse_args(argv)
 
@@ -826,14 +892,20 @@ def main(argv: list[str] | None = None) -> int:
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
                         history_policy = resolve_history_policy()
-                        AuditWriter.create(request, metadata, history_policy=history_policy)
+                        AuditWriter.create(
+                            request,
+                            metadata,
+                            history_policy=history_policy,
+                            adapter=adapter,
+                        )
                         emit_result(
                             status="ok",
                             temperature=temperature,
                             history_policy=history_policy,
+                            adapter=adapter,
                         )
                     else:
-                        handle_preflight(request)
+                        handle_preflight(request, adapter=adapter)
                     continue
 
                 metadata = request_metadata(request)
@@ -860,17 +932,18 @@ def main(argv: list[str] | None = None) -> int:
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
                     history_policy=history_policy,
+                    adapter=adapter,
                 )
             except AuditCaptureError as error:
-                emit_error(str(error), audit_error=str(error))
+                emit_error(str(error), adapter=adapter, audit_error=str(error))
             except (OSError, ValueError, RuntimeError) as error:
-                emit_error(str(error))
+                emit_error(str(error), adapter=adapter)
         return 0
     except (OSError, ValueError, RuntimeError) as error:
-        emit_error(str(error))
+        emit_error(str(error), adapter=adapter)
         return 0
     except Exception as error:  # pragma: no cover - last-resort protocol guard
-        emit_error(f"local-model adapter failed: {error}")
+        emit_error(f"local-model adapter failed: {error}", adapter=adapter)
         return 0
 
 
@@ -926,23 +999,24 @@ def _debug_tool(call: Any, tool_result: Any) -> None:
     _debug(f"    -> {name}: ok={ok}{detail}")
 
 
-def _tool_call_signature(tool_calls: list[Any]) -> str:
-    """Stable identity for a turn's tool calls, used to detect a stalled loop."""
+def _tool_result_signature(
+    tool_calls: list[Any],
+    model_tool_results: list[Any],
+) -> list[tuple[str | None, Any]]:
+    """Return ordered tool/result pairs used to detect an Unproductive Repeat."""
 
-    parts: list[str] = []
-    for call in tool_calls:
+    signature: list[tuple[str | None, Any]] = []
+    for call, model_tool_result in zip(tool_calls, model_tool_results):
         function = call.get("function") if isinstance(call, dict) else None
-        parts.append(
-            json.dumps(
-                [
-                    function.get("name") if isinstance(function, dict) else None,
-                    function.get("arguments") if isinstance(function, dict) else None,
-                ],
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-        )
-    return "\n".join(parts)
+        name = function.get("name") if isinstance(function, dict) else None
+        signature.append((name, copy.deepcopy(model_tool_result)))
+    return signature
+
+
+def _tool_names(tool_calls: list[Any]) -> list[str]:
+    """Return the ordered tool names in the repeated turn signature."""
+
+    return [tool_call_details(call)[0] for call in tool_calls]
 
 
 def run_agent(
@@ -976,12 +1050,11 @@ def run_agent(
     final_response = ""
     current_turn_start = len(messages)
 
-    # Stop a run that is stuck re-issuing the same failing tool call rather than
-    # burning every remaining turn. Set STBENCH_ADAPTER_MAX_REPEATS=0 to disable.
+    # Stop a run after consecutive Unproductive Repeats rather than burning
+    # every remaining turn. Set STBENCH_ADAPTER_MAX_REPEATS=0 to disable.
     max_repeats = _env_int("STBENCH_ADAPTER_MAX_REPEATS", 4)
-    stall_signature: str | None = None
+    stall_signature: list[tuple[str | None, Any]] | None = None
     stall_count = 0
-    stalled = False
 
     for turn_index in range(max_turns):
         compact_history(messages, current_turn_start)
@@ -1029,6 +1102,12 @@ def run_agent(
                 messages.append(message)
                 if isinstance(content, str) and content.strip():
                     final_response = content
+                    if audit is not None and turn_event is not None:
+                        audit.record_adapter_stop(
+                            turn_event,
+                            "model_finished",
+                            turn_index + 1,
+                        )
                     return final_response, usages
                 messages.append({"role": "user", "content": NUDGE_PROMPT})
                 current_turn_start = len(messages) - 2
@@ -1039,7 +1118,7 @@ def run_agent(
         assistant_message_start = len(messages)
         messages.append(message)
 
-        any_success = False
+        model_tool_results: list[Any] = []
         for call in tool_calls:
             tool_event = None
             operation_event = None
@@ -1059,9 +1138,8 @@ def run_agent(
             if audit is not None and tool_event is not None:
                 audit.record_tool_call_completed(tool_event, tool_result)
             _debug_tool(call, tool_result)
-            if isinstance(tool_result, dict) and tool_result.get("ok"):
-                any_success = True
             model_tool_result = tool_result_for_model(tool_result)
+            model_tool_results.append(model_tool_result)
             messages.append(
                 {
                     "role": "tool",
@@ -1071,23 +1149,29 @@ def run_agent(
             )
         current_turn_start = assistant_message_start
 
-        turn_signature = _tool_call_signature(tool_calls)
-        if not any_success and turn_signature == stall_signature:
+        turn_signature = _tool_result_signature(tool_calls, model_tool_results)
+        if turn_signature == stall_signature:
             stall_count += 1
         else:
             stall_count = 0
             stall_signature = turn_signature
         if max_repeats > 0 and stall_count >= max_repeats:
             _debug(
-                f"[stall] same failing tool call repeated {stall_count + 1}x; "
+                f"[Unproductive Repeat] {stall_count} consecutive repeats; "
                 f"stopping at turn {turn_index + 1}/{max_turns}"
             )
-            stalled = True
-            break
+            if audit is not None and turn_event is not None:
+                audit.record_adapter_stop(
+                    turn_event,
+                    "unproductive_repeat",
+                    turn_index + 1,
+                    repeat_count=stall_count,
+                    tool_names=_tool_names(tool_calls),
+                )
+            return final_response, usages
 
-    if stalled:
-        return final_response, usages
-
+    if audit is not None and turn_event is not None:
+        audit.record_adapter_stop(turn_event, "turn_limit", max_turns)
     raise RuntimeError(f"local model reached the {max_turns}-turn limit")
 
 
@@ -1303,6 +1387,19 @@ def post_json(
 def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         return tool_error("invalid_tool_arguments", "tool arguments must be an object")
+    supported_arguments = tool_argument_names(name)
+    if supported_arguments is None:
+        return tool_error("unknown_tool", f"unknown tool {name!r}")
+    # Unsupported Arguments take precedence so the model receives the full correction.
+    unsupported_arguments = sorted(
+        argument_name for argument_name in arguments if argument_name not in supported_arguments
+    )
+    if unsupported_arguments:
+        return tool_error(
+            "unsupported_argument",
+            f"{name} does not accept {', '.join(unsupported_arguments)}; "
+            f"supported arguments: {', '.join(supported_arguments)}",
+        )
     marker_argument = history_marker_argument(name, arguments)
     if marker_argument is not None:
         return tool_error(
@@ -1313,7 +1410,15 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         if name == "list_files":
             return list_files(root, str(arguments.get("path", ".")))
         if name == "read_file":
-            return read_file(root, str(arguments["path"]), int(arguments.get("max_bytes", MAX_FILE_BYTES)))
+            limit_argument = arguments.get("limit")
+            limit = None if limit_argument is None else int(limit_argument)
+            return read_file(
+                root,
+                str(arguments["path"]),
+                int(arguments.get("max_bytes", MAX_FILE_BYTES)),
+                int(arguments.get("offset", 1)),
+                limit,
+            )
         if name == "write_file":
             return write_file(root, str(arguments["path"]), str(arguments["content"]))
         if name == "str_replace":
@@ -1330,6 +1435,23 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         return tool_error("file_not_found", str(error))
     except (KeyError, OSError, TypeError, ValueError) as error:
         return tool_error("tool_error", str(error))
+
+
+def tool_argument_names(name: str) -> tuple[str, ...] | None:
+    """Resolve declared argument names for rejecting an Unsupported Argument."""
+
+    for tool in TOOLS:
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != name:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return ()
+        properties = parameters.get("properties")
+        if not isinstance(properties, dict):
+            return ()
+        return tuple(properties)
+    return None
 
 
 def history_marker_argument(name: str, arguments: dict[str, Any]) -> str | None:
@@ -1375,19 +1497,94 @@ def list_files(root: Path, relative: str) -> dict[str, Any]:
     return {"ok": True, "files": paths, "truncated": len(paths) >= 200}
 
 
-def read_file(root: Path, relative: str, max_bytes: int) -> dict[str, Any]:
+def read_file(
+    root: Path,
+    relative: str,
+    max_bytes: int,
+    offset: int = 1,
+    limit: int | None = None,
+) -> dict[str, Any]:
     if max_bytes < 1:
         raise ValueError("max_bytes must be positive")
+    if offset < 1:
+        raise ToolError("invalid_offset", "read_file offset must be at least 1")
+    if limit is not None and limit < 1:
+        raise ToolError("invalid_limit", "read_file limit must be at least 1")
+
     contents = safe_path(root, relative).read_bytes()
-    if b"\x00" in contents[:max_bytes]:
+    if b"\x00" in contents:
         raise ValueError("read_file only supports text files")
-    truncated = len(contents) > max_bytes
+    text = contents.decode("utf-8", errors="replace")
+    lines = split_file_lines(text)
+    total_lines = len(lines)
+    if total_lines == 0:
+        if offset > 1:
+            raise ToolError(
+                "offset_out_of_range",
+                f"read_file offset {offset} is past the end of {relative}; the file has 0 lines",
+            )
+        return {
+            "ok": True,
+            "path": relative,
+            "content": "",
+            "truncated": False,
+            "total_lines": 0,
+            "next_offset": None,
+        }
+    if offset > total_lines:
+        raise ToolError(
+            "offset_out_of_range",
+            f"read_file offset {offset} is past the end of {relative}; "
+            f"the file has {total_lines} lines",
+        )
+
+    start_index = offset - 1
+    end_index = total_lines if limit is None else min(start_index + limit, total_lines)
+    selected_lines = lines[start_index:end_index]
+    selected_bytes = "".join(selected_lines).encode("utf-8")
+    truncated = len(selected_bytes) > max_bytes
+    returned_bytes = selected_bytes[:max_bytes]
+    next_index = end_index
+    if truncated:
+        next_index = first_unreturned_line_index(selected_lines, start_index, max_bytes)
+
     return {
         "ok": True,
         "path": relative,
-        "content": contents[:max_bytes].decode("utf-8", errors="replace"),
+        "content": returned_bytes.decode("utf-8", errors="replace"),
         "truncated": truncated,
+        "total_lines": total_lines,
+        "next_offset": None if next_index >= total_lines else next_index + 1,
     }
+
+
+def split_file_lines(text: str) -> list[str]:
+    """Split only on newlines while retaining each line's separator."""
+
+    if not text:
+        return []
+    segments = text.split("\n")
+    ends_with_newline = segments[-1] == ""
+    if ends_with_newline:
+        segments.pop()
+    lines = []
+    for index, segment in enumerate(segments):
+        has_line_separator = index < len(segments) - 1 or ends_with_newline
+        if has_line_separator:
+            lines.append(f"{segment}\n")
+            continue
+        lines.append(segment)
+    return lines
+
+
+def first_unreturned_line_index(lines: list[str], start_index: int, max_bytes: int) -> int:
+    bytes_remaining = max_bytes
+    for line_index, line in enumerate(lines, start_index):
+        line_bytes = len(line.encode("utf-8"))
+        if line_bytes > bytes_remaining:
+            return line_index
+        bytes_remaining -= line_bytes
+    return start_index + len(lines)
 
 
 def write_file(root: Path, relative: str, content: str) -> dict[str, Any]:

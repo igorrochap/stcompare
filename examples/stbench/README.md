@@ -22,12 +22,16 @@ delivery boundary:
      "message": "",
      "response": "short audit text",
      "tokens": {"input": 12, "output": 34, "total": 46},
-     "temperature": 0.0
+     "temperature": 0.0,
+     "adapter": {"name": "local", "version": "1", "source_sha256": "..."}
    }
    ```
 
    Report `"tokens": null` when the agent does not expose token usage. The
-   bundled local-model adapter stores per-turn token status and recording
+   `adapter` object is optional; the bundled local-model adapter reports its
+   name, contract version, and source-file SHA-256, while adapters that do not
+   report provenance omit it. The bundled local-model adapter stores per-turn
+   token status and recording
    overhead in the audit artifact rather than duplicating it in this result.
 
 For the bundled local-model adapter, `stbench` supplies an audit context on
@@ -47,6 +51,12 @@ inference duration. Inference begins after the request capture write and ends
 when the response or request error is received. Audit-recording overhead is
 reported separately and is not included in that duration; the benchmark's
 existing wall-clock fields still include both.
+
+Each iteration that reaches a turn-loop exit ends with exactly one
+`adapter_stop` event containing the Adapter Stop reason and 1-based turn. An
+Unproductive Repeat stop also records the repeat count and ordered tool names;
+this event is not included in Model Tool Call or Adapter Operation activity
+totals.
 
 Edit-tool requests are counted separately as Edit Attempts, including failed
 and no-op requests. Actual content changes are recorded as File Modifications
@@ -131,13 +141,18 @@ models. They are unset by default and change no behaviour unless set:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `STBENCH_ADAPTER_NO_COMPACT` | unset | Keep full `read_file` results in the message history. By default, History Elision replaces only results from turns older than the current turn; assistant messages remain unchanged. |
-| `STBENCH_ADAPTER_MAX_REPEATS` | `4` | End the run cleanly after this many consecutive turns that repeat an identical tool call with no successful result, instead of consuming every remaining turn and failing with a turn-limit error. The partial edits already on disk are then scored. `0` disables the check. |
+| `STBENCH_ADAPTER_MAX_REPEATS` | `4` | End the run cleanly after this many consecutive Unproductive Repeats, where a turn's ordered tool names and model-visible results match the previous turn, instead of consuming every remaining turn and failing with a turn-limit error. The partial edits already on disk are then scored. `0` disables the check. |
 | `STBENCH_ADAPTER_DEBUG` | unset | Write a per-turn and per-tool trace to stderr (`stbench` forwards it to the run output). stdout, which carries the adapter protocol, is untouched. |
 
-The scaffold exposes `list_files`, `read_file`, `str_replace`, `write_file`, and
-shell-free `run_command` tools. `str_replace` applies one exact, unique
-substring replacement to an existing file; `write_file` only creates new
-files. Paths are confined to the API source tree, and managed `.local/stbench`
+The scaffold exposes `list_files`, `read_file`, `str_replace`, and `write_file`
+tools. `read_file` accepts a 1-based line `offset` and a `limit` in lines;
+`max_bytes` remains a byte cap on the returned content. Its result reports the
+whole-file `total_lines`, the `next_offset` for the next window (or `null` at
+the end), and whether the payload was `truncated`. A call with an argument
+outside the tool schema fails with `unsupported_argument`. `str_replace`
+applies one exact, unique substring replacement to an existing file;
+`write_file` only creates new files. Paths are confined to the API source tree,
+and managed `.local/stbench`
 and `.local/stcompare` state is hidden from file listing and write tools.
 `stbench init` uses `.local/stbench` by default, while an external state
 directory can be selected explicitly. The adapter sums usage reported by each
@@ -152,6 +167,14 @@ resolved value is sent on every chat-completions request. At temperature `0`,
 the adapter also sends `top_p: 1` to keep decoding fully greedy and
 deterministic. The adapter reports the resolved value during preflight so the
 benchmark record captures the effective sampling regime.
+
+The bundled local-model adapter reports an `adapter` object in each result and
+in the audit document's `run` header. Its `name` is `local`, `version` starts
+at `1` and must be bumped whenever the tool contract or loop policy changes,
+and `source_sha256` hashes the adapter source file at run time. `stbench`
+copies this object into the optional `adapter` field of
+`benchmark-record.json`; adapters that do not report provenance leave the field
+absent.
 
 `stbench run` renders an available audit to `benchmark-audit.html` after the
 run. A researcher can render an artifact independently, including when no

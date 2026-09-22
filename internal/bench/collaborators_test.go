@@ -164,7 +164,7 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_INPUT\"\n"+
 		"pwd > \"$STBENCH_PWD\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"response\":\"raw model response\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18},\"history_policy\":{\"read_results\":\"keep\"}}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"response\":\"raw model response\",\"tokens\":{\"input\":11,\"output\":7,\"total\":18},\"history_policy\":{\"read_results\":\"keep\"},\"adapter\":{\"name\":\"local\",\"version\":\"1\",\"source_sha256\":\"sha\"}}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -198,6 +198,10 @@ func TestCommandAdapterSendsMetadataInstructionAndViewAndReadsTokens(t *testing.
 	}
 	if result.HistoryPolicy == nil || result.HistoryPolicy.ReadResults != "keep" {
 		t.Fatalf("history policy = %#v, want keep", result.HistoryPolicy)
+	}
+	if result.Adapter == nil || result.Adapter.Name != "local" || result.Adapter.Version != "1" ||
+		result.Adapter.SourceSHA256 != "sha" {
+		t.Fatalf("adapter = %#v, want local adapter identity", result.Adapter)
 	}
 
 	contents, err := os.ReadFile(inputPath)
@@ -242,7 +246,7 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	inputPath := filepath.Join(dir, "preflight.json")
 	script := writeExecutable(t, dir, "adapter.sh", "#!/bin/sh\n"+
 		"cat > \"$STBENCH_PREFLIGHT\"\n"+
-		"printf '%s' '{\"status\":\"ok\",\"tokens\":null,\"temperature\":0.8,\"history_policy\":{\"read_results\":\"elide_before_current_turn\"}}'\n")
+		"printf '%s' '{\"status\":\"ok\",\"tokens\":null,\"temperature\":0.8,\"history_policy\":{\"read_results\":\"elide_before_current_turn\"},\"adapter\":{\"name\":\"local\",\"version\":\"1\",\"source_sha256\":\"sha\"}}'\n")
 	adapter := &CommandAdapter{
 		Command:    script,
 		WorkingDir: dir,
@@ -260,6 +264,10 @@ func TestCommandAdapterPreflightSendsNoOpRequest(t *testing.T) {
 	historyPolicy := adapter.EffectiveHistoryPolicy()
 	if historyPolicy == nil || historyPolicy.ReadResults != "elide_before_current_turn" {
 		t.Fatalf("preflight history policy = %#v, want default History Elision policy", historyPolicy)
+	}
+	identity := adapter.EffectiveAdapter()
+	if identity == nil || identity.Name != "local" || identity.Version != "1" || identity.SourceSHA256 != "sha" {
+		t.Fatalf("preflight adapter = %#v, want local adapter identity", identity)
 	}
 
 	contents, err := os.ReadFile(inputPath)

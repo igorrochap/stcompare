@@ -226,13 +226,15 @@ integration test.
 - The adapter edits the candidate source **in place** and writes a small result
   JSON to **stdout**: `{ "tokens": {"input": N, "output": N, "total": N} | null,
   "temperature": N | null, "history_policy": { "read_results":
-  "elide_before_current_turn" | "keep" } | omitted, "response": "<raw model response>",
-  "status": "ok" | "error", "message": "…" }`. A non-zero adapter exit or
+  "elide_before_current_turn" | "keep" } | omitted, "adapter": {
+  "name": "local", "version": "…", "source_sha256": "…" } | omitted,
+  "response": "<raw model response>", "status": "ok" | "error",
+  "message": "…" }`. A non-zero adapter exit or
   `status: "error"` ends the run as `adapter_error`; the response text is
   retained for audit. Bundled local-model adapters report their resolved
-  temperature and History Elision regime during preflight and each fix. An
-  adapter that does not report `history_policy` remains compatible and omits
-  the field from the benchmark record.
+  temperature, History Elision regime, and adapter identity during preflight
+  and each fix. An adapter that does not report `history_policy` or `adapter`
+  remains compatible and omits that field from the benchmark record.
 - Before the first comparison, `stbench` sends a no-op preflight request with
   `"preflight": true`. The adapter must execute its command, return an `ok`
   result, and exit without invoking a model or editing the candidate. The
@@ -291,6 +293,7 @@ integration test.
   "agent": "...", "model": "...", "effort": "...",     // campaign identity
   "temperature": N,                                     // effective adapter sampling temperature
   "history_policy": { "read_results": "elide_before_current_turn" | "keep" }, // optional History Elision regime
+  "adapter": { "name": "local", "version": "…", "source_sha256": "…" }, // optional adapter provenance
   "hardware": "...",                                    // harness identity
   "process_reuse": bool,                                // negotiated adapter mode
   "prompt": { "id": "...", "version": "...", "hash": "..." },
@@ -358,8 +361,9 @@ integration test.
 
 Local-model runs also write `benchmark-audit.json` beside the benchmark
 record. It is a versioned, incrementally updated artifact with the run
-identity, ordered benchmark iterations, and ordered `model_turn` events. Each
-turn stores a stable `turn_id`, the exact model request payload (including
+identity, ordered benchmark iterations, and ordered `model_turn` and
+`adapter_stop` events. Each turn stores a stable `turn_id`, the exact model
+request payload (including
 tool definitions, effective sampling settings, compacted history, and any
 adapter-added instructions), the returned response and messages, and its
 completion state. The request is captured before inference begins and each
@@ -396,6 +400,14 @@ event without a terminal result remains incomplete. The artifact stores
 `activity` totals at run and iteration scope, including Model Tool Call count,
 completed, failed, incomplete, and execution-time totals; partial status keeps
 missing evidence distinguishable from a complete zero.
+
+Each benchmark iteration that reaches a turn-loop exit contains exactly one
+`adapter_stop` event. It carries the Adapter Stop `reason`
+(`model_finished`, `unproductive_repeat`, or `turn_limit`) and the 1-based
+`turn` at which the adapter ended its loop. An Unproductive Repeat stop
+additionally records its repeat count and ordered tool names. Adapter Stop
+events are chronological evidence only; they are not included in Model Tool
+Call or Adapter Operation activity totals.
 
 Edit tools also preserve an `Edit Attempt` for every requested edit, including
 failed and no-op requests. Each content-changing operation adds one
@@ -544,6 +556,14 @@ The value is `{"read_results":"elide_before_current_turn"}` by default and
 `{"read_results":"keep"}` when `STBENCH_ADAPTER_NO_COMPACT=1`. Adapters that
 do not report the field omit it; this additive field does not change the record
 or audit schema versions.
+
+The bundled local-model adapter also records its optional `adapter` provenance
+object in the benchmark record and the audit document's `run` section. The
+object contains `name: "local"`, a version string that must be bumped whenever
+the adapter's tool contract or loop policy changes, and the run-time SHA-256 of
+the adapter source file as `source_sha256`. Adapters that do not report
+`adapter` omit it; this additive field does not change the record or audit
+schema versions.
 
 The benchmark record path is derived from the campaign and `reports_dir` as
 `reports/<candidate>/benchmark-record.json`. It is not configurable, which

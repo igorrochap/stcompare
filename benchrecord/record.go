@@ -49,6 +49,13 @@ type HistoryPolicy struct {
 	ReadResults string `json:"read_results"`
 }
 
+// Adapter identifies the adapter contract that produced a benchmark run.
+type Adapter struct {
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	SourceSHA256 string `json:"source_sha256"`
+}
+
 // Record is the benchmark result for one agent, candidate, and run.
 type Record struct {
 	SchemaVersion string `json:"schema_version"`
@@ -63,7 +70,9 @@ type Record struct {
 	// Temperature is the effective sampling temperature used by the adapter.
 	Temperature float64 `json:"temperature"`
 	// HistoryPolicy identifies the History Elision regime used by the adapter.
-	HistoryPolicy        *HistoryPolicy   `json:"history_policy,omitempty"`
+	HistoryPolicy *HistoryPolicy `json:"history_policy,omitempty"`
+	// Adapter identifies the adapter contract used for the run.
+	Adapter              *Adapter         `json:"adapter,omitempty"`
 	Hardware             string           `json:"hardware"`
 	Prompt               PromptIdentity   `json:"prompt"`
 	PromptInstructions   []string         `json:"prompt_instructions"`

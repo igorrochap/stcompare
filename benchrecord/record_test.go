@@ -17,6 +17,7 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 		Effort:                 "high",
 		Temperature:            0.65,
 		HistoryPolicy:          &HistoryPolicy{ReadResults: "elide_before_current_turn"},
+		Adapter:                &Adapter{Name: "local", Version: "1", SourceSHA256: "source-hash"},
 		Hardware:               "hardware",
 		Prompt: PromptIdentity{
 			ID:      "stbench-default",
@@ -129,6 +130,9 @@ func TestRecordMarshalsBenchmarkRecordShape(t *testing.T) {
 	if string(fields["history_policy"]) != `{"read_results":"elide_before_current_turn"}` {
 		t.Fatalf("history_policy = %s, want default History Elision policy", fields["history_policy"])
 	}
+	if string(fields["adapter"]) != `{"name":"local","version":"1","source_sha256":"source-hash"}` {
+		t.Fatalf("adapter = %s, want local adapter identity", fields["adapter"])
+	}
 	if !strings.Contains(string(fields["efficiency"]), `"token_status":"partial"`) {
 		t.Fatalf("efficiency = %s, want partial token status", fields["efficiency"])
 	}
@@ -150,6 +154,9 @@ func TestRecordOmitsHistoryPolicyWhenAdapterDoesNotReportIt(t *testing.T) {
 	if _, ok := fields["history_policy"]; ok {
 		t.Fatalf("history_policy = %s, want field omitted", fields["history_policy"])
 	}
+	if _, ok := fields["adapter"]; ok {
+		t.Fatalf("adapter = %s, want field omitted", fields["adapter"])
+	}
 
 	var decoded Record
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -157,6 +164,9 @@ func TestRecordOmitsHistoryPolicyWhenAdapterDoesNotReportIt(t *testing.T) {
 	}
 	if decoded.HistoryPolicy != nil {
 		t.Fatalf("round-trip history policy = %#v, want nil", decoded.HistoryPolicy)
+	}
+	if decoded.Adapter != nil {
+		t.Fatalf("round-trip adapter = %#v, want nil", decoded.Adapter)
 	}
 }
 

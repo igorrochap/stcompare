@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import socketserver
@@ -31,6 +33,7 @@ from local_model_adapter import (
     execute_model_tool_call,
     execute_tool,
     list_files,
+    main as local_model_main,
     parse_args,
     run_agent,
     safe_path,
@@ -45,6 +48,61 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def _assert_local_adapter_identity(self, identity: dict[str, str]) -> None:
+        self.assertEqual(identity["name"], "local")
+        self.assertTrue(identity["version"])
+        self.assertRegex(identity["source_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            identity["source_sha256"],
+            hashlib.sha256(LOCAL_ADAPTER.read_bytes()).hexdigest(),
+        )
+
+    @staticmethod
+    def _read_file_response(call_number: int, max_bytes: int) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": f"read-{call_number}",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps(
+                                        {"path": "sample.txt", "max_bytes": max_bytes}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    @staticmethod
+    def _unknown_tool_response(call_number: int) -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": f"unknown-{call_number}",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": json.dumps({"query": f"term-{call_number}"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
     def test_recovery_counts_identical_tagged_requests_individually(self) -> None:
         content = (
             '<tool_call>{"name":"list_files","arguments":{"path":"."}}</tool_call>'
@@ -105,6 +163,24 @@ class AdapterExamplesTest(unittest.TestCase):
             )
             updated = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertNotIn("activity", updated)
+
+    def test_local_model_audit_records_adapter_identity_in_run_header(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-adapter-provenance",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+
+            writer = AuditWriter.create(request, metadata)
+
+            self.assertIsNotNone(writer)
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self._assert_local_adapter_identity(document["run"]["adapter"])
 
     def test_local_model_activity_keeps_started_calls_partial_after_capture(self) -> None:
         document = {
@@ -171,6 +247,322 @@ class AdapterExamplesTest(unittest.TestCase):
 
         self.assertEqual(response, "done")
         self.assertEqual(post_json.call_count, 1)
+
+    def test_local_model_audit_records_model_finished_adapter_stop(self) -> None:
+        responses = [
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-finished"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                response, _ = run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(response, "done")
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "model_finished")
+        self.assertEqual(stops[0]["turn"], 3)
+        self.assertEqual(stops[0]["iteration"], 1)
+        self.assertEqual(stops[0]["iteration_id"], "iteration-1")
+
+    def test_local_model_audit_records_unproductive_repeat_adapter_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-repeat"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=10,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "unproductive_repeat")
+        self.assertEqual(stops[0]["turn"], 5)
+        self.assertEqual(stops[0]["repeat_count"], 4)
+        self.assertEqual(stops[0]["tool_names"], ["read_file"])
+
+    def test_local_model_audit_records_turn_limit_adapter_stop_before_error(self) -> None:
+        responses = [self._read_file_response(index, 100) for index in range(3)]
+        seen: list[int] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "sample.txt"
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-limit"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            def respond(*_args: object, **_kwargs: object) -> dict:
+                index = len(seen)
+                target.write_text(f"changed-{index}\n", encoding="utf-8")
+                seen.append(index)
+                return responses[index]
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=respond
+            ) as post_json, self.assertRaisesRegex(
+                RuntimeError, "local model reached the 3-turn limit"
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(post_json.call_count, 3)
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "turn_limit")
+        self.assertEqual(stops[0]["turn"], 3)
+
+    def test_local_model_audit_does_not_record_adapter_stop_for_transport_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-transport"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=OSError("transport failed")
+            ), self.assertRaisesRegex(OSError, "transport failed"):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+            turns = [event for event in document["events"] if event["type"] == "model_turn"]
+
+        self.assertEqual(stops, [])
+        self.assertEqual(turns[0]["status"], "failed")
+
+    def test_local_model_stops_after_four_result_keyed_unproductive_repeats(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("STBENCH_ADAPTER_MAX_REPEATS", None)
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 5)
+
+    def test_local_model_reaches_turn_limit_when_tool_results_change(self) -> None:
+        responses = [self._read_file_response(index, 100) for index in range(10)]
+        contents = [f"changed-{index}\n" for index in range(10)]
+        seen: list[int] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "sample.txt"
+
+            def respond(*_args: object, **_kwargs: object) -> dict:
+                index = len(seen)
+                target.write_text(contents[index], encoding="utf-8")
+                seen.append(index)
+                return responses[index]
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=respond
+            ) as post_json, self.assertRaisesRegex(
+                RuntimeError, "local model reached the 10-turn limit"
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="local-model",
+                    timeout=5,
+                    max_turns=10,
+                )
+
+        self.assertEqual(post_json.call_count, 10)
+
+    def test_local_model_stops_on_result_keyed_repeats_of_failing_tools(self) -> None:
+        responses = [self._unknown_tool_response(index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "local_model_adapter.post_json", side_effect=responses
+        ) as post_json:
+            run_agent(
+                "task",
+                Path(directory),
+                url="http://model.invalid",
+                model="local-model",
+                timeout=5,
+                max_turns=10,
+            )
+
+        self.assertEqual(post_json.call_count, 5)
+
+    def test_local_model_max_repeats_zero_disables_unproductive_repeat_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(10)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "0"}):
+                with patch(
+                    "local_model_adapter.post_json", side_effect=responses
+                ) as post_json, self.assertRaisesRegex(
+                    RuntimeError, "local model reached the 10-turn limit"
+                ):
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 10)
+
+    def test_local_model_honors_custom_unproductive_repeat_threshold(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(3)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "2"}):
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 3)
+
+    def test_local_model_no_tool_turn_does_not_reset_unproductive_repeat_count(self) -> None:
+        responses = [
+            self._read_file_response(0, 100),
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            self._read_file_response(1, 101),
+            self._read_file_response(2, 102),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            with patch.dict(os.environ, {"STBENCH_ADAPTER_MAX_REPEATS": "2"}):
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    run_agent(
+                        "task",
+                        root,
+                        url="http://model.invalid",
+                        model="local-model",
+                        timeout=5,
+                        max_turns=10,
+                    )
+
+        self.assertEqual(post_json.call_count, 4)
+
+    def test_local_model_main_emits_ok_for_unproductive_repeat_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+        request = {
+            "agent": "local-model",
+            "model": "local-model",
+            "hardware": "test-machine",
+            "instruction": "task",
+            "view": {"actionable": []},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            output = io.StringIO()
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("STBENCH_ADAPTER_MAX_REPEATS", None)
+                os.environ.pop("STBENCH_REUSE_PROCESS", None)
+                with patch("local_model_adapter.post_json", side_effect=responses) as post_json:
+                    with patch("local_model_adapter.Path.cwd", return_value=root):
+                        with patch("sys.stdin", io.StringIO(json.dumps(request))):
+                            with patch("sys.stdout", output):
+                                exit_code = local_model_main(["--max-turns", "10"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["status"], "ok")
+        self.assertEqual(post_json.call_count, 5)
 
     def test_local_model_audit_captures_exact_inputs_and_returned_messages(self) -> None:
         requests: list[dict] = []
@@ -1410,6 +1802,254 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
             self.assertFalse((root / "new.txt").exists())
 
+    def test_local_model_rejects_unsupported_arguments_from_every_tool_schema(self) -> None:
+        """An Unsupported Argument fails before a tool can use its arguments."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("line one\nline two\n", encoding="utf-8")
+            cases = (
+                (
+                    "read_file",
+                    {"path": "a.txt", "line_start": 1, "line_end": 50},
+                    ("line_start", "line_end"),
+                    ("path", "max_bytes", "offset", "limit"),
+                ),
+                ("list_files", {"path": ".", "pattern": "*.txt"}, ("pattern",), ("path",)),
+                (
+                    "write_file",
+                    {"path": "new.txt", "content": "new", "overwrite": True},
+                    ("overwrite",),
+                    ("path", "content"),
+                ),
+                (
+                    "str_replace",
+                    {
+                        "path": "a.txt",
+                        "old_string": "line one",
+                        "new_string": "line 1",
+                        "regex": True,
+                    },
+                    ("regex",),
+                    ("path", "old_string", "new_string"),
+                ),
+            )
+
+            for name, arguments, unsupported, supported in cases:
+                with self.subTest(name=name):
+                    result = execute_tool(name, arguments, root)
+
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["error_code"], "unsupported_argument")
+                    for argument_name in unsupported + supported:
+                        self.assertIn(argument_name, result["error"])
+                    self.assertIn(
+                        f"supported arguments: {', '.join(supported)}",
+                        result["error"],
+                    )
+
+            self.assertFalse((root / "new.txt").exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "line one\nline two\n")
+
+    def test_local_model_unsupported_argument_precedes_history_marker_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = execute_tool(
+                "read_file",
+                {"path": READ_FILE_HISTORY_PLACEHOLDER, "line_start": 1},
+                root,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "unsupported_argument")
+            self.assertIn("line_start", result["error"])
+            self.assertIn("path", result["error"])
+            self.assertIn("max_bytes", result["error"])
+            self.assertIn("offset", result["error"])
+            self.assertIn("limit", result["error"])
+            self.assertNotIn("History Elision marker", result["error"])
+
+    def test_local_model_unsupported_argument_does_not_read_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("file content", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "line_start": "100"}, root)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "unsupported_argument")
+            self.assertIn("line_start", result["error"])
+            self.assertIn("path", result["error"])
+            self.assertIn("max_bytes", result["error"])
+
+    def test_local_model_unsupported_argument_reaches_both_call_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("file content", encoding="utf-8")
+            arguments = {"path": "a.txt", "line_start": 100}
+
+            structured = execute_model_tool_call(
+                {
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps(arguments),
+                    }
+                },
+                root,
+            )
+            recovered_calls = recover_tool_calls(
+                f'<tool_call>{{"name":"read_file","arguments":{json.dumps(arguments)}}}</tool_call>'
+            )
+            recovered = execute_model_tool_call(recovered_calls[0], root)
+
+            for result in (structured, recovered):
+                with self.subTest(result=result):
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["error_code"], "unsupported_argument")
+                    self.assertIn("line_start", result["error"])
+
+    def test_local_model_declared_read_file_arguments_keep_current_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("0123456789", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "max_bytes": "50"}, root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "0123456789")
+            self.assertLessEqual(len(result["content"].encode("utf-8")), 50)
+            self.assertEqual(result["total_lines"], 1)
+            self.assertIsNone(result["next_offset"])
+
+    def test_local_model_read_file_returns_requested_line_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8")
+
+            result = execute_tool(
+                "read_file",
+                {"path": "a.txt", "offset": 3, "limit": 4},
+                root,
+            )
+
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "path": "a.txt",
+                    "content": "line 3\nline 4\nline 5\nline 6\n",
+                    "truncated": False,
+                    "total_lines": 10,
+                    "next_offset": 7,
+                },
+            )
+
+    def test_local_model_read_file_window_reaches_end_of_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text(
+                "".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8"
+            )
+
+            result = execute_tool("read_file", {"path": "a.txt", "offset": 8, "limit": 5}, root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "line 8\nline 9\nline 10\n")
+            self.assertEqual(result["total_lines"], 10)
+            self.assertIsNone(result["next_offset"])
+            self.assertFalse(result["truncated"])
+
+    def test_local_model_read_file_rejects_offset_past_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "offset": 4}, root)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "offset_out_of_range")
+            self.assertIn("4", result["error"])
+            self.assertIn("3", result["error"])
+
+    def test_local_model_read_file_rejects_non_positive_window_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("one\n", encoding="utf-8")
+
+            for arguments in ({"offset": 0}, {"limit": 0}):
+                with self.subTest(arguments=arguments):
+                    result = execute_tool("read_file", {"path": "a.txt", **arguments}, root)
+
+                    self.assertFalse(result["ok"])
+                    self.assertTrue(result["error"])
+
+    def test_local_model_read_file_applies_byte_cap_after_line_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8")
+
+            result = execute_tool(
+                "read_file",
+                {"path": "a.txt", "max_bytes": 15},
+                root,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "line 1\nline 2\nl")
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["total_lines"], 10)
+            self.assertEqual(result["next_offset"], 3)
+
+    def test_local_model_read_file_keeps_next_offset_on_a_cut_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("abcdefghij\nlast\n", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "max_bytes": 4}, root)
+
+            self.assertEqual(result["content"], "abcd")
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["total_lines"], 2)
+            self.assertEqual(result["next_offset"], 1)
+
+    def test_local_model_read_file_empty_file_uses_default_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "empty.txt").write_text("", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "empty.txt"}, root)
+
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "path": "empty.txt",
+                    "content": "",
+                    "truncated": False,
+                    "total_lines": 0,
+                    "next_offset": None,
+                },
+            )
+
+    def test_local_model_read_file_schema_describes_units_and_result_metadata(self) -> None:
+        read_file_tool = next(tool for tool in TOOLS if tool["function"]["name"] == "read_file")
+        function = read_file_tool["function"]
+        properties = function["parameters"]["properties"]
+
+        for name in ("path", "max_bytes", "offset", "limit"):
+            with self.subTest(name=name):
+                self.assertTrue(properties[name]["description"])
+        self.assertIn("lines", properties["offset"]["description"])
+        self.assertIn("1-based", properties["offset"]["description"])
+        self.assertIn("lines", properties["limit"]["description"])
+        self.assertIn("bytes", properties["max_bytes"]["description"])
+        self.assertIn("total_lines", function["description"])
+        self.assertIn("next_offset", function["description"])
+
     def test_local_model_audit_records_guarded_history_marker_as_failed_activity(self) -> None:
         response = {
             "choices": [
@@ -1562,6 +2202,49 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["temperature"], 0.9)
 
+    def test_local_model_adapter_reports_identity_on_ok_and_error(self) -> None:
+        request = {
+            "agent": "local-model",
+            "model": "local-code-model",
+            "hardware": "machine",
+            "preflight": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            request["audit"] = {
+                "enabled": True,
+                "path": str(Path(directory) / "benchmark-audit.json"),
+                "run_id": "run-adapter-provenance",
+            }
+            successful = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER)],
+                cwd=directory,
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            failed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER), "--temperature", "3"],
+                cwd=directory,
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            audit_document = json.loads(
+                Path(request["audit"]["path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(successful.returncode, 0, successful.stderr)
+        self.assertEqual(failed.returncode, 0, failed.stderr)
+        successful_result = json.loads(successful.stdout)
+        failed_result = json.loads(failed.stdout)
+        self.assertEqual(successful_result["status"], "ok")
+        self.assertEqual(failed_result["status"], "error")
+        self._assert_local_adapter_identity(successful_result["adapter"])
+        self.assertEqual(failed_result["adapter"], successful_result["adapter"])
+        self.assertEqual(audit_document["run"]["adapter"], successful_result["adapter"])
+
     def test_local_model_adapter_reports_history_policy_and_audit_provenance(self) -> None:
         for no_compact, expected_read_results in (
             (False, "elide_before_current_turn"),
@@ -1649,8 +2332,10 @@ class AdapterExamplesTest(unittest.TestCase):
                     result = json.loads(completed.stdout)
                     expected_policy = {"read_results": expected_read_results}
                     self.assertEqual(result["history_policy"], expected_policy)
+                    self._assert_local_adapter_identity(result["adapter"])
                     document = json.loads(audit_path.read_text(encoding="utf-8"))
                     self.assertEqual(document["run"]["history_policy"], expected_policy)
+                    self.assertEqual(document["run"]["adapter"], result["adapter"])
 
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
@@ -2020,6 +2705,8 @@ class AdapterExamplesTest(unittest.TestCase):
                 "path": "api.py",
                 "content": "[read_file content elided from history]",
                 "truncated": False,
+                "total_lines": 5000,
+                "next_offset": None,
             },
         )
         current_read_message = next(message for message in final_messages if message.get("tool_call_id") == "read-2")
@@ -2047,8 +2734,22 @@ class AdapterExamplesTest(unittest.TestCase):
         self.assertEqual(
             read_results,
             [
-                {"ok": True, "path": "api.py", "content": source, "truncated": False},
-                {"ok": True, "path": "created.txt", "content": created_content, "truncated": False},
+                {
+                    "ok": True,
+                    "path": "api.py",
+                    "content": source,
+                    "truncated": False,
+                    "total_lines": 5000,
+                    "next_offset": None,
+                },
+                {
+                    "ok": True,
+                    "path": "created.txt",
+                    "content": created_content,
+                    "truncated": False,
+                    "total_lines": 1,
+                    "next_offset": None,
+                },
             ],
         )
         self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["old_string"], source)

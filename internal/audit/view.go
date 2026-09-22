@@ -41,12 +41,17 @@ type eventView struct {
 	Partial             bool
 	ModelToolCall       bool
 	AdapterOperation    bool
+	AdapterStop         bool
 	ID                  string
 	ToolCallID          string
 	ModelToolCallID     string
 	ToolName            string
 	Operation           string
 	Provenance          string
+	Reason              string
+	Turn                int
+	RepeatCount         int
+	ToolNames           []string
 	Arguments           *payloadView
 	Request             *payloadView
 	Result              *payloadView
@@ -330,12 +335,17 @@ func newEventView(event Event, sharedContent map[string]json.RawMessage) (eventV
 		Partial:             EventIsIncomplete(event),
 		ModelToolCall:       event.Type == "model_tool_call",
 		AdapterOperation:    event.Type == "adapter_operation",
+		AdapterStop:         event.Type == "adapter_stop",
 		ID:                  event.ID,
 		ToolCallID:          event.ToolCallID,
 		ModelToolCallID:     event.ModelToolCallID,
 		ToolName:            event.ToolName,
 		Operation:           event.Operation,
 		Provenance:          event.Provenance,
+		Reason:              event.Reason,
+		Turn:                event.Turn,
+		RepeatCount:         event.RepeatCount,
+		ToolNames:           event.ToolNames,
 		Arguments:           newJSONPayload(argumentsLabel, event.Arguments),
 		Request:             newJSONPayload("Tool request (JSON)", event.Request),
 		Result:              newJSONPayload(resultLabel, event.Result),

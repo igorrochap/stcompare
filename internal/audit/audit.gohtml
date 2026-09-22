@@ -275,7 +275,23 @@ pre { background: #f6f8fa; border-radius: .3rem; overflow-x: auto; padding: .75r
 </div>
 {{end}}
 {{range .Events}}
-{{if .ModelToolCall}}
+{{if .AdapterStop}}
+<article class="activity-entry">
+<details>
+<summary>Adapter Stop — {{.Reason}} — turn {{.Turn}}</summary>
+<div class="turn-meta">
+<div><span>Chronological sequence</span><strong>{{.Sequence}}</strong></div>
+<div><span>Model turn</span><strong>{{.TurnID}}</strong></div>
+<div><span>Adapter Stop Reason</span><strong>{{.Reason}}</strong></div>
+<div><span>Turn</span><strong>{{.Turn}}</strong></div>
+{{if eq .Reason "unproductive_repeat"}}
+<div><span>Unproductive Repeat count</span><strong>{{.RepeatCount}}</strong></div>
+{{if .ToolNames}}<div><span>Repeated tools</span><strong>{{range $index, $name := .ToolNames}}{{if $index}}, {{end}}{{$name}}{{end}}</strong></div>{{end}}
+{{end}}
+</div>
+</details>
+</article>
+{{else if .ModelToolCall}}
 <article class="activity-entry {{if .Partial}}partial{{end}}">
 <details>
 <summary>Model Tool Call {{.ID}} — {{.ToolName}} — {{.Status}}</summary>

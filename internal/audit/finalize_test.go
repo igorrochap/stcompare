@@ -18,7 +18,8 @@ func TestFinalizePersistsActivitySummary(t *testing.T) {
   "iterations": [{"id": "iteration-1", "number": 1, "turn_ids": []}],
   "events": [
     {"type": "model_tool_call", "iteration_id": "iteration-1", "status": "failed", "duration_ms": 12},
-    {"type": "adapter_operation", "iteration_id": "iteration-1", "status": "failed", "duration_ms": 10}
+    {"type": "adapter_operation", "iteration_id": "iteration-1", "status": "failed", "duration_ms": 10},
+    {"type": "adapter_stop", "iteration_id": "iteration-1", "iteration": 1, "turn_id": "iteration-1-turn-1", "reason": "model_finished", "turn": 1}
   ]
 }`)
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
@@ -39,8 +40,14 @@ func TestFinalizePersistsActivitySummary(t *testing.T) {
 	if document.Activity.Status != "complete" || document.Activity.ModelToolCalls.Count != 1 || document.Activity.ModelToolCalls.Failed != 1 {
 		t.Fatalf("final activity = %#v, want complete failed-call summary", document.Activity)
 	}
+	if document.Activity.AdapterOperations.Count != 1 || document.Activity.AdapterOperations.Failed != 1 {
+		t.Fatalf("final adapter activity = %#v, want one failed operation", document.Activity.AdapterOperations)
+	}
 	if document.Iterations[0].Activity.AdapterOperations.DurationMS != 0 {
 		t.Fatalf("iteration activity = %#v, want no failed-operation duration", document.Iterations[0].Activity)
+	}
+	if document.Events[2].Reason != "model_finished" || document.Events[2].Turn != 1 {
+		t.Fatalf("adapter stop event = %#v, want model-finished stop at turn 1", document.Events[2])
 	}
 }
 
