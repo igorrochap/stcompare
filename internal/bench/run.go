@@ -157,6 +157,12 @@ type EffectiveHistoryPolicyReporter interface {
 	EffectiveHistoryPolicy() *benchrecord.HistoryPolicy
 }
 
+// EffectiveAdapterReporter exposes the adapter identity reported during
+// preflight.
+type EffectiveAdapterReporter interface {
+	EffectiveAdapter() *benchrecord.Adapter
+}
+
 // AdapterCloser releases adapter resources after a benchmark run.
 type AdapterCloser interface {
 	Close() error
@@ -277,6 +283,7 @@ func runValidated(config Config, dependencies Dependencies) (record benchrecord.
 		&record.LifecyclePhase,
 		&record.Temperature,
 		&record.HistoryPolicy,
+		&record.Adapter,
 		runnerEvidence,
 	); err != nil {
 		report(dependencies.Reporter, ProgressEvent{Phase: ProgressPhasePreflight, State: ProgressError, Err: err})
@@ -675,6 +682,9 @@ func (runner *iterationRunner) runIteration(lastIteration bool) (bool, error) {
 	if fix.HistoryPolicy != nil {
 		runner.record.HistoryPolicy = fix.HistoryPolicy
 	}
+	if fix.Adapter != nil {
+		runner.record.Adapter = fix.Adapter
+	}
 	if err != nil {
 		runner.report(ProgressEvent{Phase: ProgressPhaseAgentFix, State: ProgressError, Err: err})
 		return true, runner.bail(benchrecord.TerminalStateAdapterError, err)
@@ -866,6 +876,7 @@ func runPreflight(
 	failedPhase *benchrecord.LifecyclePhase,
 	recordedTemperature *float64,
 	recordedHistoryPolicy **benchrecord.HistoryPolicy,
+	recordedAdapter **benchrecord.Adapter,
 	runnerEvidence *runnerAuditEvidence,
 ) (benchrecord.TerminalState, error) {
 	if err := dependencies.Adapter.Preflight(config.AdapterMetadata); err != nil {
@@ -885,6 +896,9 @@ func runPreflight(
 	}
 	if reporter, ok := dependencies.Adapter.(EffectiveHistoryPolicyReporter); ok {
 		*recordedHistoryPolicy = reporter.EffectiveHistoryPolicy()
+	}
+	if reporter, ok := dependencies.Adapter.(EffectiveAdapterReporter); ok {
+		*recordedAdapter = reporter.EffectiveAdapter()
 	}
 	if err := runCandidateLifecycle(dependencies.Candidate, failedPhase, nil, runnerEvidence.auditLifecycle); err != nil {
 		return benchrecord.TerminalStateLifecycleError, fmt.Errorf("preflight lifecycle: %w", err)
@@ -1105,6 +1119,7 @@ type agentFixResult struct {
 	Response      string
 	Temperature   *float64
 	HistoryPolicy *benchrecord.HistoryPolicy
+	Adapter       *benchrecord.Adapter
 	Rendered      bool
 }
 
@@ -1159,6 +1174,7 @@ func runAgentFix(
 		}
 		fix.Temperature = result.Temperature
 		fix.HistoryPolicy = result.HistoryPolicy
+		fix.Adapter = result.Adapter
 	}
 	if err != nil {
 		return fix, fmt.Errorf("adapter fix: %w", err)

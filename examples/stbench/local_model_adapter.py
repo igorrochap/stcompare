@@ -48,6 +48,9 @@ MAX_TEMPERATURE = 2.0
 MAX_FILE_BYTES = 256_000
 READ_FILE_HISTORY_PLACEHOLDER = "[read_file content elided from history]"
 HISTORY_MARKER_ERROR = "is a History Elision marker, not file content"
+# Bump whenever this adapter's tool contract or loop policy changes.
+ADAPTER_VERSION = "1"
+ADAPTER_NAME = "local"
 HISTORY_MARKER_ARGUMENTS = {
     "read_file": ("path",),
     "write_file": ("path", "content"),
@@ -183,12 +186,15 @@ class AuditWriter:
         metadata: dict[str, Any],
         *,
         history_policy: dict[str, str] | None = None,
+        adapter: dict[str, str] | None = None,
     ) -> "AuditWriter | None":
         context = audit_context(request)
         if context is None:
             return None
         if history_policy is None:
             history_policy = resolve_history_policy()
+        if adapter is None:
+            adapter = local_adapter_identity()
         run_id = required_audit_value(context, "run_id")
         path = Path(required_audit_value(context, "path"))
         document = {
@@ -202,6 +208,7 @@ class AuditWriter:
                 "effort": str(metadata.get("effort", "")),
                 "hardware": metadata["hardware"],
                 "history_policy": history_policy,
+                "adapter": adapter,
                 "started_at": utc_now(),
             },
             "capture": {
@@ -834,7 +841,19 @@ def resolve_history_policy() -> dict[str, str]:
     return {"read_results": "elide_before_current_turn"}
 
 
+def local_adapter_identity() -> dict[str, str]:
+    """Return the local adapter identity, including its current source hash."""
+
+    source_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return {
+        "name": ADAPTER_NAME,
+        "version": ADAPTER_VERSION,
+        "source_sha256": source_hash,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    adapter = local_adapter_identity()
     try:
         settings = parse_args(argv)
 
@@ -845,14 +864,20 @@ def main(argv: list[str] | None = None) -> int:
                         metadata = request_metadata(request)
                         temperature = resolve_temperature(settings.temperature, metadata)
                         history_policy = resolve_history_policy()
-                        AuditWriter.create(request, metadata, history_policy=history_policy)
+                        AuditWriter.create(
+                            request,
+                            metadata,
+                            history_policy=history_policy,
+                            adapter=adapter,
+                        )
                         emit_result(
                             status="ok",
                             temperature=temperature,
                             history_policy=history_policy,
+                            adapter=adapter,
                         )
                     else:
-                        handle_preflight(request)
+                        handle_preflight(request, adapter=adapter)
                     continue
 
                 metadata = request_metadata(request)
@@ -879,17 +904,18 @@ def main(argv: list[str] | None = None) -> int:
                     tokens=aggregate_usages(usages),
                     temperature=temperature,
                     history_policy=history_policy,
+                    adapter=adapter,
                 )
             except AuditCaptureError as error:
-                emit_error(str(error), audit_error=str(error))
+                emit_error(str(error), adapter=adapter, audit_error=str(error))
             except (OSError, ValueError, RuntimeError) as error:
-                emit_error(str(error))
+                emit_error(str(error), adapter=adapter)
         return 0
     except (OSError, ValueError, RuntimeError) as error:
-        emit_error(str(error))
+        emit_error(str(error), adapter=adapter)
         return 0
     except Exception as error:  # pragma: no cover - last-resort protocol guard
-        emit_error(f"local-model adapter failed: {error}")
+        emit_error(f"local-model adapter failed: {error}", adapter=adapter)
         return 0
 
 

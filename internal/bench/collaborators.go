@@ -255,6 +255,7 @@ type AdapterResponse struct {
 	ReuseProcess  bool                       `json:"reuse_process"`
 	Temperature   *float64                   `json:"temperature,omitempty"`
 	HistoryPolicy *benchrecord.HistoryPolicy `json:"history_policy,omitempty"`
+	Adapter       *benchrecord.Adapter       `json:"adapter,omitempty"`
 	AuditError    string                     `json:"audit_error,omitempty"`
 }
 
@@ -265,6 +266,7 @@ type AdapterResult struct {
 	ReuseProcess  bool
 	Temperature   *float64
 	HistoryPolicy *benchrecord.HistoryPolicy
+	Adapter       *benchrecord.Adapter
 }
 
 // AuditContext identifies the durable artifact and the benchmark position for
@@ -306,6 +308,7 @@ type CommandAdapter struct {
 
 	effectiveTemperature   *float64
 	effectiveHistoryPolicy *benchrecord.HistoryPolicy
+	effectiveAdapter       *benchrecord.Adapter
 
 	reuse adapterReuseState
 }
@@ -339,6 +342,7 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 		}
 		adapter.effectiveTemperature = result.Temperature
 		adapter.effectiveHistoryPolicy = result.HistoryPolicy
+		adapter.effectiveAdapter = result.Adapter
 		if result.ReuseProcess && adapter.reuse.process != nil && adapter.reuse.process.running(adapterReuseProbe) {
 			adapter.reuse.active = true
 			adapter.reuse.wasActive = true
@@ -355,6 +359,7 @@ func (adapter *CommandAdapter) Preflight(metadata AdapterMetadata) error {
 	if result != nil {
 		adapter.effectiveTemperature = result.Temperature
 		adapter.effectiveHistoryPolicy = result.HistoryPolicy
+		adapter.effectiveAdapter = result.Adapter
 	}
 	return err
 }
@@ -369,6 +374,11 @@ func (adapter *CommandAdapter) EffectiveTemperature() *float64 {
 // adapter preflight, if one was provided.
 func (adapter *CommandAdapter) EffectiveHistoryPolicy() *benchrecord.HistoryPolicy {
 	return adapter.effectiveHistoryPolicy
+}
+
+// EffectiveAdapter returns the adapter identity reported during preflight.
+func (adapter *CommandAdapter) EffectiveAdapter() *benchrecord.Adapter {
+	return adapter.effectiveAdapter
 }
 
 // Fix sends execution metadata, the rendered instruction, and compact view to the adapter.
@@ -535,6 +545,7 @@ func interpretAdapterResponse(output []byte) (*AdapterResult, error) {
 		ReuseProcess:  response.ReuseProcess,
 		Temperature:   response.Temperature,
 		HistoryPolicy: response.HistoryPolicy,
+		Adapter:       response.Adapter,
 	}
 	switch response.Status {
 	case "ok":

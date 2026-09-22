@@ -811,6 +811,10 @@ instruction is recorded in `prompt_instructions`, its hash in
 The optional `history_policy` object records the adapter's History Elision
 regime as `{"read_results":"elide_before_current_turn"}` or
 `{"read_results":"keep"}`; adapters that do not report it omit the field.
+The optional `adapter` object records adapter provenance as
+`{"name":"local","version":"…","source_sha256":"…"}`; adapters that do
+not report it omit the field. This additive field does not change the record
+schema version.
 
 The benchmark record path is not configurable. It is derived from the selected
 candidate as `reports/<candidate>/benchmark-record.json` (under the configured
@@ -919,7 +923,9 @@ false`; enabling the runner option is a verified no-op for those adapters.
 The result is `{ "status": "ok"|"error", "message": "...", "response":
 "<raw model response>", "tokens": { "input": 1, "output": 2, "total": 3 } |
 null, "temperature": N | null, "history_policy": { "read_results":
-"elide_before_current_turn" | "keep" } | omitted, "reuse_process": false }`.
+"elide_before_current_turn" | "keep" } | omitted, "adapter": { "name":
+"local", "version": "…", "source_sha256": "…" } | omitted,
+"reuse_process": false }`.
 The adapter edits
 the candidate in place; unknown token usage must remain unknown. The audit
 artifact, when enabled, is the source of per-model-turn efficiency evidence.

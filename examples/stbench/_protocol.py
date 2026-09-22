@@ -122,6 +122,7 @@ def emit_result(
     reuse_process: bool = False,
     temperature: float | None = None,
     history_policy: dict[str, str] | None = None,
+    adapter: dict[str, str] | None = None,
     audit_error: str = "",
 ) -> None:
     """Write exactly one stbench adapter result to stdout."""
@@ -137,16 +138,34 @@ def emit_result(
         payload["temperature"] = temperature
     if history_policy is not None:
         payload["history_policy"] = history_policy
+    if adapter is not None:
+        payload["adapter"] = adapter
     if audit_error:
         payload["audit_error"] = audit_error
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def emit_error(message: str, *, response: str = "", audit_error: str = "") -> None:
-    emit_result(status="error", response=response, message=message, audit_error=audit_error)
+def emit_error(
+    message: str,
+    *,
+    response: str = "",
+    adapter: dict[str, str] | None = None,
+    audit_error: str = "",
+) -> None:
+    emit_result(
+        status="error",
+        response=response,
+        message=message,
+        adapter=adapter,
+        audit_error=audit_error,
+    )
 
 
-def handle_preflight(request: dict[str, Any]) -> bool:
+def handle_preflight(
+    request: dict[str, Any],
+    *,
+    adapter: dict[str, str] | None = None,
+) -> bool:
     """Emit the successful no-op response when handling a preflight request."""
 
     if not is_preflight_request(request):
@@ -154,7 +173,7 @@ def handle_preflight(request: dict[str, Any]) -> bool:
     # The bundled adapters are stateless per request. A native resumable
     # adapter must explicitly implement this handshake instead of claiming
     # support through a generic environment toggle.
-    emit_result(status="ok", reuse_process=False)
+    emit_result(status="ok", reuse_process=False, adapter=adapter)
     return True
 
 
