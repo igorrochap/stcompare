@@ -22,12 +22,16 @@ delivery boundary:
      "message": "",
      "response": "short audit text",
      "tokens": {"input": 12, "output": 34, "total": 46},
-     "temperature": 0.0
+     "temperature": 0.0,
+     "adapter": {"name": "local", "version": "1", "source_sha256": "..."}
    }
    ```
 
    Report `"tokens": null` when the agent does not expose token usage. The
-   bundled local-model adapter stores per-turn token status and recording
+   `adapter` object is optional; the bundled local-model adapter reports its
+   name, contract version, and source-file SHA-256, while adapters that do not
+   report provenance omit it. The bundled local-model adapter stores per-turn
+   token status and recording
    overhead in the audit artifact rather than duplicating it in this result.
 
 For the bundled local-model adapter, `stbench` supplies an audit context on
@@ -157,6 +161,14 @@ resolved value is sent on every chat-completions request. At temperature `0`,
 the adapter also sends `top_p: 1` to keep decoding fully greedy and
 deterministic. The adapter reports the resolved value during preflight so the
 benchmark record captures the effective sampling regime.
+
+The bundled local-model adapter reports an `adapter` object in each result and
+in the audit document's `run` header. Its `name` is `local`, `version` starts
+at `1` and must be bumped whenever the tool contract or loop policy changes,
+and `source_sha256` hashes the adapter source file at run time. `stbench`
+copies this object into the optional `adapter` field of
+`benchmark-record.json`; adapters that do not report provenance leave the field
+absent.
 
 `stbench run` renders an available audit to `benchmark-audit.html` after the
 run. A researcher can render an artifact independently, including when no

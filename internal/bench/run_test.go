@@ -1137,6 +1137,76 @@ func TestRunRecordsAdapterReportedHistoryPolicy(t *testing.T) {
 	}
 }
 
+func TestRunRecordsAdapterReportedIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		response     string
+		wantIdentity *benchrecord.Adapter
+	}{
+		{
+			name:     "reported",
+			response: `{"status":"ok","adapter":{"name":"local","version":"1","source_sha256":"sha"}}`,
+			wantIdentity: &benchrecord.Adapter{
+				Name: "local", Version: "1", SourceSHA256: "sha",
+			},
+		},
+		{
+			name:         "omitted",
+			response:     `{"status":"ok"}`,
+			wantIdentity: nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			script := writeExecutable(t, directory, "adapter.sh", "#!/bin/sh\n"+
+				"printf '%s' '"+test.response+"'\n")
+			adapter := &CommandAdapter{Command: script, WorkingDir: directory}
+			comparator := &fakeComparator{results: []comparisonResult{{
+				view:     agentreport.View{Converged: true},
+				exitCode: agentreport.ExitCodeConverged,
+			}}}
+
+			record, err := Run(Config{
+				BaselineExists: func() bool { return true },
+			}, Dependencies{
+				Comparator: comparator,
+				Candidate:  &fakeCandidate{},
+				Adapter:    adapter,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if record.Adapter == nil && test.wantIdentity == nil {
+				return
+			}
+			if record.Adapter == nil || test.wantIdentity == nil || *record.Adapter != *test.wantIdentity {
+				t.Fatalf("record adapter = %#v, want %#v", record.Adapter, test.wantIdentity)
+			}
+		})
+	}
+}
+
+func TestRunOmitsAdapterWhenAdapterDoesNotReportIt(t *testing.T) {
+	comparator := &fakeComparator{results: []comparisonResult{{
+		view:     agentreport.View{Converged: true},
+		exitCode: agentreport.ExitCodeConverged,
+	}}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    &fakeAdapter{},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.Adapter != nil {
+		t.Fatalf("record adapter = %#v, want omitted", record.Adapter)
+	}
+}
+
 func TestRunRecordsHistoryPolicyReportedByFix(t *testing.T) {
 	view := agentreport.View{
 		Counts: agentreport.Counts{StillFailing: 1},
@@ -1165,6 +1235,36 @@ func TestRunRecordsHistoryPolicyReportedByFix(t *testing.T) {
 	}
 	if record.HistoryPolicy == nil || record.HistoryPolicy.ReadResults != "keep" {
 		t.Fatalf("record history policy = %#v, want fix-reported keep policy", record.HistoryPolicy)
+	}
+}
+
+func TestRunRecordsAdapterReportedIdentityFromFix(t *testing.T) {
+	view := agentreport.View{
+		Counts: agentreport.Counts{StillFailing: 1},
+		Actionable: []agentreport.Actionable{{
+			ID:   "problem-1",
+			Kind: agentreport.ActionKindStillFailing,
+		}},
+	}
+	identity := &benchrecord.Adapter{Name: "local", Version: "1", SourceSHA256: "sha"}
+	adapter := &fakeAdapter{adapterIdentities: []*benchrecord.Adapter{identity}}
+	comparator := &fakeComparator{results: []comparisonResult{
+		{view: view, exitCode: agentreport.ExitCodeNotConverged},
+		{view: agentreport.View{Converged: true}, exitCode: agentreport.ExitCodeConverged},
+	}}
+
+	record, err := Run(Config{
+		BaselineExists: func() bool { return true },
+	}, Dependencies{
+		Comparator: comparator,
+		Candidate:  &fakeCandidate{},
+		Adapter:    adapter,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if record.Adapter == nil || *record.Adapter != *identity {
+		t.Fatalf("record adapter = %#v, want %#v", record.Adapter, identity)
 	}
 }
 
@@ -1812,6 +1912,7 @@ type fakeAdapter struct {
 	usages            []*benchrecord.TokenUsage
 	responses         []string
 	historyPolicies   []*benchrecord.HistoryPolicy
+	adapterIdentities []*benchrecord.Adapter
 	errs              []error
 }
 
@@ -1877,6 +1978,13 @@ func (f *fakeAdapter) EffectiveHistoryPolicy() *benchrecord.HistoryPolicy {
 	return f.preflightResult.HistoryPolicy
 }
 
+func (f *fakeAdapter) EffectiveAdapter() *benchrecord.Adapter {
+	if f.preflightResult == nil {
+		return nil
+	}
+	return f.preflightResult.Adapter
+}
+
 func (f *fakeAdapter) Fix(
 	instruction string,
 	_ agentreport.View,
@@ -1899,12 +2007,22 @@ func (f *fakeAdapter) Fix(
 		historyPolicy = f.historyPolicies[0]
 		f.historyPolicies = f.historyPolicies[1:]
 	}
+	var adapterIdentity *benchrecord.Adapter
+	if len(f.adapterIdentities) != 0 {
+		adapterIdentity = f.adapterIdentities[0]
+		f.adapterIdentities = f.adapterIdentities[1:]
+	}
 	var err error
 	if len(f.errs) != 0 {
 		err = f.errs[0]
 		f.errs = f.errs[1:]
 	}
-	return &AdapterResult{Tokens: usage, Response: response, HistoryPolicy: historyPolicy}, err
+	return &AdapterResult{
+		Tokens:        usage,
+		Response:      response,
+		HistoryPolicy: historyPolicy,
+		Adapter:       adapterIdentity,
+	}, err
 }
 
 func testConfig() Config {

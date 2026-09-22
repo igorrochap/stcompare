@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -47,6 +48,15 @@ FALLBACK_ADAPTER = EXAMPLES / "adapter.py"
 
 
 class AdapterExamplesTest(unittest.TestCase):
+    def _assert_local_adapter_identity(self, identity: dict[str, str]) -> None:
+        self.assertEqual(identity["name"], "local")
+        self.assertTrue(identity["version"])
+        self.assertRegex(identity["source_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            identity["source_sha256"],
+            hashlib.sha256(LOCAL_ADAPTER.read_bytes()).hexdigest(),
+        )
+
     @staticmethod
     def _read_file_response(call_number: int, max_bytes: int) -> dict:
         return {
@@ -153,6 +163,24 @@ class AdapterExamplesTest(unittest.TestCase):
             )
             updated = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertNotIn("activity", updated)
+
+    def test_local_model_audit_records_adapter_identity_in_run_header(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "benchmark-audit.json"
+            request = {
+                "audit": {
+                    "enabled": True,
+                    "path": str(audit_path),
+                    "run_id": "run-adapter-provenance",
+                }
+            }
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+
+            writer = AuditWriter.create(request, metadata)
+
+            self.assertIsNotNone(writer)
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self._assert_local_adapter_identity(document["run"]["adapter"])
 
     def test_local_model_activity_keeps_started_calls_partial_after_capture(self) -> None:
         document = {
@@ -2019,6 +2047,49 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["temperature"], 0.9)
 
+    def test_local_model_adapter_reports_identity_on_ok_and_error(self) -> None:
+        request = {
+            "agent": "local-model",
+            "model": "local-code-model",
+            "hardware": "machine",
+            "preflight": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            request["audit"] = {
+                "enabled": True,
+                "path": str(Path(directory) / "benchmark-audit.json"),
+                "run_id": "run-adapter-provenance",
+            }
+            successful = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER)],
+                cwd=directory,
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            failed = subprocess.run(
+                [sys.executable, str(LOCAL_ADAPTER), "--temperature", "3"],
+                cwd=directory,
+                input=json.dumps(request),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            audit_document = json.loads(
+                Path(request["audit"]["path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(successful.returncode, 0, successful.stderr)
+        self.assertEqual(failed.returncode, 0, failed.stderr)
+        successful_result = json.loads(successful.stdout)
+        failed_result = json.loads(failed.stdout)
+        self.assertEqual(successful_result["status"], "ok")
+        self.assertEqual(failed_result["status"], "error")
+        self._assert_local_adapter_identity(successful_result["adapter"])
+        self.assertEqual(failed_result["adapter"], successful_result["adapter"])
+        self.assertEqual(audit_document["run"]["adapter"], successful_result["adapter"])
+
     def test_local_model_adapter_reports_history_policy_and_audit_provenance(self) -> None:
         for no_compact, expected_read_results in (
             (False, "elide_before_current_turn"),
@@ -2106,8 +2177,10 @@ class AdapterExamplesTest(unittest.TestCase):
                     result = json.loads(completed.stdout)
                     expected_policy = {"read_results": expected_read_results}
                     self.assertEqual(result["history_policy"], expected_policy)
+                    self._assert_local_adapter_identity(result["adapter"])
                     document = json.loads(audit_path.read_text(encoding="utf-8"))
                     self.assertEqual(document["run"]["history_policy"], expected_policy)
+                    self.assertEqual(document["run"]["adapter"], result["adapter"])
 
     def test_coding_agent_adapter_delivers_instruction_and_reports_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as fake_bin:
