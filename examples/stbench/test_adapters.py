@@ -1631,7 +1631,7 @@ class AdapterExamplesTest(unittest.TestCase):
                     "read_file",
                     {"path": "a.txt", "line_start": 1, "line_end": 50},
                     ("line_start", "line_end"),
-                    ("path", "max_bytes"),
+                    ("path", "max_bytes", "offset", "limit"),
                 ),
                 ("list_files", {"path": ".", "pattern": "*.txt"}, ("pattern",), ("path",)),
                 (
@@ -1683,6 +1683,8 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertIn("line_start", result["error"])
             self.assertIn("path", result["error"])
             self.assertIn("max_bytes", result["error"])
+            self.assertIn("offset", result["error"])
+            self.assertIn("limit", result["error"])
             self.assertNotIn("History Elision marker", result["error"])
 
     def test_local_model_unsupported_argument_does_not_read_the_file(self) -> None:
@@ -1690,11 +1692,11 @@ class AdapterExamplesTest(unittest.TestCase):
             root = Path(directory)
             (root / "a.txt").write_text("file content", encoding="utf-8")
 
-            result = execute_tool("read_file", {"path": "a.txt", "offset": "100"}, root)
+            result = execute_tool("read_file", {"path": "a.txt", "line_start": "100"}, root)
 
             self.assertFalse(result["ok"])
             self.assertEqual(result["error_code"], "unsupported_argument")
-            self.assertIn("offset", result["error"])
+            self.assertIn("line_start", result["error"])
             self.assertIn("path", result["error"])
             self.assertIn("max_bytes", result["error"])
 
@@ -1702,7 +1704,7 @@ class AdapterExamplesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "a.txt").write_text("file content", encoding="utf-8")
-            arguments = {"path": "a.txt", "offset": 100}
+            arguments = {"path": "a.txt", "line_start": 100}
 
             structured = execute_model_tool_call(
                 {
@@ -1722,7 +1724,7 @@ class AdapterExamplesTest(unittest.TestCase):
                 with self.subTest(result=result):
                     self.assertFalse(result["ok"])
                     self.assertEqual(result["error_code"], "unsupported_argument")
-                    self.assertIn("offset", result["error"])
+                    self.assertIn("line_start", result["error"])
 
     def test_local_model_declared_read_file_arguments_keep_current_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1735,6 +1737,135 @@ class AdapterExamplesTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["content"], "0123456789")
             self.assertLessEqual(len(result["content"].encode("utf-8")), 50)
+            self.assertEqual(result["total_lines"], 1)
+            self.assertIsNone(result["next_offset"])
+
+    def test_local_model_read_file_returns_requested_line_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8")
+
+            result = execute_tool(
+                "read_file",
+                {"path": "a.txt", "offset": 3, "limit": 4},
+                root,
+            )
+
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "path": "a.txt",
+                    "content": "line 3\nline 4\nline 5\nline 6\n",
+                    "truncated": False,
+                    "total_lines": 10,
+                    "next_offset": 7,
+                },
+            )
+
+    def test_local_model_read_file_window_reaches_end_of_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text(
+                "".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8"
+            )
+
+            result = execute_tool("read_file", {"path": "a.txt", "offset": 8, "limit": 5}, root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "line 8\nline 9\nline 10\n")
+            self.assertEqual(result["total_lines"], 10)
+            self.assertIsNone(result["next_offset"])
+            self.assertFalse(result["truncated"])
+
+    def test_local_model_read_file_rejects_offset_past_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "offset": 4}, root)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "offset_out_of_range")
+            self.assertIn("4", result["error"])
+            self.assertIn("3", result["error"])
+
+    def test_local_model_read_file_rejects_non_positive_window_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("one\n", encoding="utf-8")
+
+            for arguments in ({"offset": 0}, {"limit": 0}):
+                with self.subTest(arguments=arguments):
+                    result = execute_tool("read_file", {"path": "a.txt", **arguments}, root)
+
+                    self.assertFalse(result["ok"])
+                    self.assertTrue(result["error"])
+
+    def test_local_model_read_file_applies_byte_cap_after_line_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "a.txt"
+            target.write_text("".join(f"line {index}\n" for index in range(1, 11)), encoding="utf-8")
+
+            result = execute_tool(
+                "read_file",
+                {"path": "a.txt", "max_bytes": 15},
+                root,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "line 1\nline 2\nl")
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["total_lines"], 10)
+            self.assertEqual(result["next_offset"], 3)
+
+    def test_local_model_read_file_keeps_next_offset_on_a_cut_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("abcdefghij\nlast\n", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "a.txt", "max_bytes": 4}, root)
+
+            self.assertEqual(result["content"], "abcd")
+            self.assertTrue(result["truncated"])
+            self.assertEqual(result["total_lines"], 2)
+            self.assertEqual(result["next_offset"], 1)
+
+    def test_local_model_read_file_empty_file_uses_default_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "empty.txt").write_text("", encoding="utf-8")
+
+            result = execute_tool("read_file", {"path": "empty.txt"}, root)
+
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "path": "empty.txt",
+                    "content": "",
+                    "truncated": False,
+                    "total_lines": 0,
+                    "next_offset": None,
+                },
+            )
+
+    def test_local_model_read_file_schema_describes_units_and_result_metadata(self) -> None:
+        read_file_tool = next(tool for tool in TOOLS if tool["function"]["name"] == "read_file")
+        function = read_file_tool["function"]
+        properties = function["parameters"]["properties"]
+
+        for name in ("path", "max_bytes", "offset", "limit"):
+            with self.subTest(name=name):
+                self.assertTrue(properties[name]["description"])
+        self.assertIn("lines", properties["offset"]["description"])
+        self.assertIn("1-based", properties["offset"]["description"])
+        self.assertIn("lines", properties["limit"]["description"])
+        self.assertIn("bytes", properties["max_bytes"]["description"])
+        self.assertIn("total_lines", function["description"])
+        self.assertIn("next_offset", function["description"])
 
     def test_local_model_audit_records_guarded_history_marker_as_failed_activity(self) -> None:
         response = {
@@ -2346,6 +2477,8 @@ class AdapterExamplesTest(unittest.TestCase):
                 "path": "api.py",
                 "content": "[read_file content elided from history]",
                 "truncated": False,
+                "total_lines": 5000,
+                "next_offset": None,
             },
         )
         current_read_message = next(message for message in final_messages if message.get("tool_call_id") == "read-2")
@@ -2373,8 +2506,22 @@ class AdapterExamplesTest(unittest.TestCase):
         self.assertEqual(
             read_results,
             [
-                {"ok": True, "path": "api.py", "content": source, "truncated": False},
-                {"ok": True, "path": "created.txt", "content": created_content, "truncated": False},
+                {
+                    "ok": True,
+                    "path": "api.py",
+                    "content": source,
+                    "truncated": False,
+                    "total_lines": 5000,
+                    "next_offset": None,
+                },
+                {
+                    "ok": True,
+                    "path": "created.txt",
+                    "content": created_content,
+                    "truncated": False,
+                    "total_lines": 1,
+                    "next_offset": None,
+                },
             ],
         )
         self.assertEqual(json.loads(assistant_messages[1]["tool_calls"][0]["function"]["arguments"])["old_string"], source)

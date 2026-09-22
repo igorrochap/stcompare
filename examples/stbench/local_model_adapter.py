@@ -84,12 +84,31 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 text file in the candidate.",
+            "description": (
+                "Read a UTF-8 text-file window. The result reports total_lines, "
+                "next_offset, and truncated."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "max_bytes": {"type": "integer", "default": MAX_FILE_BYTES},
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the UTF-8 text file to read.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "default": MAX_FILE_BYTES,
+                        "description": "Maximum number of bytes in the returned content.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "1-based offset in lines at which to start reading.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of lines to read; defaults to all remaining lines.",
+                    },
                 },
                 "required": ["path"],
                 "additionalProperties": False,
@@ -1320,7 +1339,15 @@ def execute_tool(name: str, arguments: dict[str, Any], root: Path) -> dict[str, 
         if name == "list_files":
             return list_files(root, str(arguments.get("path", ".")))
         if name == "read_file":
-            return read_file(root, str(arguments["path"]), int(arguments.get("max_bytes", MAX_FILE_BYTES)))
+            limit_argument = arguments.get("limit")
+            limit = None if limit_argument is None else int(limit_argument)
+            return read_file(
+                root,
+                str(arguments["path"]),
+                int(arguments.get("max_bytes", MAX_FILE_BYTES)),
+                int(arguments.get("offset", 1)),
+                limit,
+            )
         if name == "write_file":
             return write_file(root, str(arguments["path"]), str(arguments["content"]))
         if name == "str_replace":
@@ -1399,19 +1426,94 @@ def list_files(root: Path, relative: str) -> dict[str, Any]:
     return {"ok": True, "files": paths, "truncated": len(paths) >= 200}
 
 
-def read_file(root: Path, relative: str, max_bytes: int) -> dict[str, Any]:
+def read_file(
+    root: Path,
+    relative: str,
+    max_bytes: int,
+    offset: int = 1,
+    limit: int | None = None,
+) -> dict[str, Any]:
     if max_bytes < 1:
         raise ValueError("max_bytes must be positive")
+    if offset < 1:
+        raise ToolError("invalid_offset", "read_file offset must be at least 1")
+    if limit is not None and limit < 1:
+        raise ToolError("invalid_limit", "read_file limit must be at least 1")
+
     contents = safe_path(root, relative).read_bytes()
-    if b"\x00" in contents[:max_bytes]:
+    if b"\x00" in contents:
         raise ValueError("read_file only supports text files")
-    truncated = len(contents) > max_bytes
+    text = contents.decode("utf-8", errors="replace")
+    lines = split_file_lines(text)
+    total_lines = len(lines)
+    if total_lines == 0:
+        if offset > 1:
+            raise ToolError(
+                "offset_out_of_range",
+                f"read_file offset {offset} is past the end of {relative}; the file has 0 lines",
+            )
+        return {
+            "ok": True,
+            "path": relative,
+            "content": "",
+            "truncated": False,
+            "total_lines": 0,
+            "next_offset": None,
+        }
+    if offset > total_lines:
+        raise ToolError(
+            "offset_out_of_range",
+            f"read_file offset {offset} is past the end of {relative}; "
+            f"the file has {total_lines} lines",
+        )
+
+    start_index = offset - 1
+    end_index = total_lines if limit is None else min(start_index + limit, total_lines)
+    selected_lines = lines[start_index:end_index]
+    selected_bytes = "".join(selected_lines).encode("utf-8")
+    truncated = len(selected_bytes) > max_bytes
+    returned_bytes = selected_bytes[:max_bytes]
+    next_index = end_index
+    if truncated:
+        next_index = first_unreturned_line_index(selected_lines, start_index, max_bytes)
+
     return {
         "ok": True,
         "path": relative,
-        "content": contents[:max_bytes].decode("utf-8", errors="replace"),
+        "content": returned_bytes.decode("utf-8", errors="replace"),
         "truncated": truncated,
+        "total_lines": total_lines,
+        "next_offset": None if next_index >= total_lines else next_index + 1,
     }
+
+
+def split_file_lines(text: str) -> list[str]:
+    """Split only on newlines while retaining each line's separator."""
+
+    if not text:
+        return []
+    segments = text.split("\n")
+    ends_with_newline = segments[-1] == ""
+    if ends_with_newline:
+        segments.pop()
+    lines = []
+    for index, segment in enumerate(segments):
+        has_line_separator = index < len(segments) - 1 or ends_with_newline
+        if has_line_separator:
+            lines.append(f"{segment}\n")
+            continue
+        lines.append(segment)
+    return lines
+
+
+def first_unreturned_line_index(lines: list[str], start_index: int, max_bytes: int) -> int:
+    bytes_remaining = max_bytes
+    for line_index, line in enumerate(lines, start_index):
+        line_bytes = len(line.encode("utf-8"))
+        if line_bytes > bytes_remaining:
+            return line_index
+        bytes_remaining -= line_bytes
+    return start_index + len(lines)
 
 
 def write_file(root: Path, relative: str, content: str) -> dict[str, Any]:
