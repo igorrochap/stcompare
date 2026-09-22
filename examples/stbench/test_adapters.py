@@ -248,6 +248,161 @@ class AdapterExamplesTest(unittest.TestCase):
         self.assertEqual(response, "done")
         self.assertEqual(post_json.call_count, 1)
 
+    def test_local_model_audit_records_model_finished_adapter_stop(self) -> None:
+        responses = [
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"message": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "done"}}]},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-finished"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                response, _ = run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(response, "done")
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "model_finished")
+        self.assertEqual(stops[0]["turn"], 3)
+        self.assertEqual(stops[0]["iteration"], 1)
+        self.assertEqual(stops[0]["iteration_id"], "iteration-1")
+
+    def test_local_model_audit_records_unproductive_repeat_adapter_stop(self) -> None:
+        responses = [self._read_file_response(index, 100 + index) for index in range(5)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.txt").write_text("unchanged\n", encoding="utf-8")
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-repeat"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch("local_model_adapter.post_json", side_effect=responses):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=10,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "unproductive_repeat")
+        self.assertEqual(stops[0]["turn"], 5)
+        self.assertEqual(stops[0]["repeat_count"], 4)
+        self.assertEqual(stops[0]["tool_names"], ["read_file"])
+
+    def test_local_model_audit_records_turn_limit_adapter_stop_before_error(self) -> None:
+        responses = [self._read_file_response(index, 100) for index in range(3)]
+        seen: list[int] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "sample.txt"
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-limit"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            def respond(*_args: object, **_kwargs: object) -> dict:
+                index = len(seen)
+                target.write_text(f"changed-{index}\n", encoding="utf-8")
+                seen.append(index)
+                return responses[index]
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=respond
+            ) as post_json, self.assertRaisesRegex(
+                RuntimeError, "local model reached the 3-turn limit"
+            ):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+
+        self.assertEqual(post_json.call_count, 3)
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["reason"], "turn_limit")
+        self.assertEqual(stops[0]["turn"], 3)
+
+    def test_local_model_audit_does_not_record_adapter_stop_for_transport_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit_path = root / "benchmark-audit.json"
+            request = {"audit": {"enabled": True, "path": str(audit_path), "run_id": "run-transport"}}
+            metadata = {"agent": "local", "model": "model", "hardware": "machine"}
+            AuditWriter.create(request, metadata)
+
+            with patch(
+                "local_model_adapter.post_json", side_effect=OSError("transport failed")
+            ), self.assertRaisesRegex(OSError, "transport failed"):
+                run_agent(
+                    "task",
+                    root,
+                    url="http://model.invalid",
+                    model="model",
+                    timeout=5,
+                    max_turns=3,
+                    audit=AuditWriter.open(request),
+                    audit_context_value={
+                        **request["audit"],
+                        "iteration": 1,
+                        "iteration_id": "iteration-1",
+                    },
+                )
+
+            document = json.loads(audit_path.read_text(encoding="utf-8"))
+            stops = [event for event in document["events"] if event["type"] == "adapter_stop"]
+            turns = [event for event in document["events"] if event["type"] == "model_turn"]
+
+        self.assertEqual(stops, [])
+        self.assertEqual(turns[0]["status"], "failed")
+
     def test_local_model_stops_after_four_result_keyed_unproductive_repeats(self) -> None:
         responses = [self._read_file_response(index, 100 + index) for index in range(5)]
 

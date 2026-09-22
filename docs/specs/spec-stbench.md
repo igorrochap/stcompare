@@ -361,8 +361,9 @@ integration test.
 
 Local-model runs also write `benchmark-audit.json` beside the benchmark
 record. It is a versioned, incrementally updated artifact with the run
-identity, ordered benchmark iterations, and ordered `model_turn` events. Each
-turn stores a stable `turn_id`, the exact model request payload (including
+identity, ordered benchmark iterations, and ordered `model_turn` and
+`adapter_stop` events. Each turn stores a stable `turn_id`, the exact model
+request payload (including
 tool definitions, effective sampling settings, compacted history, and any
 adapter-added instructions), the returned response and messages, and its
 completion state. The request is captured before inference begins and each
@@ -399,6 +400,14 @@ event without a terminal result remains incomplete. The artifact stores
 `activity` totals at run and iteration scope, including Model Tool Call count,
 completed, failed, incomplete, and execution-time totals; partial status keeps
 missing evidence distinguishable from a complete zero.
+
+Each benchmark iteration that reaches a turn-loop exit contains exactly one
+`adapter_stop` event. It carries the Adapter Stop `reason`
+(`model_finished`, `unproductive_repeat`, or `turn_limit`) and the 1-based
+`turn` at which the adapter ended its loop. An Unproductive Repeat stop
+additionally records its repeat count and ordered tool names. Adapter Stop
+events are chronological evidence only; they are not included in Model Tool
+Call or Adapter Operation activity totals.
 
 Edit tools also preserve an `Edit Attempt` for every requested edit, including
 failed and no-op requests. Each content-changing operation adds one

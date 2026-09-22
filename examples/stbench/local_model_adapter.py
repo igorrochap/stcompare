@@ -170,7 +170,7 @@ class AuditCaptureError(RuntimeError):
 
 
 class AuditWriter:
-    """Persist model-turn and activity events without changing the model request."""
+    """Persist model-turn, activity, and Adapter Stop events without changing the model request."""
 
     def __init__(self, path: Path, document: dict[str, Any]) -> None:
         self.path = path
@@ -299,6 +299,34 @@ class AuditWriter:
         event["error"] = str(error)
         event["recording_overhead_ms"] = round((time.monotonic() - recording_started) * 1000)
         event.pop("_started_monotonic", None)
+        self._write()
+
+    def record_adapter_stop(
+        self,
+        turn_event: dict[str, Any],
+        reason: str,
+        turn: int,
+        *,
+        repeat_count: int | None = None,
+        tool_names: list[str] | None = None,
+    ) -> None:
+        """Persist one Adapter Stop for the current iteration and model turn."""
+
+        event = {
+            "sequence": len(self.document["events"]) + 1,
+            "type": "adapter_stop",
+            "run_id": turn_event["run_id"],
+            "iteration_id": turn_event["iteration_id"],
+            "iteration": turn_event["iteration"],
+            "turn_id": turn_event["turn_id"],
+            "reason": reason,
+            "turn": turn,
+        }
+        if repeat_count is not None:
+            event["repeat_count"] = repeat_count
+        if tool_names is not None:
+            event["tool_names"] = copy.deepcopy(tool_names)
+        self.document["events"].append(event)
         self._write()
 
     def record_tool_call_started(
@@ -985,6 +1013,12 @@ def _tool_result_signature(
     return signature
 
 
+def _tool_names(tool_calls: list[Any]) -> list[str]:
+    """Return the ordered tool names in the repeated turn signature."""
+
+    return [tool_call_details(call)[0] for call in tool_calls]
+
+
 def run_agent(
     instruction: str,
     root: Path,
@@ -1021,7 +1055,6 @@ def run_agent(
     max_repeats = _env_int("STBENCH_ADAPTER_MAX_REPEATS", 4)
     stall_signature: list[tuple[str | None, Any]] | None = None
     stall_count = 0
-    stalled = False
 
     for turn_index in range(max_turns):
         compact_history(messages, current_turn_start)
@@ -1069,6 +1102,12 @@ def run_agent(
                 messages.append(message)
                 if isinstance(content, str) and content.strip():
                     final_response = content
+                    if audit is not None and turn_event is not None:
+                        audit.record_adapter_stop(
+                            turn_event,
+                            "model_finished",
+                            turn_index + 1,
+                        )
                     return final_response, usages
                 messages.append({"role": "user", "content": NUDGE_PROMPT})
                 current_turn_start = len(messages) - 2
@@ -1121,12 +1160,18 @@ def run_agent(
                 f"[Unproductive Repeat] {stall_count} consecutive repeats; "
                 f"stopping at turn {turn_index + 1}/{max_turns}"
             )
-            stalled = True
-            break
+            if audit is not None and turn_event is not None:
+                audit.record_adapter_stop(
+                    turn_event,
+                    "unproductive_repeat",
+                    turn_index + 1,
+                    repeat_count=stall_count,
+                    tool_names=_tool_names(tool_calls),
+                )
+            return final_response, usages
 
-    if stalled:
-        return final_response, usages
-
+    if audit is not None and turn_event is not None:
+        audit.record_adapter_stop(turn_event, "turn_limit", max_turns)
     raise RuntimeError(f"local model reached the {max_turns}-turn limit")
 
 
