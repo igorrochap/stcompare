@@ -2,6 +2,47 @@
 
 <!-- version list -->
 
+## v2.3.0 (2026-09-22)
+
+### Bug Fixes
+
+- **adapter**: Refine stall detection with tool results
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+### Chores
+
+- **stbench**: Update default port to match ollama
+  ([`e94fcc4`](https://github.com/igorrochap/stcompare/commit/e94fcc4a8a7ecab4817353dc815d1d927b521a4c))
+
+### Documentation
+
+- **adr**: Add ADR-0015 for local adapter tool contract
+  ([`15f9699`](https://github.com/igorrochap/stcompare/commit/15f96992441157a3e7d2cef902746c5600a8f827))
+
+### Features
+
+- **adapter**: Add line-based windowing to read_file
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+- **adapter, bench**: Enhance audit tracking and tool execution protocols
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+- **audit**: Add adapter stop events to benchmark artifacts
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+- **bench**: Record adapter provenance in benchmark results
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+- **stbench**: Reject unsupported tool arguments
+  ([#128](https://github.com/igorrochap/stcompare/pull/128),
+  [`d4d9510`](https://github.com/igorrochap/stcompare/commit/d4d95104d78c05a1c5048c5fb1aadfa24c205362))
+
+
 ## v2.2.0 (2026-09-18)
 
 ### Bug Fixes
